@@ -3012,48 +3012,50 @@ impl TypeChecker {
                     },
                 );
 
-                // RES-4230: reference-semantics output buffers. The
-                // storage kind is enforced by the runtime builtins until
-                // the dedicated Buffer type and FFI pointer lowering land.
+                // RES-4230: reference-semantics output buffers. Buffer is a
+                // nominal runtime value, so ordinary arrays and scalars must
+                // not flow into the buffer operations. The element kind is
+                // selected by buffer_int/buffer_float and remains runtime
+                // checked until parameterized Buffer types are introduced.
                 env.set(
                     "buffer_int".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
-                        return_type: Box::new(Type::Any),
+                        return_type: Box::new(Type::Struct("Buffer".to_string())),
                     },
                 );
                 env.set(
                     "buffer_float".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
-                        return_type: Box::new(Type::Any),
+                        return_type: Box::new(Type::Struct("Buffer".to_string())),
                     },
                 );
                 env.set(
                     "buffer_len".to_string(),
                     Type::Function {
-                        params: vec![Type::Any],
+                        params: vec![Type::Struct("Buffer".to_string())],
                         return_type: Box::new(Type::Int),
                     },
                 );
                 env.set(
                     "buffer_get".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int],
+                        params: vec![Type::Struct("Buffer".to_string()), Type::Int],
                         return_type: Box::new(Type::Any),
                     },
                 );
                 env.set(
                     "buffer_set".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int, Type::Any],
+                        params: vec![Type::Struct("Buffer".to_string()), Type::Int, Type::Any],
                         return_type: Box::new(Type::Void),
                     },
                 );
                 env.set(
                     "buffer_to_array".to_string(),
                     Type::Function {
-                        params: vec![Type::Any],
+                        params: vec![Type::Struct("Buffer".to_string())],
                         return_type: Box::new(Type::Array),
                     },
                 );
@@ -20289,6 +20291,63 @@ extern "libtesthelper" { fn rt_shared(s: Shared) -> Shared; }
         assert!(
             error.contains("unsupported type") && error.contains("Shared"),
             "unexpected diagnostic: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod res4230_buffer_type_surface {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (program, parse_errors) = parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        TypeChecker::new()
+            .check_program(&program)
+            .unwrap_or_else(|error| panic!("unexpected type error: {error}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (program, parse_errors) = parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        TypeChecker::new()
+            .check_program(&program)
+            .expect_err("expected a type error")
+    }
+
+    #[test]
+    fn buffer_builtins_accept_the_nominal_buffer_value() {
+        check_ok(
+            "fn main() -> int {\n\
+                let b = buffer_int(1);\n\
+                buffer_set(b, 0, 42);\n\
+                return buffer_get(b, 0);\n\
+            }\n\
+            main();\n",
+        );
+        check_ok(
+            "fn main() {\n\
+                let b = buffer_float(2);\n\
+                buffer_len(b);\n\
+                buffer_to_array(b);\n\
+            }\n\
+            main();\n",
+        );
+    }
+
+    #[test]
+    fn buffer_consumers_reject_non_buffer_values() {
+        let len_error = check_err("fn main() { buffer_len([1, 2]); } main();");
+        assert!(
+            len_error.contains("expected Buffer") && len_error.contains("got"),
+            "unexpected buffer_len error: {len_error}"
+        );
+
+        let array_error = check_err("fn main() { buffer_to_array(42); } main();");
+        assert!(
+            array_error.contains("expected Buffer") && array_error.contains("got int"),
+            "unexpected buffer_to_array error: {array_error}"
         );
     }
 }
