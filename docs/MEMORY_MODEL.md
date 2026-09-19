@@ -592,6 +592,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   and `items[0]`, including variant-aware matching at those places. Dynamic
   indices, transformed composites, unknown elements, and ambiguous paths
   remain opaque.
+- **A-E5 increment 62 (RES-4070):** direct `Some`, `Ok`, and `Err` constructor
+  identity and payload provenance now survive constant-bound array slices such
+  as `selected = items[0..1]`, including variant-aware matching at
+  `selected[0]`. Dynamic bounds, transformed slices, unknown elements, and
+  ambiguous paths remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5

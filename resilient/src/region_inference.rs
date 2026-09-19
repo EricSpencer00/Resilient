@@ -746,6 +746,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   constructors nested in concrete struct literals or transferred through
 //   tuple/struct destructuring and nested variant-aware match patterns,
 //   including their payload leaves through constant tuple/array places,
+//   and constant-bound slices of those places,
 //   direct tuple and array returns, and
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
@@ -897,6 +898,8 @@ impl<'a> AliasWalker<'a> {
                 let array_slice_nested_roots = self.array_slice_nested_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
                 let array_option_result_roots = self.array_option_result_roots(value, state);
+                let array_slice_option_result_roots =
+                    self.array_slice_option_result_roots(value, state);
                 let array_tagged_roots = self.array_tagged_enum_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
@@ -956,6 +959,11 @@ impl<'a> AliasWalker<'a> {
                     state.aliases.insert(format!("{name}.{index}"), root);
                 }
                 for (index, path, root) in array_option_result_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{path}"), root);
+                }
+                for (index, path, root) in array_slice_option_result_roots {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{path}"), root);
@@ -1699,6 +1707,11 @@ impl<'a> AliasWalker<'a> {
                     for (index, nested_path, root) in self.array_slice_tuple_roots(item, state) {
                         roots.push((format!("{path}[{index}].{nested_path}"), root));
                     }
+                    for (index, nested_path, root) in
+                        self.array_slice_option_result_roots(item, state)
+                    {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
                     for (nested_path, root) in self.array_slice_nested_roots(item, state) {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
@@ -1872,6 +1885,11 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}[{index}].{field}"), root));
                     }
                     for (index, nested_path, root) in self.array_slice_tuple_roots(value, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
+                    for (index, nested_path, root) in
+                        self.array_slice_option_result_roots(value, state)
+                    {
                         roots.push((format!("{path}[{index}].{nested_path}"), root));
                     }
                     for (nested_path, root) in self.array_slice_nested_roots(value, state) {
@@ -2052,6 +2070,10 @@ impl<'a> AliasWalker<'a> {
                     roots.push((format!("{prefix}[{index}].{field}"), root));
                 }
                 for (index, nested_path, root) in self.array_slice_tuple_roots(value, state) {
+                    roots.push((format!("{prefix}[{index}].{nested_path}"), root));
+                }
+                for (index, nested_path, root) in self.array_slice_option_result_roots(value, state)
+                {
                     roots.push((format!("{prefix}[{index}].{nested_path}"), root));
                 }
                 for (nested_path, root) in self.array_slice_nested_roots(value, state) {
@@ -2270,6 +2292,56 @@ impl<'a> AliasWalker<'a> {
                 continue;
             }
             roots.push((index - start, tuple_path.to_owned(), root.clone()));
+        }
+        roots
+    }
+
+    fn array_slice_option_result_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } = value
+        else {
+            return Vec::new();
+        };
+        let Some(source) = Self::array_root(target) else {
+            return Vec::new();
+        };
+        let Some((start, end)) =
+            Self::constant_slice_bounds(lo.as_deref(), hi.as_deref(), *inclusive)
+        else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(rest) = place.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((index_text, payload_path)) = rest.split_once("].") else {
+                continue;
+            };
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            if index < start || end.is_some_and(|end| index >= end) {
+                continue;
+            }
+            let constructor = state.known_constructors.get(&format!("{source}[{index}]"));
+            if !constructor.is_some_and(|name| matches!(name.as_str(), "Some" | "Ok" | "Err")) {
+                continue;
+            }
+            if Self::tuple_path_parts(payload_path).is_none() {
+                continue;
+            }
+            roots.push((index - start, payload_path.to_owned(), root.clone()));
         }
         roots
     }
@@ -2619,6 +2691,49 @@ impl<'a> AliasWalker<'a> {
                 for (field, item) in fields {
                     let path = format!("{prefix}.{field}");
                     Self::collect_known_constructor_paths(item, &path, state, paths);
+                }
+            }
+            crate::Node::Slice {
+                target,
+                lo,
+                hi,
+                inclusive,
+                ..
+            } => {
+                let Some(source) = Self::array_root(target) else {
+                    return;
+                };
+                let Some((start, end)) =
+                    Self::constant_slice_bounds(lo.as_deref(), hi.as_deref(), *inclusive)
+                else {
+                    return;
+                };
+                let source_prefix = format!("{source}[");
+                for (place, constructor) in &state.known_constructors {
+                    let Some(rest) = place.strip_prefix(&source_prefix) else {
+                        continue;
+                    };
+                    let Some((index_text, suffix)) = rest.split_once(']') else {
+                        continue;
+                    };
+                    let Ok(index) = index_text.parse::<usize>() else {
+                        continue;
+                    };
+                    if index < start || end.is_some_and(|end| index >= end) {
+                        continue;
+                    }
+                    if !suffix.is_empty() && !Self::valid_path_suffix(suffix) {
+                        continue;
+                    }
+                    if !matches!(constructor.as_str(), "Some" | "Ok" | "Err") {
+                        continue;
+                    }
+                    let path = if suffix.is_empty() {
+                        format!("{prefix}[{}]", index - start)
+                    } else {
+                        format!("{prefix}[{}]{suffix}", index - start)
+                    };
+                    paths.push((path, constructor.clone()));
                 }
             }
             _ => {}
@@ -7407,6 +7522,33 @@ mod tests {
             errors.len(),
             2,
             "matching Option and Result payloads should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_constructor_payloads_survive_constant_array_slices() {
+        let errors = run_alias_check(
+            r#"fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let options = [Some(x)];
+                   let selected = options[0..1];
+                   match selected[0] {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   let results = [Err(x)];
+                   let chosen = results[0..1];
+                   match chosen[0] {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "matching sliced Option and Result payloads should report: {:?}",
             errors
         );
     }
