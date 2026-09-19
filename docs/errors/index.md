@@ -28,6 +28,7 @@ Codes are grouped by the pipeline stage that can emit them:
 - **E0011, E0012** — declarations / bindings
 - **E0020** — effects / purity
 - **E0021** — trait objects (`dyn Trait`)
+- **E0022** — call-site argument validation
 
 Numbers are **sticky**: once assigned, a code is never reused.
 If a diagnostic is removed, its code is retired but the docs
@@ -37,7 +38,7 @@ break.
 ## Status
 
 RES-206a shipped the initial registry + docs pages for the first
-ten codes. RES-4115 (E-E4) extended the registry to E0011..E0021,
+ten codes. RES-4115 (E-E4) extended the registry to E0011..E0022,
 added the `rz explain E00NN` / `rz errors list` CLI subcommands,
 migrated the high-traffic typechecker/parser/runtime call sites to
 emit their code behind `RESILIENT_RICH_DIAG=1` (byte-identical
@@ -80,3 +81,4 @@ See the sidebar for the full list, or jump directly:
 - [E0019 — Z3 could not prove a contract clause](./E0019)
 - [E0020 — Effect/purity violation](./E0020)
 - [E0021 — dyn Trait object-safety violation](./E0021)
+- [E0022 — Duplicate named argument](./E0022)

@@ -746,15 +746,10 @@ pub mod codes {
     ///
     /// Docs: `docs/errors/E0011.html`.
     ///
-    /// RES-4115: audited for other "duplicate X" one-off parser
-    /// messages that might trivially share this code — `Duplicate
-    /// named argument \`{}\` in call` (`lib.rs`'s call-argument
-    /// parser) is a distinct error class (a call-site shape error,
-    /// not a declaration-scope collision) and doesn't fit E0011's
-    /// docs page or example without confusing the two. It has no
-    /// registered code yet; left as a plain parser `String` per this
-    /// ticket's scope (a codeless-but-documented gap, not a silent
-    /// omission).
+    /// RES-4115: the duplicate named-argument parser diagnostic is a
+    /// distinct call-site shape error, not a declaration-scope
+    /// collision. It is registered as E0022 and keeps its own docs
+    /// page and rich-diagnostic prefix.
     pub const E0011: DiagCode = DiagCode::new_static("E0011");
 
     /// E0012: Reassignment of an immutable (`let`) binding. Only
@@ -840,6 +835,14 @@ pub mod codes {
     /// Docs: `docs/errors/E0021.html`.
     pub const E0021: DiagCode = DiagCode::new_static("E0021");
 
+    // ---- Parser call-site validation ----
+
+    /// E0022: Duplicate named argument — a call supplies the same
+    /// named argument label more than once.
+    ///
+    /// Docs: `docs/errors/E0022.html`.
+    pub const E0022: DiagCode = DiagCode::new_static("E0022");
+
     // ---- Enumeration helper ----
 
     /// Every code registered in this module, in numeric order.
@@ -858,7 +861,7 @@ pub mod codes {
     pub fn all() -> Vec<DiagCode> {
         vec![
             E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010, E0011, E0012,
-            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020, E0021,
+            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020, E0021, E0022,
         ]
     }
 }
@@ -948,6 +951,7 @@ mod codes_tests {
             "E0013", "E0014", "E0015", "E0016", "E0017", // type checking
             "E0018", // runtime
             "E0019", "E0020", // contracts / verification
+            "E0021", "E0022", // trait objects / call-site validation
         ] {
             assert!(
                 strs.iter().any(|s| s == expected),
@@ -967,7 +971,7 @@ mod codes_tests {
     #[test]
     fn res206a_codes_all_count_matches_vec_len() {
         // Regression guard: `all()` must not drop entries.
-        assert_eq!(codes::all().len(), 21);
+        assert_eq!(codes::all().len(), 22);
     }
 
     #[test]
