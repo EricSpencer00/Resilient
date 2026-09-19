@@ -531,6 +531,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   nested struct field preserves its reference fields just like existing
   tuple and array copies. Dynamic, transformed, unknown, value-only, and
   ambiguous paths remain outside alias tracking.
+- **A-E5 increment 48 (RES-4070):** tuple destructuring now retains canonical
+  composite paths below each constant tuple element, so destructured structs,
+  arrays, and nested tuples keep their tracked reference leaves. Dynamic,
+  transformed, unknown, value-only, and ambiguous paths remain outside alias
+  tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5

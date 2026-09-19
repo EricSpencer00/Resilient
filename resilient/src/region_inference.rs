@@ -948,13 +948,18 @@ impl<'a> AliasWalker<'a> {
                     self.kill_name(state, name);
                 }
                 for (path, root) in tuple_roots {
-                    let Ok(index) = path.parse::<usize>() else {
+                    let Some((index, suffix)) = Self::tuple_path_parts(&path) else {
                         continue;
                     };
                     let Some(name) = names.get(index) else {
                         continue;
                     };
-                    state.aliases.insert(name.clone(), root);
+                    let place = if suffix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name}{suffix}")
+                    };
+                    state.aliases.insert(place, root);
                 }
             }
             crate::Node::Assignment { name, value, .. } => {
@@ -1115,6 +1120,13 @@ impl<'a> AliasWalker<'a> {
 
     fn tuple_place(tuple: &crate::Node, index: usize) -> Option<String> {
         Some(format!("{}.{index}", Self::place_name(tuple)?))
+    }
+
+    fn tuple_path_parts(path: &str) -> Option<(usize, &str)> {
+        let boundary = path.find(['.', '[']).unwrap_or(path.len());
+        let index = path[..boundary].parse().ok()?;
+        let suffix = &path[boundary..];
+        (suffix.is_empty() || Self::valid_path_suffix(suffix)).then_some((index, suffix))
     }
 
     fn place_name(node: &crate::Node) -> Option<String> {
@@ -1335,8 +1347,8 @@ impl<'a> AliasWalker<'a> {
     }
 
     /// Copy known tuple paths from an existing tuple-valued place into a new
-    /// tuple path. Non-tuple places and paths containing fields or array
-    /// indices are deliberately ignored.
+    /// tuple path. Composite suffixes remain attached to their constant
+    /// tuple index so destructuring can rebase them onto the new binding.
     fn collect_tuple_alias_roots(
         &self,
         value: &crate::Node,
@@ -1352,11 +1364,7 @@ impl<'a> AliasWalker<'a> {
             let Some(suffix) = place.strip_prefix(&source_prefix) else {
                 continue;
             };
-            if suffix.is_empty()
-                || suffix
-                    .split('.')
-                    .any(|segment| segment.parse::<usize>().is_err())
-            {
+            if Self::tuple_path_parts(suffix).is_none() {
                 continue;
             }
             let path = if prefix.is_empty() {
@@ -6406,6 +6414,27 @@ mod tests {
             "tuple destructure alias must be reported: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn tuple_destructure_preserves_composite_paths() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (new Holder { item: x }, 0); \
+                 let (holder, discard) = pair; \
+                 let items = [x]; \
+                 let array_pair = (items, 0); \
+                 let (copy, other) = array_pair; \
+                 let nested_pair = ((new Holder { item: x }, 0), 0); \
+                 let (nested, last) = nested_pair; \
+                 set_both(x, holder.item); \
+                 set_both(x, copy[0]); \
+                 set_both(x, nested.0.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 3, "got: {:?}", errors);
     }
 
     #[test]
