@@ -11,6 +11,14 @@
     "docs/MEMORY_MODEL.md": {
       "branch": "res-4070-array-nested-helper",
       "claimed_at": "2026-09-18T23:36:23Z"
+    },
+    "resilient/src/pkg_deps.rs": {
+      "branch": "res-4110-module-path-resolution",
+      "claimed_at": "2026-09-19T19:37:32Z"
+    },
+    "resilient/tests/it/module_path_resolution.rs": {
+      "branch": "res-4110-module-path-resolution",
+      "claimed_at": "2026-09-19T19:37:32Z"
     }
   }
 }
