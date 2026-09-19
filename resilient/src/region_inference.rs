@@ -1466,10 +1466,22 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
-                crate::Node::Identifier { .. }
-                | crate::Node::IndexExpression { .. }
-                | crate::Node::Slice { .. } => {
+                crate::Node::Identifier { .. } | crate::Node::IndexExpression { .. } => {
                     for (nested_path, root) in self.paths_below(value, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
+                }
+                crate::Node::Slice { .. } => {
+                    for (index, root) in self.array_element_roots(value, state) {
+                        roots.push((format!("{path}[{index}]"), root));
+                    }
+                    for (index, field, root) in self.array_slice_field_roots(value, state) {
+                        roots.push((format!("{path}[{index}].{field}"), root));
+                    }
+                    for (index, nested_path, root) in self.array_slice_tuple_roots(value, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.array_slice_nested_roots(value, state) {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
@@ -4934,6 +4946,68 @@ mod tests {
              }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_array_slice_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [0, x]; \
+                 let holder = new Holder { items: items[1..2] }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("holder.items[0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_struct_literal_array_slice_preserves_nested_paths() {
+        let tuple_errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 let holder = new Holder { items: items[0..1] }; \
+                 set_both(x, holder.items[0].0); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Inner { &mut int item } struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Inner { item: x }]; \
+                 let holder = new Holder { items: items[0..1] }; \
+                 set_both(x, holder.items[0].item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn dynamic_array_slice_struct_field_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int hi) { \
+                 let items = [x]; \
+                 let holder = new Holder { items: items[0..hi] }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic struct-field slices must stay outside alias tracking: {:?}",
+            errors
+        );
     }
 
     #[test]
