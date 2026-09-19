@@ -3045,18 +3045,13 @@ impl TypeChecker {
 
                 // RES-4230: reference-semantics output buffers. Buffer is a
                 // nominal runtime value, so ordinary arrays and scalars must
-                // not flow into the buffer operations. The element kind is
-                // selected by buffer_int/buffer_float and remains runtime
-                // checked until parameterized Buffer types are introduced.
-                // RES-4230: keep the allocation constructors typed so later
-                // buffer operations can preserve element types through the
-                // typechecker. The shared `Buffer` parameter accepts either
-                // concrete element type.
+                // not flow into the buffer operations. Constructors carry the
+                // concrete element kind through the typechecker, while the
+                // runtime remains authoritative for storage validation.
                 env.set(
                     "buffer_int".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
-                        return_type: Box::new(Type::Struct("Buffer".to_string())),
                         return_type: Box::new(buffer_type("Int")),
                     },
                 );
@@ -3064,14 +3059,12 @@ impl TypeChecker {
                     "buffer_float".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
-                        return_type: Box::new(Type::Struct("Buffer".to_string())),
                         return_type: Box::new(buffer_type("Float")),
                     },
                 );
                 env.set(
                     "buffer_len".to_string(),
                     Type::Function {
-                        params: vec![Type::Struct("Buffer".to_string())],
                         params: vec![generic_buffer_type()],
                         return_type: Box::new(Type::Int),
                     },
@@ -3079,7 +3072,6 @@ impl TypeChecker {
                 env.set(
                     "buffer_get".to_string(),
                     Type::Function {
-                        params: vec![Type::Struct("Buffer".to_string()), Type::Int],
                         params: vec![generic_buffer_type(), Type::Int],
                         return_type: Box::new(Type::Any),
                     },
@@ -3087,7 +3079,6 @@ impl TypeChecker {
                 env.set(
                     "buffer_set".to_string(),
                     Type::Function {
-                        params: vec![Type::Struct("Buffer".to_string()), Type::Int, Type::Any],
                         params: vec![generic_buffer_type(), Type::Int, Type::Any],
                         return_type: Box::new(Type::Void),
                     },
@@ -3095,7 +3086,6 @@ impl TypeChecker {
                 env.set(
                     "buffer_to_array".to_string(),
                     Type::Function {
-                        params: vec![Type::Struct("Buffer".to_string())],
                         params: vec![generic_buffer_type()],
                         return_type: Box::new(Type::Array),
                     },
@@ -20450,6 +20440,26 @@ mod res4230_buffer_type_surface {
                 buffer_to_array(b);\n\
             }\n\
             main();\n",
+        );
+    }
+
+    #[test]
+    fn buffer_consumers_reject_non_buffer_values() {
+        let len_error = check_err("fn main() { buffer_len([1, 2]); } main();");
+        assert!(
+            len_error.contains("expected Buffer") && len_error.contains("got"),
+            "unexpected buffer_len error: {len_error}"
+        );
+
+        let array_error = check_err("fn main() { buffer_to_array(42); } main();");
+        assert!(
+            array_error.contains("expected Buffer") && array_error.contains("got int"),
+            "unexpected buffer_to_array error: {array_error}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod buffer_builtin_typechecker_tests {
     use super::*;
 
@@ -20474,17 +20484,6 @@ mod buffer_builtin_typechecker_tests {
     }
 
     #[test]
-    fn buffer_consumers_reject_non_buffer_values() {
-        let len_error = check_err("fn main() { buffer_len([1, 2]); } main();");
-        assert!(
-            len_error.contains("expected Buffer") && len_error.contains("got"),
-            "unexpected buffer_len error: {len_error}"
-        );
-
-        let array_error = check_err("fn main() { buffer_to_array(42); } main();");
-        assert!(
-            array_error.contains("expected Buffer") && array_error.contains("got int"),
-            "unexpected buffer_to_array error: {array_error}"
     fn buffer_operations_reject_non_buffers_and_wrong_element_types() {
         let wrong_buffer = check("buffer_len(1)").expect_err("an int is not a Buffer");
         assert!(
