@@ -23,7 +23,7 @@ fn resilient_type(ffi_name: &str) -> Type {
         return array_type(ffi_name);
     }
     if let Some(Ok(_)) = crate::ffi_buffers::parse_buffer_type(ffi_name) {
-        return Type::Struct("Buffer".to_string());
+        return buffer_type(ffi_name);
     }
     match ffi_name {
         "Int" => Type::Int,
@@ -42,6 +42,24 @@ fn resilient_type(ffi_name: &str) -> Type {
         "OpaquePtr" | "Callback" => Type::Any,
         // Anything else is a `@repr(C)` struct name (RES-317).
         other => Type::Struct(other.to_string()),
+    }
+}
+
+/// Preserve the fixed element kind of a caller-owned FFI buffer at the
+/// call site. The typechecker treats bare Buffer as a deliberately
+/// permissive value, but a declared Buffer<Int> or Buffer<Float> must
+/// retain its nominal element kind so an extern call cannot silently hand a
+/// C function the wrong typed storage.
+fn buffer_type(ffi_name: &str) -> Type {
+    let inner = ffi_name
+        .strip_prefix("Buffer<")
+        .or_else(|| ffi_name.strip_prefix("buffer<"))
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map(str::trim);
+    match inner {
+        Some("Int" | "int") => Type::Struct("Buffer<Int>".to_string()),
+        Some("Float" | "float") => Type::Struct("Buffer<Float>".to_string()),
+        _ => Type::Struct("Buffer".to_string()),
     }
 }
 
@@ -168,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_parameters_bind_to_the_reference_buffer_type() {
+    fn buffer_parameters_preserve_their_element_types() {
         let (_, ty) = binding(&decl(
             &[("Buffer<Int>", "ints"), ("Buffer<Float>", "floats")],
             "Void",
@@ -178,8 +196,8 @@ mod tests {
             ty,
             Type::Function {
                 params: vec![
-                    Type::Struct("Buffer".to_string()),
-                    Type::Struct("Buffer".to_string()),
+                    Type::Struct("Buffer<Int>".to_string()),
+                    Type::Struct("Buffer<Float>".to_string()),
                 ],
                 return_type: Box::new(Type::Void),
             }
