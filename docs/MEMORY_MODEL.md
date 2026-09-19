@@ -461,6 +461,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   from already-proven array-return helper calls placed inside their elements,
   so `let pair = (make_array(x), 0)` exposes `pair.0[0]`. Unknown calls and
   non-identifier arguments remain opaque.
+- **A-E5 increment 33 (RES-4070):** tuple provenance now composes through
+  direct array-literal elements, so `let pair = ([x], 0)` exposes
+  `pair.0[0]` and nested constant array paths. Unknown and transformed values
+  remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
