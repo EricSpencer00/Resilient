@@ -779,6 +779,9 @@ struct AliasState {
     /// Reference-typed parameter names that are still untouched (never
     /// shadowed or reassigned) and may act as alias roots.
     live_roots: std::collections::HashSet<String>,
+    /// Direct constructor identity for enum-like values whose payload paths
+    /// are tracked. The tag is retained only across proven whole-value lets.
+    known_constructors: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -820,6 +823,8 @@ impl AliasState {
         self.aliases
             .retain(|k, v| other.aliases.get(k).map(String::as_str) == Some(v.as_str()));
         self.live_roots.retain(|r| other.live_roots.contains(r));
+        self.known_constructors
+            .retain(|name, constructor| other.known_constructors.get(name) == Some(constructor));
     }
 }
 
@@ -844,6 +849,7 @@ impl<'a> AliasWalker<'a> {
     fn kill_name(&mut self, state: &mut AliasState, name: &str) {
         let field_prefix = format!("{name}.");
         let array_prefix = format!("{name}[");
+        state.known_constructors.remove(name);
         state.aliases.retain(|place, _| {
             place != name && !place.starts_with(&field_prefix) && !place.starts_with(&array_prefix)
         });
@@ -867,6 +873,7 @@ impl<'a> AliasWalker<'a> {
             }
             crate::Node::LetStatement { name, value, .. } => {
                 self.walk_expr(value, state);
+                let known_constructor = self.known_constructor_for(value, state);
                 let new_root = self.returned_root(value, state);
                 // A whole-value copy preserves every already-proven
                 // canonical path below the source place, including
@@ -947,6 +954,9 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (path, root) in tagged_enum_roots {
                     state.aliases.insert(format!("{name}.{path}"), root);
+                }
+                if let Some(constructor) = known_constructor {
+                    state.known_constructors.insert(name.clone(), constructor);
                 }
             }
             crate::Node::LetTupleDestructure { names, value, .. } => {
@@ -2251,6 +2261,7 @@ impl<'a> AliasWalker<'a> {
                 scrutinee, arms, ..
             } => {
                 self.walk_expr(scrutinee, state);
+                let known_constructor = self.known_constructor_for(scrutinee, state);
                 let mut scrutinee_pattern_roots = self.struct_pattern_roots(scrutinee, state);
                 scrutinee_pattern_roots.extend(self.tuple_element_roots(scrutinee, state));
                 scrutinee_pattern_roots.extend(self.option_result_payload_roots(scrutinee, state));
@@ -2270,8 +2281,8 @@ impl<'a> AliasWalker<'a> {
                     for name in pattern_bindings {
                         self.kill_name(&mut arm_state, &name);
                     }
-                    let can_bind_known_payload = Self::known_constructor_name(scrutinee)
-                        .is_none_or(|constructor| {
+                    let can_bind_known_payload =
+                        known_constructor.as_deref().is_none_or(|constructor| {
                             Self::pattern_matches_constructor(pat, constructor)
                         });
                     if can_bind_known_payload {
@@ -2418,6 +2429,18 @@ impl<'a> AliasWalker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a constructor tag from a direct constructor or a whole-value
+    /// alias whose tag survived the same conservative path merge as its
+    /// payload facts.
+    fn known_constructor_for(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
+        Self::known_constructor_name(value)
+            .map(str::to_owned)
+            .or_else(|| match value {
+                crate::Node::Identifier { name, .. } => state.known_constructors.get(name).cloned(),
+                _ => None,
+            })
     }
 
     /// Check whether a pattern can select the known direct constructor. The
@@ -5939,6 +5962,36 @@ mod tests {
         assert!(
             errors.is_empty(),
             "mismatched constructors must not inherit payload aliases: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn constructor_identity_survives_whole_value_aliases() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let packet = Packet::Item(new Holder { item: x });
+                   let packet_copy = packet;
+                   match packet_copy {
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                       Packet::Item(_) => { println("item"); },
+                   }
+                   let result = Ok(x);
+                   match result {
+                       Err(alias) => { set_both(x, alias); },
+                       Ok(_) => { println("ok"); },
+                   }
+               }"#,
+        );
+        assert!(
+            errors.is_empty(),
+            "constructor tags must survive direct aliases: {:?}",
             errors
         );
     }
