@@ -345,6 +345,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 /// - No general interprocedural analysis — only direct reference returns,
 ///   direct `Some`/`Ok`/`Err` returns with one reference payload,
 ///   and forwarding through an already-proven Option/Result helper,
+///   including straight-line whole-value local aliases of those returns,
 ///   direct tagged-enum constructor returns with unambiguous reference
 ///   payload paths, including forwarding through an already-proven helper,
 ///   concrete structs whose reference fields are initialized from parameters,
@@ -809,6 +810,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   direct tuple and array returns, and
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
 //   forwarding through an already-proven Option/Result helper,
+//   including straight-line whole-value local aliases of those returns,
 //   direct tagged-enum helper returns with unambiguous payload paths, including
 //   forwarding through an already-proven helper,
 //   non-negative constant array element/slice paths, including nested arrays,
@@ -3448,6 +3450,11 @@ fn option_result_return_alias_summary(
     parameters: &[(String, String)],
     known_returns: &HashMap<&str, OptionResultReturnAliasSummary>,
 ) -> Option<OptionResultReturnAliasSummary> {
+    if let Some(summary) =
+        option_result_straight_line_local_alias_summary(body, parameters, known_returns)
+    {
+        return Some(summary);
+    }
     let mut returns = Vec::new();
     collect_option_result_return_provenance(body, parameters, known_returns, &mut returns);
     let Some(Some(summary)) = returns.first() else {
@@ -3460,6 +3467,50 @@ fn option_result_return_alias_summary(
         return None;
     }
     Some(summary.clone())
+}
+
+fn option_result_straight_line_local_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    known_returns: &HashMap<&str, OptionResultReturnAliasSummary>,
+) -> Option<OptionResultReturnAliasSummary> {
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut locals = HashMap::new();
+    let mut returned = None;
+    for stmt in stmts {
+        match stmt {
+            crate::Node::LetStatement { name, value, .. } => {
+                let summary = match value.as_ref() {
+                    crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    value => {
+                        option_result_return_aliases_for_value(value, parameters, known_returns)
+                    }
+                };
+                if let Some(summary) = summary {
+                    locals.insert(name.clone(), summary);
+                } else {
+                    locals.remove(name);
+                }
+            }
+            crate::Node::ReturnStatement { value, .. } => {
+                let crate::Node::Identifier { name, .. } = value.as_deref()? else {
+                    return None;
+                };
+                let summary = locals.get(name)?.clone();
+                if returned
+                    .as_ref()
+                    .is_some_and(|previous| previous != &summary)
+                {
+                    return None;
+                }
+                returned = Some(summary);
+            }
+            _ => return None,
+        }
+    }
+    returned
 }
 
 fn collect_option_result_return_provenance(
@@ -8000,6 +8051,29 @@ mod tests {
             errors.len(),
             1,
             "only the matching helper chain should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_constructor_identity_survives_straight_line_local_aliases() {
+        let errors = run_alias_check(
+            r#"fn expose_some(&mut int value) -> Option<&mut int> {
+                   let result = Some(value);
+                   return result;
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match expose_some(x) {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the matching local alias should report: {:?}",
             errors
         );
     }
