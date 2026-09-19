@@ -557,6 +557,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   payload match patterns now rebase known reference leaves onto their
   arm-local bindings. Payload-less, OR, literal, wildcard, dynamic,
   transformed, unknown, and ambiguous patterns remain outside alias tracking.
+- **A-E5 increment 54 (RES-4070):** direct tagged-enum, `Some`, `Ok`, and
+  `Err` constructors now retain their identity while match payload paths are
+  rebound. A known payload cannot leak into a mismatched variant arm; opaque
+  and non-constructor scrutinees keep the existing conservative behavior.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
