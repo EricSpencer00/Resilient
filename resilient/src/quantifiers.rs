@@ -109,10 +109,7 @@ pub(crate) fn parse_quantifier(parser: &mut Parser) -> Option<Node> {
 
     let range = if parser.current_token == Token::DotDot {
         parser.next_token(); // skip `..`
-        let hi = parser.parse_expression(0).unwrap_or(Node::IntegerLiteral {
-            value: 0,
-            span: head_span,
-        });
+        let hi = crate::ranges::parse_range_upper_bound(parser, head_span, "..");
         parser.next_token(); // step past tail of hi
         QuantRange::Range {
             lo: Box::new(lo_or_iter),
@@ -549,5 +546,26 @@ mod tests {
         let res = tc.check_program(&prog);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("body must evaluate to Bool"));
+    }
+
+    #[test]
+    fn missing_quantifier_range_upper_bound_reports_parse_error() {
+        for src in [
+            "assert(forall i in 1..: true);",
+            "assert(exists i in 1..: true);",
+        ] {
+            let lexer = crate::Lexer::new(src);
+            let mut parser = crate::Parser::new_silent(lexer);
+            let _ = parser.parse_program();
+            let has_error = parser
+                .errors
+                .iter()
+                .any(|error| error.contains("Expected expression after"));
+            assert!(
+                has_error,
+                "missing upper bound should be diagnosed for {src:?}: {:?}",
+                parser.errors
+            );
+        }
     }
 }
