@@ -8,9 +8,13 @@
       "branch": "res-3977-nested-array-flatten",
       "claimed_at": "2026-09-19T21:47:21Z"
     },
-    "resilient/src/region_inference.rs": {
-      "branch": "res-4070-tuple-return-struct-forward-20260919-R",
-      "claimed_at": "2026-09-19T22:07:32Z"
+    "resilient/src/repl.rs": {
+      "branch": "res-4445-repl-typecheck",
+      "claimed_at": "2026-09-19T22:25:09Z"
+    },
+    "resilient/tests/repl_typecheck_state.rs": {
+      "branch": "res-4445-repl-typecheck",
+      "claimed_at": "2026-09-19T22:25:09Z"
     }
   }
 }
