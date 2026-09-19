@@ -91,6 +91,15 @@
 //!    type bindings in scope. Explicit overrides keep their existing
 //!    checking path.
 //!
+//! Fifth increment (RES-4067):
+//!
+//! 7. **Well-formed local `T::AssocName` annotations.** Exact
+//!    `let`-binding projections inside a generic function body now use
+//!    the same provable-only declaration check as generic signatures.
+//!    This deliberately does not claim concrete resolution: generic
+//!    bodies are still checked once, while concrete projection
+//!    substitution remains a call-site operation.
+//!
 //! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
 //!
@@ -268,6 +277,7 @@ fn check_generic_fn_projections(
         name: fn_name,
         parameters,
         return_type,
+        body,
         type_params,
         type_param_bounds,
         span,
@@ -279,6 +289,12 @@ fn check_generic_fn_projections(
     if type_params.is_empty() {
         return Ok(());
     }
+    let context = ProjectionCheckContext {
+        type_params,
+        type_param_bounds,
+        trait_assoc_names,
+        trait_supers,
+    };
 
     let annotations = return_type
         .iter()
@@ -290,43 +306,100 @@ fn check_generic_fn_projections(
         );
 
     for (raw, position) in annotations {
-        let ty = raw.strip_prefix("linear ").unwrap_or(raw);
-        let Some((base, assoc)) = ty.split_once("::") else {
-            continue;
-        };
-        // Nested projections (`Array<T::Item>`) don't split at the
-        // top level like this; a chained `A::B::C` is already
-        // unparseable. Only exact `Base::Assoc` reaches here.
-        let Some(idx) = type_params.iter().position(|p| p == base) else {
-            continue; // `Self::X` (impl methods) or a non-generic base.
-        };
-        let bounds = match type_param_bounds.get(idx) {
-            Some(b) if !b.is_empty() => b,
-            // Unbounded parameter — a `where` clause may bound it;
-            // stay permissive.
-            _ => continue,
-        };
-        let Some(declared) = transitive_assoc_names(bounds, trait_assoc_names, trait_supers) else {
-            continue; // Unknown trait somewhere in the chain.
-        };
-        if !declared.contains(assoc) {
-            return Err(format_err(
-                source_path,
-                *span,
-                &format!(
-                    "fn `{}` {} projects `{}::{}`, but no trait bound of `{}` ({}) declares associated type `{}`",
-                    fn_name,
-                    position,
-                    base,
-                    assoc,
-                    base,
-                    bounds.join(" + "),
-                    assoc
-                ),
-            ));
+        check_projection_annotation(fn_name, raw, position, *span, &context, source_path)?;
+    }
+
+    // Local annotations are not part of the generic function signature,
+    // so inspect the body separately. The shared walker keeps this pass
+    // focused on the exact annotation-bearing node while covering nested
+    // blocks and control-flow bodies without duplicating AST descent.
+    let mut local_error = None;
+    crate::uniqueness_walk::visit(body, &mut |node| {
+        if local_error.is_some() {
+            return;
         }
+        let Node::LetStatement {
+            type_annot: Some(raw),
+            span: let_span,
+            ..
+        } = node
+        else {
+            return;
+        };
+        if let Err(error) = check_projection_annotation(
+            fn_name,
+            raw,
+            "local binding annotation",
+            *let_span,
+            &context,
+            source_path,
+        ) {
+            local_error = Some(error);
+        }
+    });
+    if let Some(error) = local_error {
+        return Err(error);
     }
     Ok(())
+}
+
+struct ProjectionCheckContext<'a> {
+    type_params: &'a [String],
+    type_param_bounds: &'a [Vec<String>],
+    trait_assoc_names: &'a HashMap<&'a str, HashSet<&'a str>>,
+    trait_supers: &'a HashMap<&'a str, &'a [String]>,
+}
+
+/// Validate one exact `Base::Assoc` annotation when the base is a generic
+/// function parameter. Unknown, unbounded, nested, and non-generic bases stay
+/// permissive because this pass must never infer a bound that the declaration
+/// does not prove.
+fn check_projection_annotation(
+    fn_name: &str,
+    raw: &str,
+    position: &str,
+    span: Span,
+    context: &ProjectionCheckContext<'_>,
+    source_path: &str,
+) -> Result<(), String> {
+    let ty = raw.strip_prefix("linear ").unwrap_or(raw);
+    let Some((base, assoc)) = ty.split_once("::") else {
+        return Ok(());
+    };
+    // Nested projections (`Array<T::Item>`) don't split at the top level
+    // like this; a chained `A::B::C` is already unparseable. Only exact
+    // `Base::Assoc` reaches the generic-parameter lookup below.
+    let Some(idx) = context.type_params.iter().position(|p| p == base) else {
+        return Ok(()); // `Self::X` or a non-generic base.
+    };
+    let bounds = match context.type_param_bounds.get(idx) {
+        Some(b) if !b.is_empty() => b,
+        // Unbounded parameter — a `where` clause may bind it; stay
+        // permissive.
+        _ => return Ok(()),
+    };
+    let Some(declared) =
+        transitive_assoc_names(bounds, context.trait_assoc_names, context.trait_supers)
+    else {
+        return Ok(()); // Unknown trait somewhere in the chain.
+    };
+    if declared.contains(assoc) {
+        return Ok(());
+    }
+    Err(format_err(
+        source_path,
+        span,
+        &format!(
+            "fn `{}` {} projects `{}::{}`, but no trait bound of `{}` ({}) declares associated type `{}`",
+            fn_name,
+            position,
+            base,
+            assoc,
+            base,
+            bounds.join(" + "),
+            assoc
+        ),
+    ))
 }
 
 /// Union of associated-type names declared by `bounds` and,
@@ -744,6 +817,35 @@ mod tests {
              fn main() {} main();";
         let prog = parse_program(src);
         check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_local_projection_of_declared_assoc_is_accepted() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn keep<T: Container>(T c) -> int {{\
+                 let item: T::Item = c.first();\
+                 return 1;\
+             }}\
+             fn main() {{}} main();"
+        );
+        typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_local_projection_of_undeclared_assoc_is_rejected() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn keep<T: Container>(T c) -> int {{\
+                 let item: T::Bogus = c.first();\
+                 return 1;\
+             }}\
+             fn main() {{}} main();"
+        );
+        let error = typecheck(&src).expect_err("expected undeclared local projection error");
+        assert!(error.contains("local binding annotation"), "got: {error}");
+        assert!(error.contains("T::Bogus"), "got: {error}");
+        assert!(error.contains("Container"), "got: {error}");
     }
 
     // --- #4067 item 4: `Self::Assoc` in let-binding annotations ---
