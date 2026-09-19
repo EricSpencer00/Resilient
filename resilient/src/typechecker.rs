@@ -501,6 +501,37 @@ fn is_array_ty(t: &Type) -> bool {
     matches!(t, Type::Array | Type::TypedArray(_))
 }
 
+/// RES-4230: Buffer element types are represented nominally because the
+/// runtime value already carries its storage kind and the typechecker does
+/// not need a new generic-type representation for this fixed builtin pair.
+fn buffer_type(element: &str) -> Type {
+    Type::Struct(format!("Buffer<{element}>"))
+}
+
+fn generic_buffer_type() -> Type {
+    Type::Struct("Buffer".to_string())
+}
+
+fn buffer_element_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Struct(name) if name == "Buffer<Int>" => Some(Type::Int),
+        Type::Struct(name) if name == "Buffer<Float>" => Some(Type::Float),
+        Type::Struct(name) if name == "Buffer" => Some(Type::Any),
+        // An unconstrained value is still accepted by the existing dynamic
+        // type rules; keep its result dynamic until runtime identifies it.
+        Type::Any => Some(Type::Any),
+        _ => None,
+    }
+}
+
+fn is_buffer_type(ty: &Type) -> bool {
+    buffer_element_type(ty).is_some()
+}
+
+fn is_generic_buffer_type(ty: &Type) -> bool {
+    matches!(ty, Type::Struct(name) if name == "Buffer")
+}
+
 /// RES-3977: preserve a tracked element type through standalone array
 /// operations whose runtime result contains only elements from the first
 /// argument. Operations that can change the element type intentionally keep
@@ -3017,11 +3048,16 @@ impl TypeChecker {
                 // not flow into the buffer operations. The element kind is
                 // selected by buffer_int/buffer_float and remains runtime
                 // checked until parameterized Buffer types are introduced.
+                // RES-4230: keep the allocation constructors typed so later
+                // buffer operations can preserve element types through the
+                // typechecker. The shared `Buffer` parameter accepts either
+                // concrete element type.
                 env.set(
                     "buffer_int".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
                         return_type: Box::new(Type::Struct("Buffer".to_string())),
+                        return_type: Box::new(buffer_type("Int")),
                     },
                 );
                 env.set(
@@ -3029,12 +3065,14 @@ impl TypeChecker {
                     Type::Function {
                         params: vec![Type::Int],
                         return_type: Box::new(Type::Struct("Buffer".to_string())),
+                        return_type: Box::new(buffer_type("Float")),
                     },
                 );
                 env.set(
                     "buffer_len".to_string(),
                     Type::Function {
                         params: vec![Type::Struct("Buffer".to_string())],
+                        params: vec![generic_buffer_type()],
                         return_type: Box::new(Type::Int),
                     },
                 );
@@ -3042,6 +3080,7 @@ impl TypeChecker {
                     "buffer_get".to_string(),
                     Type::Function {
                         params: vec![Type::Struct("Buffer".to_string()), Type::Int],
+                        params: vec![generic_buffer_type(), Type::Int],
                         return_type: Box::new(Type::Any),
                     },
                 );
@@ -3049,6 +3088,7 @@ impl TypeChecker {
                     "buffer_set".to_string(),
                     Type::Function {
                         params: vec![Type::Struct("Buffer".to_string()), Type::Int, Type::Any],
+                        params: vec![generic_buffer_type(), Type::Int, Type::Any],
                         return_type: Box::new(Type::Void),
                     },
                 );
@@ -3056,6 +3096,7 @@ impl TypeChecker {
                     "buffer_to_array".to_string(),
                     Type::Function {
                         params: vec![Type::Struct("Buffer".to_string())],
+                        params: vec![generic_buffer_type()],
                         return_type: Box::new(Type::Array),
                     },
                 );
@@ -6023,6 +6064,14 @@ impl TypeChecker {
         {
             return true;
         }
+        // RES-4230: `Buffer` is the shared parameter type for the two
+        // concrete storage kinds. A bare annotation remains intentionally
+        // permissive, while `Buffer<Int>` and `Buffer<Float>` stay distinct.
+        if (is_generic_buffer_type(actual) && is_buffer_type(expected))
+            || (is_generic_buffer_type(expected) && is_buffer_type(actual))
+        {
+            return true;
+        }
         // RES-4068 (A-E3 follow-up): `dyn Trait` coercion. The general
         // type-compatibility gate stays permissive here — any concrete
         // struct type is allowed to flow into a `dyn Trait`-typed slot
@@ -7843,6 +7892,62 @@ impl TypeChecker {
         let result = self.check_node(body);
         self.env = saved;
         result
+    }
+
+    /// RES-4230: the return/value type of a Buffer operation depends on the
+    /// concrete storage kind, so its fixed builtin signature cannot express
+    /// this relationship on its own.
+    fn check_buffer_builtin_call(
+        &mut self,
+        name: &str,
+        arguments: &[Node],
+    ) -> Result<Type, String> {
+        let expected_args = match name {
+            "buffer_get" => 2,
+            "buffer_set" => 3,
+            "buffer_to_array" => 1,
+            _ => return Err(format!("unknown Buffer builtin `{name}`")),
+        };
+        if arguments.len() != expected_args {
+            return Err(render_arity_mismatch_error(expected_args, arguments.len()));
+        }
+
+        let buffer_ty = self.check_node(&arguments[0])?;
+        let Some(element_ty) = buffer_element_type(&buffer_ty) else {
+            return Err(format!(
+                "Type mismatch in argument 1: expected Buffer<Int> or Buffer<Float>, got {}",
+                buffer_ty
+            ));
+        };
+
+        if name == "buffer_to_array" {
+            return if element_ty == Type::Any {
+                Ok(Type::Array)
+            } else {
+                Ok(Type::TypedArray(Box::new(element_ty)))
+            };
+        }
+
+        let index_ty = self.check_node(&arguments[1])?;
+        if !self.type_satisfies(&index_ty, &Type::Int) {
+            return Err(format!(
+                "Type mismatch in argument 2: expected int, got {}",
+                index_ty
+            ));
+        }
+
+        if name == "buffer_get" {
+            return Ok(element_ty);
+        }
+
+        let value_ty = self.check_node(&arguments[2])?;
+        if element_ty != Type::Any && !self.type_satisfies(&value_ty, &element_ty) {
+            return Err(format!(
+                "Type mismatch in argument 3: expected {}, got {}",
+                element_ty, value_ty
+            ));
+        }
+        Ok(Type::Void)
     }
 
     /// RES-4190: depth-guarded entry point. Delegates to
@@ -11301,6 +11406,18 @@ impl TypeChecker {
                         "builtin `{}` is unavailable without `feature = \"std\"`",
                         callee_name
                     ));
+                }
+
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && !self.env.has_user_binding(callee_name)
+                    && matches!(
+                        callee_name.as_str(),
+                        "buffer_get" | "buffer_set" | "buffer_to_array"
+                    )
+                {
+                    return self.check_buffer_builtin_call(callee_name, arguments);
                 }
 
                 // RES-061 + RES-063: if the callee is a known top-level
@@ -20333,6 +20450,26 @@ mod res4230_buffer_type_surface {
                 buffer_to_array(b);\n\
             }\n\
             main();\n",
+mod buffer_builtin_typechecker_tests {
+    use super::*;
+
+    fn check(source: &str) -> Result<Type, String> {
+        let (program, parse_errors) = crate::parse(source);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        TypeChecker::new().check_program_with_source(&program, "buffer_test.rz")
+    }
+
+    #[test]
+    fn buffer_element_types_flow_through_reads_and_snapshots() {
+        assert_eq!(check("buffer_get(buffer_int(2), 0)"), Ok(Type::Int));
+        assert_eq!(check("buffer_get(buffer_float(2), 0)"), Ok(Type::Float));
+        assert_eq!(
+            check("buffer_to_array(buffer_int(2))"),
+            Ok(Type::TypedArray(Box::new(Type::Int)))
+        );
+        assert_eq!(
+            check("buffer_to_array(buffer_float(2))[0]"),
+            Ok(Type::Float)
         );
     }
 
@@ -20348,6 +20485,29 @@ mod res4230_buffer_type_surface {
         assert!(
             array_error.contains("expected Buffer") && array_error.contains("got int"),
             "unexpected buffer_to_array error: {array_error}"
+    fn buffer_operations_reject_non_buffers_and_wrong_element_types() {
+        let wrong_buffer = check("buffer_len(1)").expect_err("an int is not a Buffer");
+        assert!(
+            wrong_buffer.contains("expected Buffer") && wrong_buffer.contains("got int"),
+            "unexpected diagnostic: {wrong_buffer}"
+        );
+
+        let wrong_set = check("buffer_set(buffer_int(1), 0, 1.0)")
+            .expect_err("float values must not be written to integer buffers");
+        assert!(
+            wrong_set.contains("argument 3")
+                && wrong_set.contains("expected int")
+                && wrong_set.contains("got float"),
+            "unexpected diagnostic: {wrong_set}"
+        );
+
+        let wrong_index =
+            check("buffer_get(buffer_float(1), 0.0)").expect_err("buffer indices must be integers");
+        assert!(
+            wrong_index.contains("argument 2")
+                && wrong_index.contains("expected int")
+                && wrong_index.contains("got float"),
+            "unexpected diagnostic: {wrong_index}"
         );
     }
 }
