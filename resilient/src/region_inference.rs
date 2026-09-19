@@ -2119,7 +2119,8 @@ impl<'a> AliasWalker<'a> {
                 scrutinee, arms, ..
             } => {
                 self.walk_expr(scrutinee, state);
-                let scrutinee_field_roots = self.struct_pattern_roots(scrutinee, state);
+                let mut scrutinee_pattern_roots = self.struct_pattern_roots(scrutinee, state);
+                scrutinee_pattern_roots.extend(self.tuple_element_roots(scrutinee, state));
                 // Pattern bindings can shadow outer names without a
                 // `let`, so remove those names from the incoming facts
                 // before checking the arm. Facts established before the
@@ -2138,7 +2139,7 @@ impl<'a> AliasWalker<'a> {
                     Self::bind_struct_pattern_aliases(
                         pat,
                         "",
-                        &scrutinee_field_roots,
+                        &scrutinee_pattern_roots,
                         &mut arm_state,
                     );
                     if let Some(g) = guard {
@@ -5644,6 +5645,21 @@ mod tests {
              }",
         );
         assert_eq!(errors.len(), 2, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn match_tuple_pattern_preserves_composite_paths() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ((x, 0), 0); \
+                 match pair { \
+                     ((first, _), _) => { set_both(x, first); }, \
+                     _ => { println(\"unreachable\"); }, \
+                 } \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
