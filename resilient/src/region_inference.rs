@@ -345,7 +345,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 /// - No general interprocedural analysis — only direct reference returns,
 ///   direct `Some`/`Ok`/`Err` returns with one reference payload,
 ///   direct tagged-enum constructor returns with unambiguous reference
-///   payload paths,
+///   payload paths, including forwarding through an already-proven helper,
 ///   concrete structs whose reference fields are initialized from parameters,
 ///   and direct tuples of reference parameters are summarized; arrays,
 ///   closures, and ambiguous or wrapped return paths remain opaque across
@@ -693,7 +693,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
             } = &spanned.node
                 && type_params.is_empty()
                 && callee_table.contains_key(name.as_str())
-                && let Some(summary) = tagged_enum_return_alias_summary(body, parameters)
+                && let Some(summary) =
+                    tagged_enum_return_alias_summary(body, parameters, &tagged_enum_return_aliases)
                 && tagged_enum_return_aliases.get(name.as_str()) != Some(&summary)
             {
                 tagged_enum_return_aliases.insert(name.as_str(), summary);
@@ -802,7 +803,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   and constant-bound slices of those places,
 //   direct tuple and array returns, and
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
-//   direct tagged-enum helper returns with unambiguous payload paths,
+//   direct tagged-enum helper returns with unambiguous payload paths, including
+//   forwarding through an already-proven helper,
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -3523,9 +3525,10 @@ fn option_result_return_aliases_for_value(
 fn tagged_enum_return_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, TaggedEnumReturnAliasSummary>,
 ) -> Option<TaggedEnumReturnAliasSummary> {
     let mut returns = Vec::new();
-    collect_tagged_enum_return_provenance(body, parameters, &mut returns);
+    collect_tagged_enum_return_provenance(body, parameters, known_returns, &mut returns);
     let Some(Some(summary)) = returns.first() else {
         return None;
     };
@@ -3541,19 +3544,18 @@ fn tagged_enum_return_alias_summary(
 fn collect_tagged_enum_return_provenance(
     node: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, TaggedEnumReturnAliasSummary>,
     out: &mut Vec<Option<TaggedEnumReturnAliasSummary>>,
 ) {
     match node {
         crate::Node::ReturnStatement { value, .. } => {
-            out.push(
-                value
-                    .as_deref()
-                    .and_then(|value| tagged_enum_return_aliases_for_value(value, parameters)),
-            );
+            out.push(value.as_deref().and_then(|value| {
+                tagged_enum_return_aliases_for_value(value, parameters, known_returns)
+            }));
         }
         crate::Node::Block { stmts, .. } => {
             for stmt in stmts {
-                collect_tagged_enum_return_provenance(stmt, parameters, out);
+                collect_tagged_enum_return_provenance(stmt, parameters, known_returns, out);
             }
         }
         crate::Node::IfStatement {
@@ -3561,17 +3563,17 @@ fn collect_tagged_enum_return_provenance(
             alternative,
             ..
         } => {
-            collect_tagged_enum_return_provenance(consequence, parameters, out);
+            collect_tagged_enum_return_provenance(consequence, parameters, known_returns, out);
             if let Some(alternative) = alternative {
-                collect_tagged_enum_return_provenance(alternative, parameters, out);
+                collect_tagged_enum_return_provenance(alternative, parameters, known_returns, out);
             }
         }
         crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
-            collect_tagged_enum_return_provenance(body, parameters, out)
+            collect_tagged_enum_return_provenance(body, parameters, known_returns, out)
         }
         crate::Node::Match { arms, .. } => {
             for (_pattern, _guard, body) in arms {
-                collect_tagged_enum_return_provenance(body, parameters, out);
+                collect_tagged_enum_return_provenance(body, parameters, known_returns, out);
             }
         }
         crate::Node::FunctionLiteral { .. } => {}
@@ -3582,6 +3584,7 @@ fn collect_tagged_enum_return_provenance(
 fn tagged_enum_return_aliases_for_value(
     value: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, TaggedEnumReturnAliasSummary>,
 ) -> Option<TaggedEnumReturnAliasSummary> {
     match value {
         crate::Node::CallExpression {
@@ -3592,20 +3595,33 @@ fn tagged_enum_return_aliases_for_value(
             let crate::Node::Identifier { name, .. } = function.as_ref() else {
                 return None;
             };
-            if !name.contains("::") {
-                return None;
+            if name.contains("::") {
+                let mut paths = Vec::new();
+                for (index, payload) in arguments.iter().enumerate() {
+                    collect_tagged_enum_return_paths(
+                        payload,
+                        &index.to_string(),
+                        parameters,
+                        &mut paths,
+                    );
+                }
+                return Some(TaggedEnumReturnAliasSummary {
+                    constructor: name.clone(),
+                    paths,
+                });
             }
-            let mut paths = Vec::new();
-            for (index, payload) in arguments.iter().enumerate() {
-                collect_tagged_enum_return_paths(
-                    payload,
-                    &index.to_string(),
-                    parameters,
-                    &mut paths,
-                );
-            }
+            let summary = known_returns.get(name.as_str())?;
+            let paths = summary
+                .paths
+                .iter()
+                .filter_map(|(path, parameter_idx)| {
+                    let argument = arguments.get(*parameter_idx)?;
+                    let outer_idx = direct_reference_parameter_index(argument, parameters)?;
+                    Some((path.clone(), outer_idx))
+                })
+                .collect();
             Some(TaggedEnumReturnAliasSummary {
-                constructor: name.clone(),
+                constructor: summary.constructor.clone(),
                 paths,
             })
         }
@@ -8001,6 +8017,36 @@ mod tests {
             errors.len(),
             2,
             "matching helper constructors should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tagged_enum_constructor_identity_survives_helper_return_chains() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn expose_item(&mut int value) -> Packet {
+                   return Packet::Item(new Holder { item: value });
+               }
+               fn forward_item(&mut int value) -> Packet {
+                   return expose_item(value);
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match forward_item(x) {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the matching helper chain should report: {:?}",
             errors
         );
     }
