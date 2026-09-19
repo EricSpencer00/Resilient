@@ -20,9 +20,33 @@
       "branch": "res-4111-jit-string-lowering-c",
       "claimed_at": "2026-09-19T19:45:15Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4230-buffer-surface",
-      "claimed_at": "2026-09-19T20:08:33Z"
+    "resilient/src/mcp_server.rs": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "docs/MCP.md": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "docs/MCP_DEPLOYMENT.md": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "docs/MCP_OPENAPI.md": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "docs/openapi.json": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "docs/MCP_CLIENTS.md": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
+    },
+    "examples/mcp_client.py": {
+      "branch": "res-3940-http-compat",
+      "claimed_at": "2026-09-19T20:09:07Z"
     }
   }
 }
