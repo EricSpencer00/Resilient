@@ -4307,6 +4307,18 @@ fn array_return_aliases_for_value(
             );
             (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
         }
+        crate::Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } => rebase_array_slice_alias_summary(
+            array_return_aliases_for_value(target, parameters, reference_fields, known_returns),
+            lo.as_deref(),
+            hi.as_deref(),
+            *inclusive,
+        ),
         crate::Node::CallExpression {
             function,
             arguments,
@@ -6079,7 +6091,7 @@ mod tests {
     fn helper_returned_reference_array_slice_nested_path_survives() {
         let errors = run_alias_check(
             "fn make_items(&mut int x) -> array { return [(x, 0), (x, 1)]; } \
-             fn select(&mut int x) -> array { \
+                 fn select(&mut int x) -> array { \
                  let items = make_items(x); let selected = items[0..1]; \
                  return selected; \
              } \
@@ -6091,6 +6103,53 @@ mod tests {
             errors[0].contains("`selected[0].0`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_array_helper_slice_return_preserves_element_alias() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x, &mut int y) -> array { return [x, y]; } \
+             fn select(&mut int x, &mut int y) -> array { return make_array(x, y)[0..1]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let selected = select(x, y); set_both(x, selected[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`selected[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_array_helper_slice_return_preserves_nested_path() {
+        let errors = run_alias_check(
+            "fn make_items(&mut int x) -> array { return [(x, 0), (x, 1)]; } \
+             fn select(&mut int x) -> array { return make_items(x)[0..1]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let selected = select(x); set_both(x, selected[0].0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`selected[0].0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn dynamic_direct_array_helper_slice_return_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn select(&mut int x, int end) -> array { return make_array(x)[0..end]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int end) { let selected = select(x, end); set_both(x, selected[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic direct helper slices must stay conservative: {:?}",
+            errors
         );
     }
 
