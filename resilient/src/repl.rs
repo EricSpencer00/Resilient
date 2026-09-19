@@ -190,6 +190,10 @@ pub struct EnhancedREPL {
     /// interpreter's top-level frame. Cloned into the rustyline helper
     /// so Tab completion sees fresh state after each REPL line.
     completion_bindings: Rc<RefCell<Vec<String>>>,
+    /// RES-4445: top-level statements from prior inputs. Typechecking the
+    /// accumulated session keeps static bindings aligned with the interpreter
+    /// when users enter a program one line at a time.
+    typecheck_history: Vec<crate::span::Spanned<Node>>,
 }
 
 impl EnhancedREPL {
@@ -221,6 +225,7 @@ impl EnhancedREPL {
             history_path,
             examples_dir,
             completion_bindings,
+            typecheck_history: Vec::new(),
         }
     }
 
@@ -382,9 +387,18 @@ impl EnhancedREPL {
             return;
         }
 
-        // Run type checker if enabled
+        let Node::Program(statements) = program else {
+            return;
+        };
+
+        // RES-4445: rustyline gives us one parsed program per input line,
+        // while the interpreter keeps all prior bindings alive. Check the
+        // complete accumulated session so a later line can refer to an
+        // earlier let or function definition.
         if self.type_check_enabled {
-            match typechecker::TypeChecker::new().check_program(&program) {
+            let mut session = self.typecheck_history.clone();
+            session.extend(statements.iter().cloned());
+            match typechecker::TypeChecker::new().check_program(&Node::Program(session)) {
                 Ok(_) => println!("{}Type check passed{}", GREEN, RESET),
                 Err(e) => {
                     eprintln!("{}Type error: {}{}", RED, e, RESET);
@@ -392,6 +406,9 @@ impl EnhancedREPL {
                 }
             }
         }
+
+        self.typecheck_history.extend(statements.iter().cloned());
+        let program = Node::Program(statements);
 
         // Evaluate the program
         match self.interpreter.eval(&program) {
