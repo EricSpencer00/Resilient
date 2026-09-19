@@ -1127,6 +1127,8 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_string_starts_with: FuncId,
     pub res_jit_string_ends_with: FuncId,
     pub res_jit_string_contains: FuncId,
+    /// RES-4111: lexicographic comparison for two strings.
+    pub res_jit_string_cmp: FuncId,
 }
 
 fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
@@ -1293,6 +1295,7 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
     let res_jit_string_starts_with = decl_import!("res_jit_string_starts_with", sig2r);
     let res_jit_string_ends_with = decl_import!("res_jit_string_ends_with", sig2r);
     let res_jit_string_contains = decl_import!("res_jit_string_contains", sig2r);
+    let res_jit_string_cmp = decl_import!("res_jit_string_cmp", sig2r);
 
     // sig3r: (i64, i64, i64) -> i64 (3 params WITH return)
     let mut sig3r = module.make_signature();
@@ -1387,6 +1390,7 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_string_starts_with,
         res_jit_string_ends_with,
         res_jit_string_contains,
+        res_jit_string_cmp,
     })
 }
 
@@ -4297,15 +4301,20 @@ fn lower_expr(
             // heap-tagged i64 values (RES-jit's TAG_STRING/TAG_FLOAT),
             // so a plain `iadd`/`isub`/... on them corrupts the tag
             // and payload bits instead of concatenating/computing.
-            // Comparisons stay on raw `icmp` — RES-100's tagged-bool
-            // and TAG_INT scheme means direct int comparison already
-            // matches the walker/VM for the operand kinds the parser
-            // actually produces at these operators.
+            // RES-4111: string comparisons need the same treatment. A
+            // raw `icmp` compares the tagged heap handles, not the
+            // string contents; use the runtime's lexicographic three-way
+            // compare and turn that result into the requested bool.
+            let (left_kind, right_kind) = (static_kind(left, ctx), static_kind(right, ctx));
+            let is_string_comparison = matches!(op_str, "==" | "!=" | "<" | "<=" | ">" | ">=")
+                && left_kind == ValueKind::String
+                && right_kind == ValueKind::String;
             let kind = if matches!(op_str, "+" | "-" | "*" | "/" | "%") {
-                let (lk, rk) = (static_kind(left, ctx), static_kind(right, ctx));
-                if op_str == "+" && (lk == ValueKind::String || rk == ValueKind::String) {
+                if op_str == "+"
+                    && (left_kind == ValueKind::String || right_kind == ValueKind::String)
+                {
                     ValueKind::String
-                } else if lk == ValueKind::Float || rk == ValueKind::Float {
+                } else if left_kind == ValueKind::Float || right_kind == ValueKind::Float {
                     ValueKind::Float
                 } else {
                     ValueKind::Int
@@ -4320,6 +4329,23 @@ fn lower_expr(
                 let fref = module.declare_func_in_func(ctx.imports.res_jit_string_concat, bcx.func);
                 let call = bcx.ins().call(fref, &[l, r]);
                 return Ok(bcx.inst_results(call)[0]);
+            }
+            if is_string_comparison {
+                let fref = module.declare_func_in_func(ctx.imports.res_jit_string_cmp, bcx.func);
+                let call = bcx.ins().call(fref, &[l, r]);
+                let cmp = bcx.inst_results(call)[0];
+                let zero = bcx.ins().iconst(types::I64, 0);
+                let cc = match op_str {
+                    "==" => IntCC::Equal,
+                    "!=" => IntCC::NotEqual,
+                    "<" => IntCC::SignedLessThan,
+                    "<=" => IntCC::SignedLessThanOrEqual,
+                    ">" => IntCC::SignedGreaterThan,
+                    ">=" => IntCC::SignedGreaterThanOrEqual,
+                    _ => unreachable!("validated above"),
+                };
+                let raw = bcx.ins().icmp(cc, cmp, zero);
+                return Ok(bcx.ins().uextend(types::I64, raw));
             }
             if kind == ValueKind::Float {
                 let shim = match op_str {

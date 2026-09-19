@@ -276,6 +276,20 @@ pub(crate) extern "C-unwind" fn res_jit_string_contains(a: i64, b: i64) -> i64 {
     i64::from(sa.contains(sb.as_str()))
 }
 
+/// RES-4111: lexicographic ordering for two JIT strings. The lowering layer
+/// converts this three-way result into the requested boolean comparison so
+/// all six string comparison operators share the interpreter's `String::cmp`
+/// semantics.
+pub(crate) extern "C-unwind" fn res_jit_string_cmp(a: i64, b: i64) -> i64 {
+    let sa = read_string(a);
+    let sb = read_string(b);
+    match sa.cmp(&sb) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
 // --- Struct ---
 
 pub(crate) extern "C-unwind" fn res_jit_alloc_struct(
@@ -680,6 +694,7 @@ pub(crate) fn register_jit_runtime_symbols(builder: &mut cranelift_jit::JITBuild
     reg!(res_jit_string_starts_with);
     reg!(res_jit_string_ends_with);
     reg!(res_jit_string_contains);
+    reg!(res_jit_string_cmp);
 }
 
 // ============================================================
