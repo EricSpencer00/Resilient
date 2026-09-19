@@ -4099,6 +4099,12 @@ fn array_return_alias_summary(
         return None;
     }
 
+    if let Some(summary) =
+        array_straight_line_local_alias_summary(body, parameters, reference_fields, known_returns)
+    {
+        return Some(summary);
+    }
+
     let mut returns = Vec::new();
     collect_array_return_provenance(
         body,
@@ -4117,6 +4123,54 @@ fn array_return_alias_summary(
         return None;
     }
     Some(summary.clone())
+}
+
+fn array_straight_line_local_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, ArrayReturnAliasSummary>,
+) -> Option<ArrayReturnAliasSummary> {
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut locals = HashMap::new();
+    let mut returned = None;
+    for stmt in stmts {
+        match stmt {
+            crate::Node::LetStatement { name, value, .. } => {
+                let summary = match value.as_ref() {
+                    crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    value => array_return_aliases_for_value(
+                        value,
+                        parameters,
+                        reference_fields,
+                        known_returns,
+                    ),
+                };
+                if let Some(summary) = summary {
+                    locals.insert(name.clone(), summary);
+                } else {
+                    locals.remove(name);
+                }
+            }
+            crate::Node::ReturnStatement { value, .. } => {
+                let crate::Node::Identifier { name, .. } = value.as_deref()? else {
+                    return None;
+                };
+                let summary = locals.get(name)?.clone();
+                if returned
+                    .as_ref()
+                    .is_some_and(|previous| previous != &summary)
+                {
+                    return None;
+                }
+                returned = Some(summary);
+            }
+            _ => return None,
+        }
+    }
+    returned
 }
 
 fn collect_array_return_provenance(
@@ -5732,6 +5786,39 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`items[0]`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_survives_straight_line_local_alias() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x, &mut int y) -> array { \
+                 let items = [x, y]; return items; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let items = make_array(x, y); set_both(x, items[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`items[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn wrapped_reference_array_local_alias_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { \
+                 let alias = x; let items = [alias]; return items; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = make_array(x); set_both(x, items[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped array local aliases must stay conservative: {:?}",
+            errors
         );
     }
 
