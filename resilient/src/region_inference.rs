@@ -1025,7 +1025,24 @@ impl<'a> AliasWalker<'a> {
     /// Resolve the region carried by a value expression when the pass can
     /// prove that it is a reference alias. Direct identifiers are the
     /// existing local-copy rule. Calls are accepted only through narrow
-    /// summaries whose reference arguments are plain identifiers.
+    /// summaries whose reference arguments are tracked canonical places.
+    fn tracked_reference_argument_root(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Option<String> {
+        match value {
+            crate::Node::Identifier { name, .. } => state.root_of(name).map(str::to_owned),
+            crate::Node::FieldAccess { .. }
+            | crate::Node::IndexExpression { .. }
+            | crate::Node::TupleIndex { .. } => {
+                let place = Self::place_name(value)?;
+                state.aliases.get(&place).cloned()
+            }
+            _ => None,
+        }
+    }
+
     fn returned_root(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
         match value {
             crate::Node::Identifier { name, .. } => state.root_of(name).map(str::to_owned),
@@ -1060,10 +1077,7 @@ impl<'a> AliasWalker<'a> {
                     return None;
                 };
                 let param_idx = *self.return_aliases.get(callee.as_str())?;
-                let crate::Node::Identifier { name: arg, .. } = arguments.get(param_idx)? else {
-                    return None;
-                };
-                state.root_of(arg).map(str::to_owned)
+                self.tracked_reference_argument_root(arguments.get(param_idx)?, state)
             }
             _ => None,
         }
@@ -1163,13 +1177,8 @@ impl<'a> AliasWalker<'a> {
             .elements
             .iter()
             .filter_map(|(path, param_idx)| {
-                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
-                else {
-                    return None;
-                };
-                state
-                    .root_of(argument)
-                    .map(|root| (path.clone(), root.to_owned()))
+                self.tracked_reference_argument_root(arguments.get(*param_idx)?, state)
+                    .map(|root| (path.clone(), root))
             })
             .collect()
     }
@@ -1384,13 +1393,8 @@ impl<'a> AliasWalker<'a> {
             .fields
             .iter()
             .filter_map(|(field, param_idx)| {
-                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
-                else {
-                    return None;
-                };
-                state
-                    .root_of(argument)
-                    .map(|root| (field.clone(), root.to_owned()))
+                self.tracked_reference_argument_root(arguments.get(*param_idx)?, state)
+                    .map(|root| (field.clone(), root))
             })
             .collect()
     }
@@ -1538,13 +1542,8 @@ impl<'a> AliasWalker<'a> {
             .paths
             .iter()
             .filter_map(|(path, param_idx)| {
-                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
-                else {
-                    return None;
-                };
-                state
-                    .root_of(argument)
-                    .map(|root| (path.clone(), root.to_owned()))
+                self.tracked_reference_argument_root(arguments.get(*param_idx)?, state)
+                    .map(|root| (path.clone(), root))
             })
             .collect()
     }
@@ -4404,6 +4403,61 @@ mod tests {
             "message shape wrong: {}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn helper_calls_accept_tracked_composite_reference_arguments() {
+        let direct_errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn identity(&mut int item) -> &mut int { return item; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Holder { item: x }; \
+                 let copy = identity(source.item); \
+                 set_both(x, copy); \
+             }",
+        );
+        assert_eq!(direct_errors.len(), 1, "got: {:?}", direct_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int item) -> Holder { \
+                 return new Holder { item: item }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Holder { item: x }; \
+                 let copy = make_holder(source.item); \
+                 set_both(x, copy.item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+
+        let tuple_errors = run_alias_check(
+            "fn make_pair(&mut int item) -> (&mut int, &mut int) { \
+                 return (item, item); \
+             } \
+             struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Holder { item: x }; \
+                 let pair = make_pair(source.item); \
+                 set_both(x, pair.0); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
+
+        let array_errors = run_alias_check(
+            "fn make_array(&mut int item) -> array { return [item]; } \
+             struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Holder { item: x }; \
+                 let items = make_array(source.item); \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert_eq!(array_errors.len(), 1, "got: {:?}", array_errors);
     }
 
     #[test]
