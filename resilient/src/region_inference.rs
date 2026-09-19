@@ -1466,7 +1466,10 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
-                crate::Node::Identifier { .. } | crate::Node::IndexExpression { .. } => {
+                crate::Node::Identifier { .. }
+                | crate::Node::FieldAccess { .. }
+                | crate::Node::IndexExpression { .. }
+                | crate::Node::TupleIndex { .. } => {
                     for (nested_path, root) in self.paths_below(value, state) {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
@@ -5002,6 +5005,60 @@ mod tests {
              }",
         );
         assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_field_access_preserves_nested_paths() {
+        let array_errors = run_alias_check(
+            "struct Source { array items } \
+             struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Source { items: [x] }; \
+                 let holder = new Holder { items: source.items }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert_eq!(array_errors.len(), 1, "got: {:?}", array_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Source { Inner inner } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Source { inner: new Inner { item: x } }; \
+                 let outer = new Outer { inner: source.inner }; \
+                 set_both(x, outer.inner.item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_tuple_index_preserves_nested_paths() {
+        let array_errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ([x], 0); \
+                 let holder = new Holder { items: pair.0 }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert_eq!(array_errors.len(), 1, "got: {:?}", array_errors);
+
+        let tuple_errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Holder { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (new Inner { item: x }, 0); \
+                 let holder = new Holder { inner: pair.0 }; \
+                 set_both(x, holder.inner.item); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
     }
 
     #[test]
