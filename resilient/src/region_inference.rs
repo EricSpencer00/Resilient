@@ -2725,9 +2725,6 @@ impl<'a> AliasWalker<'a> {
                     if !suffix.is_empty() && !Self::valid_path_suffix(suffix) {
                         continue;
                     }
-                    if !matches!(constructor.as_str(), "Some" | "Ok" | "Err") {
-                        continue;
-                    }
                     let path = if suffix.is_empty() {
                         format!("{prefix}[{}]", index - start)
                     } else {
@@ -7549,6 +7546,32 @@ mod tests {
             errors.len(),
             2,
             "matching sliced Option and Result payloads should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tagged_enum_constructor_identity_survives_constant_array_slices() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let items = [Packet::Item(new Holder { item: x })];
+                   let selected = items[0..1];
+                   match selected[0] {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the matching sliced constructor should report: {:?}",
             errors
         );
     }
