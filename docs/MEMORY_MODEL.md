@@ -629,6 +629,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   inside direct struct-return helpers now preserve unambiguous reference field
   paths at callers. Reassigned, branched, wrapped, recursive, ambiguous,
   value-only, and unknown values remain opaque.
+- **A-E5 increment 71 (RES-4070):** straight-line whole-value local aliases
+  inside direct tuple-return helpers now preserve unambiguous reference element
+  paths at callers. Reassigned, branched, wrapped, recursive, ambiguous,
+  value-only, and unknown values remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
