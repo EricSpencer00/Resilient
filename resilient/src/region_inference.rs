@@ -1648,11 +1648,23 @@ impl<'a> AliasWalker<'a> {
                     roots.push((format!("{prefix}.{path}"), root));
                 }
             }
-            crate::Node::Identifier { .. }
-            | crate::Node::IndexExpression { .. }
-            | crate::Node::Slice { .. } => {
+            crate::Node::Identifier { .. } | crate::Node::IndexExpression { .. } => {
                 for (path, root) in self.paths_below(value, state) {
                     roots.push((format!("{prefix}{path}"), root));
+                }
+            }
+            crate::Node::Slice { .. } => {
+                for (index, root) in self.array_element_roots(value, state) {
+                    roots.push((format!("{prefix}[{index}]"), root));
+                }
+                for (index, field, root) in self.array_slice_field_roots(value, state) {
+                    roots.push((format!("{prefix}[{index}].{field}"), root));
+                }
+                for (index, nested_path, root) in self.array_slice_tuple_roots(value, state) {
+                    roots.push((format!("{prefix}[{index}].{nested_path}"), root));
+                }
+                for (nested_path, root) in self.array_slice_nested_roots(value, state) {
+                    roots.push((format!("{prefix}{nested_path}"), root));
                 }
             }
             crate::Node::CallExpression { .. } => {
@@ -5742,6 +5754,65 @@ mod tests {
             1,
             "nested array slice alias must be reported: {:?}",
             slice_errors
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_slice_preserves_element_alias() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [0, x]; \
+                 let matrix = [items[1..2]]; \
+                 set_both(x, matrix[0][0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("matrix[0][0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_slice_preserves_nested_paths() {
+        let tuple_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 let matrix = [items[0..1]]; \
+                 set_both(x, matrix[0][0].0); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 let matrix = [items[0..1]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn dynamic_nested_array_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int hi) { \
+                 let items = [x]; \
+                 let matrix = [items[0..hi]]; \
+                 set_both(x, matrix[0][0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic nested array slices must stay outside alias tracking: {:?}",
+            errors
         );
     }
 

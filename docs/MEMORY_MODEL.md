@@ -506,6 +506,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   `let holder = new Holder { items: items[1..2] }` exposes
   `holder.items[0]` and nested tuple or struct paths. Dynamic, transformed,
   unknown, and ambiguous slices remain outside alias tracking.
+- **A-E5 increment 43 (RES-4070):** direct array literals now retain proven
+  paths from constant array slices used as elements, so
+  `let matrix = [items[1..2]]` exposes `matrix[0][0]` and nested tuple or
+  struct paths. Dynamic, transformed, unknown, and ambiguous slices remain
+  outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
