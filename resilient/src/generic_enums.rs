@@ -85,7 +85,7 @@
 
 use crate::span::Span;
 use crate::{EnumPayload, EnumVariant, Node};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Substitution machinery
@@ -376,7 +376,336 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             validate_generic_enum(name, type_params, variants, *span, source_path)?;
         }
     }
+    validate_constructor_type_consistency(program, source_path)?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct GenericEnumDefinition {
+    type_params: HashSet<String>,
+    variants: HashMap<String, EnumPayload>,
+}
+
+/// Reject constructor calls that bind one direct type parameter to
+/// incompatible payload values. The regular typechecker treats each
+/// occurrence of a generic parameter as an independent wildcard, so
+/// Pair::Both(1, "text") could otherwise pass for Pair<T> { Both(T, T) }.
+///
+/// This pass deliberately stays conservative: it only compares literal
+/// types it can identify without duplicating type resolution. Unknown
+/// expressions are left to the existing typechecker, which preserves
+/// compatibility for values whose type is not available here.
+fn validate_constructor_type_consistency(program: &Node, source_path: &str) -> Result<(), String> {
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let mut definitions = HashMap::new();
+    for stmt in stmts {
+        if let Node::EnumDecl {
+            name,
+            type_params,
+            variants,
+            ..
+        } = &stmt.node
+            && !type_params.is_empty()
+        {
+            definitions.insert(
+                name.clone(),
+                GenericEnumDefinition {
+                    type_params: type_params.iter().cloned().collect(),
+                    variants: variants
+                        .iter()
+                        .map(|variant| (variant.name.clone(), variant.payload.clone()))
+                        .collect(),
+                },
+            );
+        }
+    }
+    walk_constructor_nodes(program, &definitions, source_path)
+}
+
+fn walk_constructor_nodes(
+    node: &Node,
+    definitions: &HashMap<String, GenericEnumDefinition>,
+    source_path: &str,
+) -> Result<(), String> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                walk_constructor_nodes(&stmt.node, definitions, source_path)?;
+            }
+        }
+        Node::Function {
+            body,
+            defaults,
+            requires,
+            ensures,
+            ..
+        } => {
+            walk_constructor_nodes(body, definitions, source_path)?;
+            for default in defaults.iter().flatten() {
+                walk_constructor_nodes(default, definitions, source_path)?;
+            }
+            for clause in requires {
+                walk_constructor_nodes(clause, definitions, source_path)?;
+            }
+            for clause in ensures {
+                walk_constructor_nodes(clause, definitions, source_path)?;
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            walk_constructor_nodes(body, definitions, source_path)?;
+            for clause in requires {
+                walk_constructor_nodes(clause, definitions, source_path)?;
+            }
+            for clause in ensures {
+                walk_constructor_nodes(clause, definitions, source_path)?;
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                walk_constructor_nodes(stmt, definitions, source_path)?;
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. }
+        | Node::BreakWith { value, .. } => {
+            walk_constructor_nodes(value, definitions, source_path)?;
+        }
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            walk_constructor_nodes(value, definitions, source_path)?;
+        }
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::DeferStatement { expr, .. }
+        | Node::ExpressionStatement { expr, .. }
+        | Node::TryExpression { expr, .. }
+        | Node::InvariantStatement { expr, .. } => {
+            walk_constructor_nodes(expr, definitions, source_path)?;
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_constructor_nodes(condition, definitions, source_path)?;
+            walk_constructor_nodes(consequence, definitions, source_path)?;
+            if let Some(alternative) = alternative {
+                walk_constructor_nodes(alternative, definitions, source_path)?;
+            }
+        }
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            walk_constructor_nodes(condition, definitions, source_path)?;
+            walk_constructor_nodes(body, definitions, source_path)?;
+            for invariant in invariants {
+                walk_constructor_nodes(invariant, definitions, source_path)?;
+            }
+        }
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            walk_constructor_nodes(iterable, definitions, source_path)?;
+            walk_constructor_nodes(body, definitions, source_path)?;
+            for invariant in invariants {
+                walk_constructor_nodes(invariant, definitions, source_path)?;
+            }
+        }
+        Node::PrefixExpression { right, .. } => {
+            walk_constructor_nodes(right, definitions, source_path)?;
+        }
+        Node::InfixExpression { left, right, .. } => {
+            walk_constructor_nodes(left, definitions, source_path)?;
+            walk_constructor_nodes(right, definitions, source_path)?;
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } => {
+            walk_constructor_nodes(function, definitions, source_path)?;
+            for argument in arguments {
+                walk_constructor_nodes(argument, definitions, source_path)?;
+            }
+            let Node::Identifier { name, .. } = function.as_ref() else {
+                return Ok(());
+            };
+            let Some((enum_name, variant_name)) = name.rsplit_once("::") else {
+                return Ok(());
+            };
+            let Some(definition) = definitions.get(enum_name) else {
+                return Ok(());
+            };
+            let Some(EnumPayload::Tuple(declared)) = definition.variants.get(variant_name) else {
+                return Ok(());
+            };
+            validate_direct_bindings(
+                enum_name,
+                variant_name,
+                &definition.type_params,
+                declared,
+                arguments,
+                *span,
+                source_path,
+            )?;
+        }
+        Node::StructLiteral {
+            name,
+            fields,
+            base,
+            span,
+        } => {
+            if let Some(base) = base {
+                walk_constructor_nodes(base, definitions, source_path)?;
+            }
+            for (_, value) in fields {
+                walk_constructor_nodes(value, definitions, source_path)?;
+            }
+            let Some((enum_name, variant_name)) = name.rsplit_once("::") else {
+                return Ok(());
+            };
+            let Some(definition) = definitions.get(enum_name) else {
+                return Ok(());
+            };
+            let Some(EnumPayload::Named(declared)) = definition.variants.get(variant_name) else {
+                return Ok(());
+            };
+            let mut bindings = HashMap::new();
+            for (field_name, value) in fields {
+                let Some(field) = declared.iter().find(|field| field.name == *field_name) else {
+                    continue;
+                };
+                if !definition.type_params.contains(&field.ty) {
+                    continue;
+                }
+                let Some(actual) = infer_direct_type(value) else {
+                    continue;
+                };
+                bind_direct_type_parameter(
+                    enum_name,
+                    variant_name,
+                    &field.ty,
+                    actual,
+                    &mut bindings,
+                    *span,
+                    source_path,
+                )?;
+            }
+        }
+        Node::ArrayLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                walk_constructor_nodes(item, definitions, source_path)?;
+            }
+        }
+        Node::FieldAccess { target, .. } | Node::IndexExpression { target, .. } => {
+            walk_constructor_nodes(target, definitions, source_path)?;
+        }
+        Node::FieldAssignment { target, value, .. }
+        | Node::IndexAssignment { target, value, .. } => {
+            walk_constructor_nodes(target, definitions, source_path)?;
+            walk_constructor_nodes(value, definitions, source_path)?;
+        }
+        Node::NamedArg { value, .. } => {
+            walk_constructor_nodes(value, definitions, source_path)?;
+        }
+        Node::ModuleDecl { body, .. } => {
+            for item in body {
+                walk_constructor_nodes(item, definitions, source_path)?;
+            }
+        }
+        Node::UnsafeBlock { body, .. } => {
+            walk_constructor_nodes(body, definitions, source_path)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_direct_bindings(
+    enum_name: &str,
+    variant_name: &str,
+    type_params: &HashSet<String>,
+    declared: &[String],
+    arguments: &[Node],
+    span: Span,
+    source_path: &str,
+) -> Result<(), String> {
+    let mut bindings = HashMap::new();
+    for (raw_type, argument) in declared.iter().zip(arguments) {
+        if !type_params.contains(raw_type) {
+            continue;
+        }
+        let Some(actual) = infer_direct_type(argument) else {
+            continue;
+        };
+        bind_direct_type_parameter(
+            enum_name,
+            variant_name,
+            raw_type,
+            actual,
+            &mut bindings,
+            span,
+            source_path,
+        )?;
+    }
+    Ok(())
+}
+
+fn bind_direct_type_parameter(
+    enum_name: &str,
+    variant_name: &str,
+    parameter: &str,
+    actual: &str,
+    bindings: &mut HashMap<String, String>,
+    span: Span,
+    source_path: &str,
+) -> Result<(), String> {
+    if let Some(existing) = bindings.get(parameter)
+        && existing != actual
+    {
+        return Err(format!(
+            "{}:{}:{}: error: generic enum constructor {}::{} infers type parameter {} as both {} and {}; payload arguments must agree",
+            source_path,
+            span.start.line,
+            span.start.column,
+            enum_name,
+            variant_name,
+            parameter,
+            existing,
+            actual
+        ));
+    }
+    bindings.insert(parameter.to_string(), actual.to_string());
+    Ok(())
+}
+
+fn infer_direct_type(node: &Node) -> Option<&'static str> {
+    match node {
+        Node::IntegerLiteral { .. } => Some("int"),
+        Node::FloatLiteral { .. } => Some("float"),
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => Some("string"),
+        Node::BytesLiteral { .. } => Some("bytes"),
+        Node::CharLiteral { .. } => Some("char"),
+        Node::BooleanLiteral { .. } => Some("bool"),
+        Node::NamedArg { value, .. } => infer_direct_type(value),
+        _ => None,
+    }
 }
 
 fn validate_generic_enum(
@@ -880,6 +1209,30 @@ mod tests {
     fn non_generic_enums_are_unaffected() {
         // Pass should short-circuit when no generic enums are present.
         check_src("enum Color { Red, Green, Blue }").expect("non-generic enum should pass");
+    }
+
+    #[test]
+    fn rejects_inconsistent_repeated_generic_tuple_payload_types() {
+        let err = check_src("enum Pair<T> { Both(T, T) }\nlet pair = Pair::Both(1, \"text\")")
+            .expect_err("one T must not accept two concrete types");
+        assert!(err.contains("Pair::Both"), "got: {err}");
+        assert!(err.contains("T") && err.contains("int") && err.contains("string"));
+    }
+
+    #[test]
+    fn rejects_inconsistent_repeated_generic_named_payload_types() {
+        let err = check_src(
+            "enum Pair<T> { Both { left: T, right: T } }\nlet pair = new Pair::Both { left: 1, right: \"text\" }",
+        )
+        .expect_err("one T must not accept two concrete types");
+        assert!(err.contains("Pair::Both"), "got: {err}");
+        assert!(err.contains("T") && err.contains("int") && err.contains("string"));
+    }
+
+    #[test]
+    fn keeps_unknown_repeated_generic_payloads_conservative() {
+        check_src("enum Pair<T> { Both(T, T) }\nlet pair = Pair::Both(left, right)")
+            .expect("unknown expressions should remain conservative");
     }
 
     // ---- substitution helpers ----
