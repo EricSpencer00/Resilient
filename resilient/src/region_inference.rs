@@ -1255,10 +1255,22 @@ impl<'a> AliasWalker<'a> {
             if let Some(root) = self.returned_root(item, state) {
                 roots.push((path.clone(), root));
             }
-            if matches!(item, crate::Node::TupleLiteral { .. }) {
-                self.collect_direct_tuple_roots(item, &path, state, roots);
-            } else {
-                self.collect_tuple_alias_roots(item, &path, state, roots);
+            match item {
+                crate::Node::TupleLiteral { .. } => {
+                    self.collect_direct_tuple_roots(item, &path, state, roots);
+                }
+                crate::Node::CallExpression {
+                    function,
+                    arguments,
+                    ..
+                } => {
+                    for (nested_path, root) in
+                        self.tuple_call_element_roots(function, arguments, state)
+                    {
+                        roots.push((format!("{path}.{nested_path}"), root));
+                    }
+                }
+                _ => self.collect_tuple_alias_roots(item, &path, state, roots),
             }
         }
     }
@@ -4443,6 +4455,40 @@ mod tests {
         assert!(
             errors.is_empty(),
             "unknown array helper values must stay opaque: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_helper_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { return (x, y); } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x, &mut int y) { let pair = (make_pair(x, y), make_pair(y, x)); set_both(x, pair.0.0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0.0"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_helper_chain_preserves_nested_path() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { return (x, y); } fn inner(&mut int x, &mut int y) -> (&mut int, &mut int) { return make_pair(x, y); } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x, &mut int y) { let pair = (inner(x, y), make_pair(y, x)); set_both(x, pair.0.0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn unknown_tuple_helper_inside_literal_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = (unknown(x), (x, x)); set_both(x, pair.0.0); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unknown tuple helper values must stay opaque: {:?}",
             errors
         );
     }
