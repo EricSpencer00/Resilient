@@ -349,6 +349,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   direct tagged-enum constructor returns with unambiguous reference
 ///   payload paths, including forwarding through an already-proven helper,
 ///   concrete structs whose reference fields are initialized from parameters,
+///   including straight-line whole-value local aliases inside those helpers,
 ///   and direct tuples of reference parameters are summarized; arrays,
 ///   closures, and ambiguous or wrapped return paths remain opaque across
 ///   function boundaries.
@@ -3230,6 +3231,16 @@ fn struct_return_alias_summary(
         return None;
     }
 
+    if let Some(summary) = struct_straight_line_local_alias_summary(
+        body,
+        parameters,
+        return_type,
+        reference_fields,
+        known_returns,
+    ) {
+        return Some(summary);
+    }
+
     let mut returns = Vec::new();
     collect_struct_return_provenance(
         body,
@@ -3249,6 +3260,56 @@ fn struct_return_alias_summary(
         return None;
     }
     Some(summary.clone())
+}
+
+fn struct_straight_line_local_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: &str,
+    reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, StructReturnAliasSummary>,
+) -> Option<StructReturnAliasSummary> {
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut locals = HashMap::new();
+    let mut returned = None;
+    for stmt in stmts {
+        match stmt {
+            crate::Node::LetStatement { name, value, .. } => {
+                let summary = match value.as_ref() {
+                    crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    value => struct_return_aliases_for_value(
+                        value,
+                        parameters,
+                        return_type,
+                        reference_fields,
+                        known_returns,
+                    ),
+                };
+                if let Some(summary) = summary {
+                    locals.insert(name.clone(), summary);
+                } else {
+                    locals.remove(name);
+                }
+            }
+            crate::Node::ReturnStatement { value, .. } => {
+                let crate::Node::Identifier { name, .. } = value.as_deref()? else {
+                    return None;
+                };
+                let summary = locals.get(name)?.clone();
+                if returned
+                    .as_ref()
+                    .is_some_and(|previous| previous != &summary)
+                {
+                    return None;
+                }
+                returned = Some(summary);
+            }
+            _ => return None,
+        }
+    }
+    returned
 }
 
 fn collect_struct_return_provenance(
@@ -5248,6 +5309,23 @@ mod tests {
             "message shape wrong: {}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn helper_returned_reference_struct_field_survives_straight_line_local_alias() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { \
+                 let holder = new Holder { item: x }; \
+                 return holder; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = make_holder(x); \
+                 set_both(x, holder.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
