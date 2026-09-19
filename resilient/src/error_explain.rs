@@ -43,6 +43,7 @@ fn doc_for_code(code: &str) -> Option<&'static str> {
         "E0020" => include_str!("../../docs/errors/E0020.md"),
         "E0021" => include_str!("../../docs/errors/E0021.md"),
         "E0022" => include_str!("../../docs/errors/E0022.md"),
+        "E0023" => include_str!("../../docs/errors/E0023.md"),
         _ => return None,
     })
 }

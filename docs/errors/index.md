@@ -29,6 +29,7 @@ Codes are grouped by the pipeline stage that can emit them:
 - **E0020** — effects / purity
 - **E0021** — trait objects (`dyn Trait`)
 - **E0022** — call-site argument validation
+- **E0023** — lexical integer literal overflow
 
 Numbers are **sticky**: once assigned, a code is never reused.
 If a diagnostic is removed, its code is retired but the docs
@@ -82,3 +83,4 @@ See the sidebar for the full list, or jump directly:
 - [E0020 — Effect/purity violation](./E0020)
 - [E0021 — dyn Trait object-safety violation](./E0021)
 - [E0022 — Duplicate named argument](./E0022)
+- [E0023 — Integer literal overflow](./E0023)

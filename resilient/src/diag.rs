@@ -644,12 +644,12 @@ mod tests {
 /// ## Scope of this module
 ///
 /// RES-206a landed the initial seed registry (10 codes) plus
-/// sample docs pages. RES-4115 (E-E4, increment 1) extends the
-/// registry with a second batch (E0011..E0020) covering common
-/// declaration/type/runtime/verification diagnostics, each with
-/// its own `docs/errors/E00NN.md` page, and adds the `rz explain
-/// E00NN` CLI subcommand (`resilient/src/error_explain.rs`) that
-/// renders those same pages in the terminal.
+/// sample docs pages. RES-4115 (E-E4) extends the registry with
+/// declaration, type/runtime/verification, trait-object, call-site,
+/// and lexer diagnostics through E0023. Each code has its own
+/// `docs/errors/E00NN.md` page, and the `rz explain E00NN` CLI
+/// subcommand (`resilient/src/error_explain.rs`) renders those same
+/// pages in the terminal.
 ///
 /// Auditing every existing diagnostic call site in `lib.rs` /
 /// `typechecker.rs` and attaching a code at the point of
@@ -843,6 +843,14 @@ pub mod codes {
     /// Docs: `docs/errors/E0022.html`.
     pub const E0022: DiagCode = DiagCode::new_static("E0022");
 
+    // ---- Lexical errors ----
+
+    /// E0023: Integer literal overflow — a decimal or radix-prefixed
+    /// integer literal is outside the representable `i64` range.
+    ///
+    /// Docs: `docs/errors/E0023.html`.
+    pub const E0023: DiagCode = DiagCode::new_static("E0023");
+
     // ---- Enumeration helper ----
 
     /// Every code registered in this module, in numeric order.
@@ -861,7 +869,7 @@ pub mod codes {
     pub fn all() -> Vec<DiagCode> {
         vec![
             E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010, E0011, E0012,
-            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020, E0021, E0022,
+            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020, E0021, E0022, E0023,
         ]
     }
 }
@@ -971,7 +979,7 @@ mod codes_tests {
     #[test]
     fn res206a_codes_all_count_matches_vec_len() {
         // Regression guard: `all()` must not drop entries.
-        assert_eq!(codes::all().len(), 22);
+        assert_eq!(codes::all().len(), 23);
     }
 
     #[test]

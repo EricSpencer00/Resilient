@@ -392,9 +392,8 @@ fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
         Ok(n) => Some(n),
         Err(_) => {
             eprintln!(
-                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
-                slice,
-                i64::MAX
+                "{}",
+                crate::format_integer_literal_overflow_error(0, 0, slice)
             );
             Some(0)
         }
@@ -413,9 +412,8 @@ fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
         Ok(n) => Some(n),
         Err(_) => {
             eprintln!(
-                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
-                slice,
-                i64::MAX
+                "{}",
+                crate::format_integer_literal_overflow_error(0, 0, slice)
             );
             Some(0)
         }
@@ -434,9 +432,8 @@ fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
         Ok(n) => Some(n),
         Err(_) => {
             eprintln!(
-                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
-                slice,
-                i64::MAX
+                "{}",
+                crate::format_integer_literal_overflow_error(0, 0, slice)
             );
             Some(0)
         }
@@ -455,9 +452,8 @@ fn int_lit(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
         Ok(n) => Some(n),
         Err(_) => {
             eprintln!(
-                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
-                slice,
-                i64::MAX
+                "{}",
+                crate::format_integer_literal_overflow_error(0, 0, slice)
             );
             Some(0)
         }

@@ -110,6 +110,7 @@ fn doc_source(code: &str) -> &'static str {
         "E0020" => include_str!("../../../docs/errors/E0020.md"),
         "E0021" => include_str!("../../../docs/errors/E0021.md"),
         "E0022" => include_str!("../../../docs/errors/E0022.md"),
+        "E0023" => include_str!("../../../docs/errors/E0023.md"),
         other => panic!(
             "docs/errors/{other}.md has no include_str! arm in this test — add one \
              (and to error_explain.rs's doc_for_code) alongside any new registry code"
@@ -175,7 +176,7 @@ fn no_orphaned_docs_page_exists_outside_the_registry() {
     // in diag.rs first, and this count keeps the two files honest.
     assert_eq!(
         codes::all().len(),
-        22,
+        23,
         "update this count (and the include_str! table above) when the registry grows"
     );
 }
