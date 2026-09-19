@@ -874,6 +874,7 @@ impl<'a> AliasWalker<'a> {
                 let composite_roots = self.paths_below(value, state);
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
+                let enum_payload_roots = self.option_result_payload_roots(value, state);
                 let array_return_roots = self.array_return_roots(value, state);
                 let array_alias_roots = self.array_alias_roots(value, state);
                 let nested_array_roots = self.nested_array_literal_roots(value, state);
@@ -939,6 +940,9 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (index, root) in tuple_roots {
                     state.aliases.insert(format!("{name}.{index}"), root);
+                }
+                for (path, root) in enum_payload_roots {
+                    state.aliases.insert(format!("{name}.{path}"), root);
                 }
             }
             crate::Node::LetTupleDestructure { names, value, .. } => {
@@ -1124,16 +1128,58 @@ impl<'a> AliasWalker<'a> {
                     Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
                 }
             }
+            crate::Pattern::Some(inner)
+            | crate::Pattern::Ok(inner)
+            | crate::Pattern::Err(inner) => {
+                let path = if prefix.is_empty() {
+                    "0".to_owned()
+                } else {
+                    format!("{prefix}.0")
+                };
+                Self::bind_struct_pattern_aliases(inner, &path, roots, state);
+            }
             crate::Pattern::Literal(_)
             | crate::Pattern::Wildcard
             | crate::Pattern::Or(_)
             | crate::Pattern::Range { .. }
-            | crate::Pattern::Some(_)
             | crate::Pattern::None
-            | crate::Pattern::Ok(_)
-            | crate::Pattern::Err(_)
             | crate::Pattern::EnumVariant { .. } => {}
         }
+    }
+
+    /// Return the known reference payload of a direct Option or Result
+    /// constructor. The wrapper payload is represented as path "0", matching
+    /// the positional shape used by tuple and tuple-struct patterns.
+    fn option_result_payload_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } = value
+        else {
+            return Vec::new();
+        };
+        let crate::Node::Identifier { name, .. } = function.as_ref() else {
+            return Vec::new();
+        };
+        if !matches!(name.as_str(), "Some" | "Ok" | "Err") {
+            return Vec::new();
+        }
+        let Some(payload) = arguments.first() else {
+            return Vec::new();
+        };
+        let mut roots = Vec::new();
+        if let Some(root) = self.returned_root(payload, state) {
+            roots.push(("0".to_owned(), root));
+        }
+        for (path, root) in self.paths_below(payload, state) {
+            roots.push((format!("0{path}"), root));
+        }
+        roots
     }
 
     /// Resolve the region carried by a value expression when the pass can
@@ -2121,6 +2167,7 @@ impl<'a> AliasWalker<'a> {
                 self.walk_expr(scrutinee, state);
                 let mut scrutinee_pattern_roots = self.struct_pattern_roots(scrutinee, state);
                 scrutinee_pattern_roots.extend(self.tuple_element_roots(scrutinee, state));
+                scrutinee_pattern_roots.extend(self.option_result_payload_roots(scrutinee, state));
                 // Pattern bindings can shadow outer names without a
                 // `let`, so remove those names from the incoming facts
                 // before checking the arm. Facts established before the
@@ -5660,6 +5707,33 @@ mod tests {
              }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn match_option_result_patterns_preserve_payload_paths() {
+        let errors = run_alias_check(
+            r#"fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let some = Some(x);
+                   match some {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   match Some(x) {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   match Ok(x) {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(_) => { println("err"); },
+                   }
+                   match Err(x) {
+                       Ok(_) => { println("ok"); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(errors.len(), 4, "got: {:?}", errors);
     }
 
     #[test]
