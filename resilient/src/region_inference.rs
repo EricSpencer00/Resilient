@@ -1585,7 +1585,7 @@ impl<'a> AliasWalker<'a> {
             crate::Node::Identifier { .. }
             | crate::Node::IndexExpression { .. }
             | crate::Node::Slice { .. } => {
-                for (path, root) in self.array_paths_below(value, state) {
+                for (path, root) in self.paths_below(value, state) {
                     roots.push((format!("{prefix}{path}"), root));
                 }
             }
@@ -1598,9 +1598,9 @@ impl<'a> AliasWalker<'a> {
         }
     }
 
-    /// Return known paths below an array-valued place, retaining nested array
-    /// indices and any already-proven field or tuple suffix.
-    fn array_paths_below(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
+    /// Return known canonical paths below a tracked place, retaining array,
+    /// field, and tuple segments for rebasing below a nested array element.
+    fn paths_below(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
         let Some(source) = Self::place_name(value) else {
             return Vec::new();
         };
@@ -1609,11 +1609,37 @@ impl<'a> AliasWalker<'a> {
             let Some(suffix) = place.strip_prefix(&source) else {
                 continue;
             };
-            if suffix.starts_with('[') && Self::valid_array_suffix(suffix) {
+            if Self::valid_path_suffix(suffix) {
                 roots.push((suffix.to_owned(), root.clone()));
             }
         }
         roots
+    }
+
+    fn valid_path_suffix(suffix: &str) -> bool {
+        let mut rest = suffix;
+        let mut saw_segment = false;
+        while !rest.is_empty() {
+            if rest.starts_with('[') {
+                let Some(close) = rest.find(']') else {
+                    return false;
+                };
+                if rest[1..close].parse::<usize>().is_err() {
+                    return false;
+                }
+                rest = &rest[close + 1..];
+            } else if let Some(field) = rest.strip_prefix('.') {
+                let end = field.find(['.', '[']).unwrap_or(field.len());
+                if end == 0 {
+                    return false;
+                }
+                rest = &field[end..];
+            } else {
+                return false;
+            }
+            saw_segment = true;
+        }
+        saw_segment
     }
 
     fn valid_array_suffix(suffix: &str) -> bool {
@@ -5277,6 +5303,43 @@ mod tests {
             errors.is_empty(),
             "nested value-typed tuple elements must stay outside alias tracking: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn nested_array_alias_preserves_tuple_element() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (x, 0); \
+                 let matrix = [[pair]]; \
+                 set_both(x, matrix[0][0].0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].0`"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_alias_preserves_struct_field() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { item: x }; \
+                 let matrix = [[holder]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].item`"),
+            "unexpected message: {}",
+            errors[0]
         );
     }
 
