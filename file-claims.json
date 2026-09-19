@@ -7,6 +7,38 @@
     "resilient/src/region_inference.rs": {
       "branch": "res-4070-const-if-alias",
       "claimed_at": "2026-09-19T20:38:39Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "resilient/src/diag.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "resilient/src/error_explain.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "docs/errors/index.md": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "docs/errors/E0023.md": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "resilient/tests/it/docs_error_registry_generation_smoke.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
+    },
+    "resilient/tests/integer_literal_overflow_diag.rs": {
+      "branch": "res-4115-integer-literal-overflow-code",
+      "claimed_at": "2026-09-19T21:21:20Z"
     }
   }
 }
