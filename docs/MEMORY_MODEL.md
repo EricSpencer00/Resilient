@@ -553,6 +553,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   patterns now rebase known reference payloads onto their arm-local bindings.
   None, OR, literal, wildcard, dynamic, transformed, unknown, and ambiguous
   patterns remain outside alias tracking.
+- **A-E5 increment 53 (RES-4070):** concrete tagged-enum tuple and named
+  payload match patterns now rebase known reference leaves onto their
+  arm-local bindings. Payload-less, OR, literal, wildcard, dynamic,
+  transformed, unknown, and ambiguous patterns remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5

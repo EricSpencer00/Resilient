@@ -875,6 +875,7 @@ impl<'a> AliasWalker<'a> {
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
                 let enum_payload_roots = self.option_result_payload_roots(value, state);
+                let tagged_enum_roots = self.tagged_enum_payload_roots(value, state);
                 let array_return_roots = self.array_return_roots(value, state);
                 let array_alias_roots = self.array_alias_roots(value, state);
                 let nested_array_roots = self.nested_array_literal_roots(value, state);
@@ -942,6 +943,9 @@ impl<'a> AliasWalker<'a> {
                     state.aliases.insert(format!("{name}.{index}"), root);
                 }
                 for (path, root) in enum_payload_roots {
+                    state.aliases.insert(format!("{name}.{path}"), root);
+                }
+                for (path, root) in tagged_enum_roots {
                     state.aliases.insert(format!("{name}.{path}"), root);
                 }
             }
@@ -1138,12 +1142,34 @@ impl<'a> AliasWalker<'a> {
                 };
                 Self::bind_struct_pattern_aliases(inner, &path, roots, state);
             }
+            crate::Pattern::EnumVariant { payload, .. } => match payload {
+                crate::EnumPatternPayload::Named(fields) => {
+                    for (field, subpattern) in fields {
+                        let path = if prefix.is_empty() {
+                            field.clone()
+                        } else {
+                            format!("{prefix}.{field}")
+                        };
+                        Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                    }
+                }
+                crate::EnumPatternPayload::Tuple(fields) => {
+                    for (index, subpattern) in fields.iter().enumerate() {
+                        let path = if prefix.is_empty() {
+                            index.to_string()
+                        } else {
+                            format!("{prefix}.{index}")
+                        };
+                        Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                    }
+                }
+                crate::EnumPatternPayload::None => {}
+            },
             crate::Pattern::Literal(_)
             | crate::Pattern::Wildcard
             | crate::Pattern::Or(_)
             | crate::Pattern::Range { .. }
-            | crate::Pattern::None
-            | crate::Pattern::EnumVariant { .. } => {}
+            | crate::Pattern::None => {}
         }
     }
 
@@ -1180,6 +1206,66 @@ impl<'a> AliasWalker<'a> {
             roots.push((format!("0{path}"), root));
         }
         roots
+    }
+
+    /// Return known reference leaves carried by a concrete tagged-enum
+    /// constructor. Qualified call names denote tuple payloads; qualified
+    /// struct literals denote named payloads. Unqualified or transformed
+    /// expressions remain opaque.
+    fn tagged_enum_payload_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        match value {
+            crate::Node::StructLiteral { name, fields, .. } if name.contains("::") => {
+                let mut roots = Vec::new();
+                for (field, payload) in fields {
+                    if let Some(root) = self.returned_root(payload, state) {
+                        roots.push((field.clone(), root));
+                    }
+                    for (path, root) in self.paths_below(payload, state) {
+                        roots.push((format!("{field}{path}"), root));
+                    }
+                    for (path, root) in self.struct_field_roots(payload, state) {
+                        roots.push((format!("{field}.{path}"), root));
+                    }
+                    for (path, root) in self.tuple_element_roots(payload, state) {
+                        roots.push((format!("{field}.{path}"), root));
+                    }
+                }
+                roots
+            }
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
+                let crate::Node::Identifier { name, .. } = function.as_ref() else {
+                    return Vec::new();
+                };
+                if !name.contains("::") {
+                    return Vec::new();
+                }
+                let mut roots = Vec::new();
+                for (index, payload) in arguments.iter().enumerate() {
+                    if let Some(root) = self.returned_root(payload, state) {
+                        roots.push((index.to_string(), root));
+                    }
+                    for (path, root) in self.paths_below(payload, state) {
+                        roots.push((format!("{index}{path}"), root));
+                    }
+                    for (path, root) in self.struct_field_roots(payload, state) {
+                        roots.push((format!("{index}.{path}"), root));
+                    }
+                    for (path, root) in self.tuple_element_roots(payload, state) {
+                        roots.push((format!("{index}.{path}"), root));
+                    }
+                }
+                roots
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Resolve the region carried by a value expression when the pass can
@@ -2168,6 +2254,7 @@ impl<'a> AliasWalker<'a> {
                 let mut scrutinee_pattern_roots = self.struct_pattern_roots(scrutinee, state);
                 scrutinee_pattern_roots.extend(self.tuple_element_roots(scrutinee, state));
                 scrutinee_pattern_roots.extend(self.option_result_payload_roots(scrutinee, state));
+                scrutinee_pattern_roots.extend(self.tagged_enum_payload_roots(scrutinee, state));
                 // Pattern bindings can shadow outer names without a
                 // `let`, so remove those names from the incoming facts
                 // before checking the arm. Facts established before the
@@ -5734,6 +5821,32 @@ mod tests {
                }"#,
         );
         assert_eq!(errors.len(), 4, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn match_tagged_enum_patterns_preserve_payload_paths() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Named { holder: Holder },
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match Packet::Item(new Holder { item: x }) {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       _ => { println("unreachable"); },
+                   }
+                   let named = new Packet::Named {
+                       holder: new Holder { item: x },
+                   };
+                   match named {
+                       Packet::Named { holder } => { set_both(x, holder.item); },
+                       _ => { println("unreachable"); },
+                   }
+               }"#,
+        );
+        assert_eq!(errors.len(), 2, "got: {:?}", errors);
     }
 
     #[test]
