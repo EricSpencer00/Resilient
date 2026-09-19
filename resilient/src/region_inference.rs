@@ -1373,13 +1373,32 @@ impl<'a> AliasWalker<'a> {
             {
                 roots.push((path.clone(), root));
             }
-            if let crate::Node::StructLiteral {
-                name: nested_name,
-                fields: nested_fields,
-                ..
-            } = value
-            {
-                self.collect_struct_field_roots(nested_name, nested_fields, &path, state, roots);
+            match value {
+                crate::Node::StructLiteral {
+                    name: nested_name,
+                    fields: nested_fields,
+                    ..
+                } => {
+                    self.collect_struct_field_roots(
+                        nested_name,
+                        nested_fields,
+                        &path,
+                        state,
+                        roots,
+                    );
+                }
+                crate::Node::CallExpression {
+                    function,
+                    arguments,
+                    ..
+                } => {
+                    for (nested_field, root) in
+                        self.struct_call_field_roots(function, arguments, state)
+                    {
+                        roots.push((format!("{path}.{nested_field}"), root));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -4489,6 +4508,39 @@ mod tests {
         assert!(
             errors.is_empty(),
             "unknown tuple helper values must stay opaque: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn direct_struct_literal_helper_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } struct Outer { Inner inner } fn make_inner(&mut int x) -> Inner { return new Inner { item: x }; } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let outer = new Outer { inner: make_inner(x) }; set_both(x, outer.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("outer.inner.item"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_struct_literal_helper_chain_preserves_nested_field() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } struct Outer { Inner inner } fn make_inner(&mut int x) -> Inner { return new Inner { item: x }; } fn forward(&mut int x) -> Inner { return make_inner(x); } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let outer = new Outer { inner: forward(x) }; set_both(x, outer.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn unknown_struct_helper_inside_literal_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } struct Outer { Inner inner } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let outer = new Outer { inner: unknown(x) }; set_both(x, outer.inner.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unknown struct helper values must stay opaque: {:?}",
             errors
         );
     }
