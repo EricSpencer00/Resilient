@@ -39,6 +39,10 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::{Node, builtin_names, compute_semantic_tokens, parse, typechecker};
 
+#[cfg(test)]
+#[path = "lsp_utf16_tests.rs"]
+mod lsp_utf16_tests;
+
 /// RES-186: one workspace-level symbol entry. A flat vec of these
 /// is the backend's search index — substring filter at query time,
 /// rebuilt per `did_save`.
@@ -150,7 +154,7 @@ impl Backend {
         }
 
         for err in &parser_errors {
-            let (range, pretty) = extract_range_and_message(err);
+            let (range, pretty) = extract_range_and_message_in_source(err, &text);
             diagnostics.push(Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::ERROR),
@@ -167,7 +171,7 @@ impl Backend {
         if parser_errors.is_empty() {
             let mut tc = typechecker::TypeChecker::new();
             if let Err(msg) = tc.check_program_with_source(&program, uri.as_str()) {
-                let (range, pretty) = extract_range_and_message(&msg);
+                let (range, pretty) = extract_range_and_message_in_source(&msg, &text);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::ERROR),
@@ -184,9 +188,7 @@ impl Backend {
         // Lint positions are 1-indexed; convert to 0-indexed LSP positions.
         if parser_errors.is_empty() {
             for lint in crate::lint::check(&program, &text) {
-                let line0 = lint.line.saturating_sub(1);
-                let col0 = lint.column.saturating_sub(1);
-                let pos = Position::new(line0, col0);
+                let pos = lsp_position_for_source(&text, lint.line, lint.column);
                 let range = Range::new(pos, pos);
                 let severity = match lint.severity {
                     crate::lint::Severity::Error => DiagnosticSeverity::ERROR,
@@ -213,6 +215,88 @@ impl Backend {
 fn point_range(line_0based: u32, col_0based: u32) -> Range {
     let pos = Position::new(line_0based, col_0based);
     Range::new(pos, pos)
+}
+
+/// Convert a 1-indexed source line/column to an LSP position. Source
+/// columns count Unicode scalar values, while LSP characters count UTF-16
+/// code units.
+fn lsp_position_for_source(src: &str, line: u32, column: u32) -> Position {
+    let line0 = line.saturating_sub(1);
+    let column0 = column.saturating_sub(1);
+    let Some(source_line) = src.split('\n').nth(line0 as usize) else {
+        return Position::new(line0, column0);
+    };
+    let source_line = source_line.strip_suffix('\r').unwrap_or(source_line);
+    let scalar_count = source_line.chars().count();
+    if column0 as usize > scalar_count {
+        return Position::new(line0, column0);
+    }
+    let utf16_column = source_line
+        .chars()
+        .take(column0 as usize)
+        .map(char::len_utf16)
+        .sum::<usize>() as u32;
+    Position::new(line0, utf16_column)
+}
+
+fn span_to_range_in_source(src: &str, span: crate::span::Span) -> Range {
+    if src.is_ascii() {
+        return span_to_range(span);
+    }
+    Range::new(
+        lsp_position_for_source(
+            src,
+            span.start.line.min(u32::MAX as usize) as u32,
+            span.start.column.min(u32::MAX as usize) as u32,
+        ),
+        lsp_position_for_source(
+            src,
+            span.end.line.min(u32::MAX as usize) as u32,
+            span.end.column.min(u32::MAX as usize) as u32,
+        ),
+    )
+}
+
+fn point_range_in_source(src: &str, line: u32, column: u32) -> Range {
+    let pos = lsp_position_for_source(src, line, column);
+    Range::new(pos, pos)
+}
+
+fn extract_range_and_message_in_source(err: &str, src: &str) -> (Range, String) {
+    if src.is_ascii() {
+        return extract_range_and_message(err);
+    }
+    if let Some(parsed) = parse_bare_line_col_in_source(err, src) {
+        return parsed;
+    }
+
+    for (i, _) in err.match_indices(':') {
+        let rest = &err[i + 1..];
+        let mut parts = rest.splitn(3, ':');
+        let line_s = parts.next().unwrap_or("");
+        let col_s = parts.next().unwrap_or("");
+        let msg = parts.next().unwrap_or("");
+        if let (Ok(line), Ok(col)) = (line_s.trim().parse::<u32>(), col_s.trim().parse::<u32>()) {
+            return (
+                point_range_in_source(src, line, col),
+                msg.trim().to_string(),
+            );
+        }
+    }
+    (point_range_in_source(src, 1, 1), err.to_string())
+}
+
+fn parse_bare_line_col_in_source(err: &str, src: &str) -> Option<(Range, String)> {
+    let mut parts = err.splitn(3, ':');
+    let line_s = parts.next()?;
+    let col_s = parts.next()?;
+    let msg = parts.next()?;
+    let line: u32 = line_s.trim().parse().ok()?;
+    let col: u32 = col_s.trim().parse().ok()?;
+    Some((
+        point_range_in_source(src, line, col),
+        msg.trim().to_string(),
+    ))
 }
 
 /// Parse a `<line>:<col>:` or `<path>:<line>:<col>:` prefix out of
@@ -301,7 +385,7 @@ pub(crate) fn hover_literal_at(src: &str, pos: Position) -> Option<(&'static str
         if matches!(tok, Token::Eof) {
             return None;
         }
-        if !lex_span_contains_lsp_position(span, pos) {
+        if !lex_span_contains_lsp_position_in_source(src, span, pos) {
             continue;
         }
         let type_name: &'static str = match tok {
@@ -312,7 +396,7 @@ pub(crate) fn hover_literal_at(src: &str, pos: Position) -> Option<(&'static str
             Token::BytesLiteral(_) => "Bytes",
             _ => return None, // non-literal token at cursor → no hover
         };
-        return Some((type_name, span_to_range(span)));
+        return Some((type_name, span_to_range_in_source(src, span)));
     }
 }
 
@@ -343,6 +427,30 @@ fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> boo
     true
 }
 
+fn lex_span_contains_lsp_position_in_source(
+    src: &str,
+    span: crate::span::Span,
+    pos: Position,
+) -> bool {
+    if src.is_ascii() {
+        return lex_span_contains_lsp_position(span, pos);
+    }
+    let range = span_to_range_in_source(src, span);
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if range.start.line == range.end.line {
+        return pos.character >= range.start.character && pos.character < range.end.character;
+    }
+    if pos.line == range.start.line {
+        return pos.character >= range.start.character;
+    }
+    if pos.line == range.end.line {
+        return pos.character < range.end.character;
+    }
+    true
+}
+
 /// RES-182a: lex `src` and, if the cursor sits on an
 /// `Identifier` token, return the `(name, span)` pair. Returns
 /// `None` for every other kind of token (keywords, literals,
@@ -361,11 +469,11 @@ pub(crate) fn identifier_at(src: &str, pos: Position) -> Option<(String, Range)>
         if matches!(tok, Token::Eof) {
             return None;
         }
-        if !lex_span_contains_lsp_position(span, pos) {
+        if !lex_span_contains_lsp_position_in_source(src, span, pos) {
             continue;
         }
         if let Token::Identifier(name) = tok {
-            return Some((name, span_to_range(span)));
+            return Some((name, span_to_range_in_source(src, span)));
         }
         // Non-identifier token at the cursor — no jump.
         return None;
