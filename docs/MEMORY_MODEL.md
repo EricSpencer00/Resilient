@@ -491,6 +491,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   and known helper returns. For example, `holder.pair.0` and
   `holder.items[0]` remain linked to their reference parameters while value
   fields stay outside alias tracking.
+- **A-E5 increment 40 (RES-4070):** direct tuple literals now rebase proven
+  array and struct paths from existing places used as tuple elements, so
+  `let pair = (items, 0)` exposes `pair.0[0]` and `(holder, 0)` exposes
+  `pair.0.item`. Unknown, transformed, dynamic, and value-only places remain
+  outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
