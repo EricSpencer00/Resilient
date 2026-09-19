@@ -744,7 +744,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   returns, declared reference fields initialized by concrete struct
 //   literals (including nested paths), direct tagged-enum/Option/Result
 //   constructors nested in concrete struct literals or transferred through
-//   tuple/struct destructuring, direct tuple and array returns, and
+//   tuple/struct destructuring and nested variant-aware match patterns,
+//   direct tuple and array returns, and
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -1145,8 +1146,15 @@ impl<'a> AliasWalker<'a> {
         pattern: &crate::Pattern,
         prefix: &str,
         roots: &[(String, String)],
+        known_constructors: &[(String, String)],
         state: &mut AliasState,
     ) {
+        if let Some(constructor) = known_constructors.iter().find_map(|(path, constructor)| {
+            (path.trim_start_matches('.') == prefix).then_some(constructor.as_str())
+        }) && !Self::pattern_matches_constructor(pattern, constructor)
+        {
+            return;
+        }
         match pattern {
             crate::Pattern::Identifier(name) => {
                 for (path, root) in roots {
@@ -1162,8 +1170,14 @@ impl<'a> AliasWalker<'a> {
             }
             crate::Pattern::Bind(name, inner) => {
                 let whole_value = crate::Pattern::Identifier(name.clone());
-                Self::bind_struct_pattern_aliases(&whole_value, prefix, roots, state);
-                Self::bind_struct_pattern_aliases(inner, prefix, roots, state);
+                Self::bind_struct_pattern_aliases(
+                    &whole_value,
+                    prefix,
+                    roots,
+                    known_constructors,
+                    state,
+                );
+                Self::bind_struct_pattern_aliases(inner, prefix, roots, known_constructors, state);
             }
             crate::Pattern::Struct { fields, .. } => {
                 for (field, subpattern) in fields {
@@ -1172,7 +1186,13 @@ impl<'a> AliasWalker<'a> {
                     } else {
                         format!("{prefix}.{field}")
                     };
-                    Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                    Self::bind_struct_pattern_aliases(
+                        subpattern,
+                        &path,
+                        roots,
+                        known_constructors,
+                        state,
+                    );
                 }
             }
             crate::Pattern::TupleStruct { fields, .. } | crate::Pattern::Tuple(fields) => {
@@ -1182,7 +1202,13 @@ impl<'a> AliasWalker<'a> {
                     } else {
                         format!("{prefix}.{index}")
                     };
-                    Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                    Self::bind_struct_pattern_aliases(
+                        subpattern,
+                        &path,
+                        roots,
+                        known_constructors,
+                        state,
+                    );
                 }
             }
             crate::Pattern::Some(inner)
@@ -1193,7 +1219,7 @@ impl<'a> AliasWalker<'a> {
                 } else {
                     format!("{prefix}.0")
                 };
-                Self::bind_struct_pattern_aliases(inner, &path, roots, state);
+                Self::bind_struct_pattern_aliases(inner, &path, roots, known_constructors, state);
             }
             crate::Pattern::EnumVariant { payload, .. } => match payload {
                 crate::EnumPatternPayload::Named(fields) => {
@@ -1203,7 +1229,13 @@ impl<'a> AliasWalker<'a> {
                         } else {
                             format!("{prefix}.{field}")
                         };
-                        Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                        Self::bind_struct_pattern_aliases(
+                            subpattern,
+                            &path,
+                            roots,
+                            known_constructors,
+                            state,
+                        );
                     }
                 }
                 crate::EnumPatternPayload::Tuple(fields) => {
@@ -1213,7 +1245,13 @@ impl<'a> AliasWalker<'a> {
                         } else {
                             format!("{prefix}.{index}")
                         };
-                        Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                        Self::bind_struct_pattern_aliases(
+                            subpattern,
+                            &path,
+                            roots,
+                            known_constructors,
+                            state,
+                        );
                     }
                 }
                 crate::EnumPatternPayload::None => {}
@@ -2337,7 +2375,7 @@ impl<'a> AliasWalker<'a> {
                 scrutinee, arms, ..
             } => {
                 self.walk_expr(scrutinee, state);
-                let known_constructor = self.known_constructor_for(scrutinee, state);
+                let known_constructor_paths = self.known_constructor_paths(scrutinee, state);
                 let mut scrutinee_pattern_roots = self.struct_pattern_roots(scrutinee, state);
                 scrutinee_pattern_roots.extend(self.tuple_element_roots(scrutinee, state));
                 scrutinee_pattern_roots.extend(self.option_result_payload_roots(scrutinee, state));
@@ -2357,18 +2395,13 @@ impl<'a> AliasWalker<'a> {
                     for name in pattern_bindings {
                         self.kill_name(&mut arm_state, &name);
                     }
-                    let can_bind_known_payload =
-                        known_constructor.as_deref().is_none_or(|constructor| {
-                            Self::pattern_matches_constructor(pat, constructor)
-                        });
-                    if can_bind_known_payload {
-                        Self::bind_struct_pattern_aliases(
-                            pat,
-                            "",
-                            &scrutinee_pattern_roots,
-                            &mut arm_state,
-                        );
-                    }
+                    Self::bind_struct_pattern_aliases(
+                        pat,
+                        "",
+                        &scrutinee_pattern_roots,
+                        &known_constructor_paths,
+                        &mut arm_state,
+                    );
                     if let Some(g) = guard {
                         self.walk_expr(g, &mut arm_state);
                     }
@@ -7263,6 +7296,60 @@ mod tests {
             errors.len(),
             3,
             "only matching destructured constructor arms should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_constructor_patterns_do_not_reuse_mismatched_payloads() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               struct PacketWrapper { Packet packet }
+               struct OptionWrapper { Option<&mut int> value }
+               struct ResultWrapper { Result<&mut int, &mut int> value }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let matching_packet = new PacketWrapper {
+                       packet: Packet::Item(new Holder { item: x }),
+                   };
+                   match matching_packet {
+                       PacketWrapper { packet: Packet::Other(alias) } => {
+                           set_both(x, alias.item);
+                       },
+                       PacketWrapper { packet: Packet::Item(alias) } => {
+                           set_both(x, alias.item);
+                       },
+                   }
+                   let matching_option = new OptionWrapper { value: Some(x) };
+                   match matching_option {
+                       OptionWrapper { value: Some(alias) } => { set_both(x, alias); },
+                       OptionWrapper { value: None } => { println("none"); },
+                   }
+                   let option_wrapper = new OptionWrapper { value: None };
+                   match option_wrapper {
+                       OptionWrapper { value: Some(alias) } => { set_both(x, alias); },
+                       OptionWrapper { value: None } => { println("none"); },
+                   }
+                   let result_wrapper = new ResultWrapper { value: Err(x) };
+                   match result_wrapper {
+                       ResultWrapper { value: Ok(alias) } => { set_both(x, alias); },
+                       ResultWrapper { value: Err(_) } => { println("err"); },
+                   }
+                   let matching_result = new ResultWrapper { value: Err(x) };
+                   match matching_result {
+                       ResultWrapper { value: Ok(_) } => { println("ok"); },
+                       ResultWrapper { value: Err(alias) } => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            3,
+            "only matching nested constructors should report: {:?}",
             errors
         );
     }

@@ -582,6 +582,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   tuple and struct destructuring, so later matches on destructured tagged-enum,
   `Some`, `Ok`, and `Err` bindings remain variant-aware. Dynamic, transformed,
   unknown, and ambiguous destructuring paths remain opaque.
+- **A-E5 increment 60 (RES-4070):** nested constructor patterns inside
+  concrete struct and tuple matches now consult the known constructor at that
+  nested path before rebinding payload leaves. Matching `Some`, `Ok`, `Err`, or
+  tagged-enum patterns retain aliases; mismatched and opaque patterns remain
+  conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
