@@ -536,6 +536,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   arrays, and nested tuples keep their tracked reference leaves. Dynamic,
   transformed, unknown, value-only, and ambiguous paths remain outside alias
   tracking.
+- **A-E5 increment 49 (RES-4070):** struct destructuring now rebases known
+  reference leaves below each selected field onto the new local binding, so
+  nested structs, arrays, and tuples retain their tracked paths. Dynamic,
+  transformed, unknown, value-only, and ambiguous paths remain outside alias
+  tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
