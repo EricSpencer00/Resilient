@@ -97,7 +97,12 @@ pub fn estimate_uj(node: &Node) -> f64 {
             ..
         } => {
             estimate_uj(condition)
-                + estimate_uj(consequence).max(alternative.as_ref().map(estimate_uj).unwrap_or(0.0))
+                + estimate_uj(consequence).max(
+                    alternative
+                        .as_ref()
+                        .map(|branch| estimate_uj(branch))
+                        .unwrap_or(0.0),
+                )
         }
         Node::WhileStatement {
             condition, body, ..
