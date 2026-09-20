@@ -175,6 +175,14 @@
     "resilient/src/static_assert.rs": {
       "branch": "res-4672-const-overflow",
       "claimed_at": "2026-09-20T18:51:13Z"
+    },
+    "resilient/src/array_functional.rs": {
+      "branch": "res-4676-flat-map-budget",
+      "claimed_at": "2026-09-20T19:26:20Z"
+    },
+    "resilient/src/functional_hof.rs": {
+      "branch": "res-4676-flat-map-budget",
+      "claimed_at": "2026-09-20T19:26:20Z"
     }
   }
 }
