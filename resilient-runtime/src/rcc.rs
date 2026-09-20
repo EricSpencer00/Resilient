@@ -143,6 +143,8 @@ unsafe impl RccConfig for Stm32f4Rcc {
 pub enum RccError {
     /// The peripheral is not supported by the configured chip.
     UnsupportedPeripheral,
+    /// The chip configuration returned a bit outside the 32-bit register.
+    InvalidBit(u32),
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +169,9 @@ pub enum RccError {
 pub fn enable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), RccError> {
     let addr = CFG::enable_register_addr(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
     let bit = CFG::enable_bit(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
+    if bit >= u32::BITS {
+        return Err(RccError::InvalidBit(bit));
+    }
     // SAFETY: addr is a valid 32-bit MMIO register per RccConfig's contract.
     unsafe {
         let ptr = addr as *mut u32;
@@ -184,6 +189,9 @@ pub fn enable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), R
 pub fn disable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), RccError> {
     let addr = CFG::enable_register_addr(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
     let bit = CFG::enable_bit(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
+    if bit >= u32::BITS {
+        return Err(RccError::InvalidBit(bit));
+    }
     // SAFETY: same as enable_peripheral.
     unsafe {
         let ptr = addr as *mut u32;
@@ -203,6 +211,9 @@ pub fn is_enabled<CFG: RccConfig>(peripheral: Peripheral) -> bool {
     ) else {
         return false;
     };
+    if bit >= u32::BITS {
+        return false;
+    }
     // SAFETY: same as enable_peripheral.
     unsafe {
         let ptr = addr as *const u32;
@@ -349,5 +360,39 @@ mod tests {
             is_enabled::<MockRcc>(Peripheral::GpioA),
             "is_enabled must return true after enable_peripheral"
         );
+    }
+}
+
+#[cfg(test)]
+mod invalid_bit_tests {
+    use super::*;
+    use core::sync::atomic::AtomicU32;
+
+    static REGISTER: AtomicU32 = AtomicU32::new(0);
+
+    struct InvalidBitRcc;
+
+    unsafe impl RccConfig for InvalidBitRcc {
+        fn enable_register_addr(_: Peripheral) -> Option<usize> {
+            Some(&REGISTER as *const AtomicU32 as usize)
+        }
+
+        fn enable_bit(_: Peripheral) -> Option<u32> {
+            Some(u32::BITS)
+        }
+    }
+
+    #[test]
+    fn invalid_bit_is_rejected_without_touching_register() {
+        assert_eq!(
+            enable_peripheral::<InvalidBitRcc>(Peripheral::GpioA),
+            Err(RccError::InvalidBit(u32::BITS))
+        );
+        assert_eq!(
+            disable_peripheral::<InvalidBitRcc>(Peripheral::GpioA),
+            Err(RccError::InvalidBit(u32::BITS))
+        );
+        assert!(!is_enabled::<InvalidBitRcc>(Peripheral::GpioA));
+        assert_eq!(REGISTER.load(core::sync::atomic::Ordering::Relaxed), 0);
     }
 }
