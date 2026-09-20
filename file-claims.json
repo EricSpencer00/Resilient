@@ -151,6 +151,10 @@
     "resilient/src/collection_budget.rs": {
       "branch": "res-4657-hof-array-budget",
       "claimed_at": "2026-09-20T18:02:00Z"
+    },
+    "resilient/src/jit_backend.rs": {
+      "branch": "res-4659-jit-pattern-fail-closed",
+      "claimed_at": "2026-09-20T18:04:28Z"
     }
   }
 }
