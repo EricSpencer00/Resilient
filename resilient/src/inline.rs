@@ -205,6 +205,20 @@ fn is_inlineable(functions: &[Function], idx: u16) -> bool {
         Some(f) => f,
         None => return false,
     };
+    // A callee frame is part of the observable semantics for checked
+    // failures and postconditions.  Inlining either one would remove the
+    // VM dispatch point that injects a `fails` variant or runs the
+    // synthesized postcheck.
+    if !func.fails.is_empty() || func.postcheck.is_some() {
+        return false;
+    }
+    // The rewrite below can only preserve opcodes whose operands are
+    // independent of the callee's frame and side tables.  Keep this
+    // allowlist conservative: a new frame-sensitive opcode must opt in
+    // deliberately instead of silently changing safety semantics.
+    if func.chunk.code.iter().any(|op| !is_inline_safe_op(*op)) {
+        return false;
+    }
     // Body length excludes the trailing `ReturnFromCall` the compiler
     // unconditionally emits. The chunk may also have a tombstone
     // `Return` from `rewrite_tail_calls`, but for non-recursive
@@ -217,15 +231,67 @@ fn is_inlineable(functions: &[Function], idx: u16) -> bool {
         match op {
             // Self-recursion via direct or tail call → not a leaf.
             Op::Call(target) if *target == idx => return false,
-            Op::TailCall(_) => return false,
-            // Closures need an upvalue slab the inliner can't reproduce.
-            Op::MakeClosure { .. } | Op::LoadUpvalue(_) => return false,
-            // Foreign calls have opaque side effects; skip conservatively.
-            Op::CallForeign(_) => return false,
             _ => {}
         }
     }
     true
+}
+
+/// Whether an opcode can be copied into the caller without changing its
+/// frame, constant-pool, or side-table semantics.  The inliner rewrites the
+/// local and constant-bearing variants explicitly in `rewrite_inlined_op`;
+/// everything else that is admitted here is frame-independent and carries no
+/// callee-owned metadata.
+fn is_inline_safe_op(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Const(_)
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Mod
+            | Op::Neg
+            | Op::LoadLocal(_)
+            | Op::StoreLocal(_)
+            | Op::Call(_)
+            | Op::Jump(_)
+            | Op::JumpIfFalse(_)
+            | Op::JumpIfTrue(_)
+            | Op::IncLocal(_)
+            | Op::Eq
+            | Op::Neq
+            | Op::Lt
+            | Op::Le
+            | Op::Gt
+            | Op::Ge
+            | Op::Not
+            | Op::ReturnFromCall
+            | Op::MakeArray { .. }
+            | Op::LoadIndex
+            | Op::LoadIndexUnchecked
+            | Op::StoreIndex
+            | Op::CallBuiltin { .. }
+            | Op::StructLiteral { .. }
+            | Op::GetField { .. }
+            | Op::SetField { .. }
+            | Op::Band
+            | Op::Bor
+            | Op::Bxor
+            | Op::Shl
+            | Op::Shr
+            | Op::AssertFail
+            | Op::AssumeFail
+            | Op::AssertBool
+            | Op::MakeTuple { .. }
+            | Op::TryUnwrap
+            | Op::Coalesce
+            | Op::OptChainUnwrap
+            | Op::IterPrepare
+            | Op::LoadGlobal(_)
+            | Op::StoreGlobal(_)
+            | Op::Pop
+    )
 }
 
 /// Count the "real" body ops in a function chunk — every op up to but
@@ -865,6 +931,96 @@ mod tests {
         };
         let funcs = vec![func];
         assert!(!is_inlineable(&funcs, 0));
+    }
+
+    #[test]
+    fn checked_failure_and_postcheck_functions_are_not_inlineable() {
+        let mut fails = mk_id_function();
+        fails.fails = vec!["Timeout".to_string()].into_boxed_slice();
+        assert!(!is_inlineable(&[fails], 0));
+
+        let mut postchecked = mk_id_function();
+        postchecked.postcheck = Some(1);
+        assert!(!is_inlineable(&[postchecked], 0));
+    }
+
+    #[test]
+    fn frame_owned_and_side_table_ops_are_not_inlineable() {
+        let disallowed = [
+            Op::DeferPush(0),
+            Op::EnterTry(0),
+            Op::ExitTry,
+            Op::EnterLive(0),
+            Op::ExitLive,
+            Op::PushStaticInitialized(0),
+            Op::StoreStatic(0),
+            Op::LoadStatic(0),
+            Op::StoreUpvalue {
+                upvalue_idx: 0,
+                local_slot: 0,
+            },
+            Op::CallClosure {
+                arity: 0,
+                source_slot: u16::MAX,
+            },
+            Op::CallMethod {
+                method_const: 0,
+                arity: 0,
+            },
+            Op::MakeEnumTuple {
+                type_const: 0,
+                variant_const: 0,
+                arity: 0,
+            },
+            Op::MakeEnumNamed {
+                type_const: 0,
+                variant_const: 0,
+                field_count: 0,
+            },
+            Op::ContractViolation {
+                name_const: 0,
+                clause_const: 0,
+                is_recovers_to: false,
+            },
+        ];
+
+        for op in disallowed {
+            let func = Function {
+                name: "frame_owned".to_string(),
+                arity: 0,
+                local_count: 0,
+                upvalue_source_slots: Box::default(),
+                fails: Box::default(),
+                postcheck: None,
+                chunk: mk_chunk(
+                    vec![op, Op::ReturnFromCall, Op::ReturnFromCall],
+                    vec![],
+                    vec![1, 1, 1],
+                ),
+            };
+            assert!(
+                !is_inlineable(&[func], 0),
+                "frame-owned opcode was accepted: {op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn checked_failure_call_survives_inline_optimization() {
+        let mut risky = mk_id_function();
+        risky.name = "risky".to_string();
+        risky.fails = vec!["Timeout".to_string()].into_boxed_slice();
+
+        let mut prog = empty_program(vec![risky]);
+        prog.main = mk_chunk(vec![Op::Call(0), Op::Return], vec![], vec![1, 1]);
+
+        optimize(&mut prog).expect("inline pass succeeds");
+
+        assert!(
+            prog.main.code.iter().any(|op| matches!(op, Op::Call(0))),
+            "checked-failure call must remain a VM dispatch point: {:?}",
+            prog.main.code
+        );
     }
 
     // ---------- body_op_count ----------
