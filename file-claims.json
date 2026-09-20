@@ -20,10 +20,6 @@
       "branch": "res-4451-generic-enum-bindings",
       "claimed_at": "2026-09-19T23:14:15Z"
     },
-    "resilient/src/enum_exhaustiveness.rs": {
-      "branch": "res-4458-nested-result-exhaustiveness",
-      "claimed_at": "2026-09-20T00:20:52Z"
-    },
     "resilient-runtime/src/vm/serde.rs": {
       "branch": "res-4463-bytecode-control-flow",
       "claimed_at": "2026-09-20T00:29:17Z"
@@ -35,14 +31,6 @@
     "resilient-runtime/src/dma.rs": {
       "branch": "res-4465-dma-descriptor-links",
       "claimed_at": "2026-09-20T00:57:03Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4471-const-vm-traversal",
-      "claimed_at": "2026-09-20T01:25:20Z"
-    },
-    "resilient/tests/const_vm_const_traversal.rs": {
-      "branch": "res-4471-const-vm-traversal",
-      "claimed_at": "2026-09-20T01:25:20Z"
     }
   }
 }
