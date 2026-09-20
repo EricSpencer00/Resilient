@@ -280,13 +280,9 @@
       "branch": "res-4762-stats-histogram-bound",
       "claimed_at": "2026-09-20T22:53:02Z"
     },
-    "resilient/src/cert_sign.rs": {
-      "branch": "res-4768-cert-manifest-path",
-      "claimed_at": "2026-09-20T23:05:30Z"
-    },
-    "resilient/tests/cert_manifest_path_guard.rs": {
-      "branch": "res-4768-cert-manifest-path",
-      "claimed_at": "2026-09-20T23:05:30Z"
+    "resilient/src/diag.rs": {
+      "branch": "res-4770-diagnostic-column-guard",
+      "claimed_at": "2026-09-20T23:08:21Z"
     }
   }
 }
