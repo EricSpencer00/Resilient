@@ -3787,7 +3787,7 @@ mod tests {
         assert!(smt2.contains("(declare-const r Int)"));
         assert!(
             smt2.contains("(assert (>= r 0))"),
-            "certificate must retain the translated caller axiom: {smt2}"
+            "certificate must retain the translated caller axiom"
         );
     }
 
@@ -3806,7 +3806,7 @@ mod tests {
         assert!(smt2.contains("(assert (>= len_xs 0))"));
         assert!(
             smt2.contains("(assert (>= r len_xs))"),
-            "certificate must include the axiom's len expression: {smt2}"
+            "certificate must include the axiom's len expression"
         );
     }
 
