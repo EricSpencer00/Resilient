@@ -333,9 +333,11 @@ fn rewrite_namespaced_calls(
             requires,
             ensures,
             recovers_to,
-            namespace,
-            imported_names,
-            bound,
+            RewriteContext {
+                namespace,
+                imported_names,
+                bound,
+            },
         ),
         Node::FunctionLiteral {
             parameters,
@@ -351,9 +353,11 @@ fn rewrite_namespaced_calls(
             requires,
             ensures,
             recovers_to,
-            namespace,
-            imported_names,
-            bound,
+            RewriteContext {
+                namespace,
+                imported_names,
+                bound,
+            },
         ),
         Node::Block { stmts, .. } => {
             let mut scoped = bound.clone();
@@ -588,6 +592,12 @@ fn rewrite_namespaced_calls(
     }
 }
 
+struct RewriteContext<'a> {
+    namespace: &'a str,
+    imported_names: &'a HashSet<String>,
+    bound: &'a HashSet<String>,
+}
+
 fn rewrite_function_children(
     parameters: &[(String, String)],
     mut defaults: Option<&mut Vec<Option<Box<Node>>>>,
@@ -595,25 +605,23 @@ fn rewrite_function_children(
     requires: &mut [Node],
     ensures: &mut [Node],
     recovers_to: &mut Option<Box<Node>>,
-    namespace: &str,
-    imported_names: &HashSet<String>,
-    bound: &HashSet<String>,
+    context: RewriteContext<'_>,
 ) {
-    let mut scoped = bound.clone();
+    let mut scoped = context.bound.clone();
     for (_, name) in parameters {
         scoped.insert(name.clone());
     }
     if let Some(defaults) = defaults.as_mut() {
         for default in defaults.iter_mut().flatten() {
-            rewrite_namespaced_calls(default, namespace, imported_names, &scoped);
+            rewrite_namespaced_calls(default, context.namespace, context.imported_names, &scoped);
         }
     }
-    rewrite_namespaced_calls(body, namespace, imported_names, &scoped);
+    rewrite_namespaced_calls(body, context.namespace, context.imported_names, &scoped);
     for expr in requires.iter_mut().chain(ensures.iter_mut()) {
-        rewrite_namespaced_calls(expr, namespace, imported_names, &scoped);
+        rewrite_namespaced_calls(expr, context.namespace, context.imported_names, &scoped);
     }
     if let Some(expr) = recovers_to {
-        rewrite_namespaced_calls(expr, namespace, imported_names, &scoped);
+        rewrite_namespaced_calls(expr, context.namespace, context.imported_names, &scoped);
     }
 }
 
