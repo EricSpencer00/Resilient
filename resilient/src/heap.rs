@@ -52,11 +52,21 @@ fn unpack(arr: &[Value]) -> (bool, &[Value]) {
 }
 
 // Pack heap storage from is_max flag + elements
-fn pack(is_max: bool, elems: Vec<Value>) -> Vec<Value> {
-    let mut out = Vec::with_capacity(elems.len() + 1);
+fn packed_capacity(element_count: usize) -> RResult<usize> {
+    element_count
+        .checked_add(1)
+        .ok_or_else(|| "heap: element count overflows tagged capacity".to_string())
+}
+
+fn pack(is_max: bool, elems: Vec<Value>) -> RResult<Vec<Value>> {
+    let mut out = Vec::with_capacity(packed_capacity(elems.len())?);
     out.push(Value::Bool(is_max));
     out.extend(elems);
-    out
+    Ok(out)
+}
+
+fn child_index(index: usize, offset: usize) -> Option<usize> {
+    index.checked_mul(2)?.checked_add(offset)
 }
 
 // Sift-up: restore heap property after inserting at index `idx` (0-based in elems).
@@ -83,11 +93,9 @@ fn sift_up(elems: &mut [Value], mut idx: usize, is_max: bool) -> RResult<()> {
 fn sift_down(elems: &mut [Value], mut idx: usize, is_max: bool) -> RResult<()> {
     let len = elems.len();
     loop {
-        let left = 2 * idx + 1;
-        let right = 2 * idx + 2;
         let mut target = idx;
 
-        if left < len {
+        if let Some(left) = child_index(idx, 1).filter(|&child| child < len) {
             let ord = compare(&elems[left], &elems[target])?;
             let better = if is_max {
                 ord == std::cmp::Ordering::Greater
@@ -98,7 +106,7 @@ fn sift_down(elems: &mut [Value], mut idx: usize, is_max: bool) -> RResult<()> {
                 target = left;
             }
         }
-        if right < len {
+        if let Some(right) = child_index(idx, 2).filter(|&child| child < len) {
             let ord = compare(&elems[right], &elems[target])?;
             let better = if is_max {
                 ord == std::cmp::Ordering::Greater
@@ -126,7 +134,7 @@ pub(crate) fn builtin_heap_new(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    Ok(Value::Array(pack(false, Vec::new())))
+    Ok(Value::Array(pack(false, Vec::new())?))
 }
 
 /// `heap_new_max() → Array` — empty max-heap.
@@ -137,7 +145,7 @@ pub(crate) fn builtin_heap_new_max(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    Ok(Value::Array(pack(true, Vec::new())))
+    Ok(Value::Array(pack(true, Vec::new())?))
 }
 
 /// `heap_push(h, val) → Array` — insert val; O(log n).
@@ -149,7 +157,7 @@ pub(crate) fn builtin_heap_push(args: &[Value]) -> RResult<Value> {
             new_elems.push(val.clone());
             let last = new_elems.len() - 1;
             sift_up(&mut new_elems, last, is_max)?;
-            Ok(Value::Array(pack(is_max, new_elems)))
+            Ok(Value::Array(pack(is_max, new_elems)?))
         }
         [other, _] => Err(format!("heap_push: expected Array, got {other}")),
         _ => Err(format!(
@@ -167,7 +175,7 @@ pub(crate) fn builtin_heap_pop(args: &[Value]) -> RResult<Value> {
             if elems.is_empty() {
                 return Ok(Value::Tuple(vec![
                     Value::Option(None),
-                    Value::Array(pack(is_max, Vec::new())),
+                    Value::Array(pack(is_max, Vec::new())?),
                 ]));
             }
             let mut new_elems = elems.to_vec();
@@ -180,7 +188,7 @@ pub(crate) fn builtin_heap_pop(args: &[Value]) -> RResult<Value> {
             }
             Ok(Value::Tuple(vec![
                 Value::Option(Some(Box::new(top))),
-                Value::Array(pack(is_max, new_elems)),
+                Value::Array(pack(is_max, new_elems)?),
             ]))
         }
         [other] => Err(format!("heap_pop: expected Array, got {other}")),
@@ -318,5 +326,18 @@ println(to_string(heap_is_empty(h)));
         assert!(out.contains("true"), "got: {out:?}");
         assert!(out.contains("1"), "got: {out:?}");
         assert!(out.contains("false"), "got: {out:?}");
+    }
+
+    #[test]
+    fn tagged_capacity_rejects_marker_overflow() {
+        let err = packed_capacity(usize::MAX).unwrap_err();
+        assert_eq!(err, "heap: element count overflows tagged capacity");
+    }
+
+    #[test]
+    fn child_index_rejects_arithmetic_overflow() {
+        assert_eq!(child_index(usize::MAX / 2, 1), Some(usize::MAX));
+        assert_eq!(child_index(usize::MAX / 2, 2), None);
+        assert_eq!(child_index(usize::MAX, 1), None);
     }
 }
