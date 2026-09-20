@@ -823,10 +823,10 @@ pub fn decode_program(
     }
 
     for meta in out_func_meta.iter().take(func_count) {
-        if let Some(postcheck) = meta.postcheck {
-            if postcheck as usize >= func_count {
-                return Err(DecodeError::InvalidFunctionReference(postcheck));
-            }
+        if let Some(postcheck) = meta.postcheck
+            && postcheck as usize >= func_count
+        {
+            return Err(DecodeError::InvalidFunctionReference(postcheck));
         }
     }
 
