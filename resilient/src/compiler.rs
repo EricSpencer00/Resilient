@@ -907,12 +907,20 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
 /// from accidentally reintroducing the old full-`u16` assumption and emitting
 /// a slot whose metadata bits would change its operation kind.
 fn validate_local_slot_capacity(program: &Program) -> Result<(), CompileError> {
+    let is_unrepresentable_local = |idx: u16| {
+        let raw = if idx & BOXED_FLAG != 0 {
+            raw_slot(idx)
+        } else {
+            idx
+        };
+        raw as usize >= MAX_RAW_LOCAL_SLOTS
+    };
     let chunk_uses_unrepresentable_local = |chunk: &Chunk| {
         chunk.code.iter().any(|op| match op {
             Op::LoadLocal(idx) | Op::StoreLocal(idx) | Op::IncLocal(idx) => {
-                *idx as usize >= MAX_RAW_LOCAL_SLOTS
+                is_unrepresentable_local(*idx)
             }
-            Op::StoreUpvalue { local_slot, .. } => *local_slot as usize >= MAX_RAW_LOCAL_SLOTS,
+            Op::StoreUpvalue { local_slot, .. } => is_unrepresentable_local(*local_slot),
             _ => false,
         })
     };
