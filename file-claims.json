@@ -291,6 +291,14 @@
     "resilient/tests/contract_schema_identity.rs": {
       "branch": "res-4774-cert-schema",
       "claimed_at": "2026-09-20T23:15:24Z"
+    },
+    "resilient/src/generic_inference.rs": {
+      "branch": "res-4776-generic-structured-traversal",
+      "claimed_at": "2026-09-20T23:19:28Z"
+    },
+    "resilient/tests/generic_inference_structured.rs": {
+      "branch": "res-4776-generic-structured-traversal",
+      "claimed_at": "2026-09-20T23:19:28Z"
     }
   }
 }
