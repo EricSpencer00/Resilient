@@ -19,7 +19,7 @@
 
 use crate::Node;
 use crate::span::Span;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// RES-385: marker prefix used by the parser to smuggle the
 /// "this type is linear" bit through the `String`-valued type-
@@ -125,7 +125,42 @@ fn check_fn_body(
             );
         }
     }
-    walk(body, &mut bindings, fn_name, source_path)
+    walk(body, &mut bindings, fn_name, source_path)?;
+    Ok(())
+}
+
+/// A linear local must not silently disappear at a lexical scope boundary.
+/// Returning or passing the binding through `consume` marks it consumed during
+/// the normal walk; anything still live here represents an incomplete
+/// ownership transfer. Function parameters remain caller-facing ownership
+/// contracts, so their discharge stays governed by existing call-site rules.
+fn ensure_consumed_at_exit(
+    bindings: &HashMap<String, LinearBinding>,
+    fn_name: &str,
+    source_path: &str,
+) -> Result<(), String> {
+    let mut live: Vec<_> = bindings
+        .iter()
+        .filter(|(_, binding)| binding.consumed_at.is_none())
+        .collect();
+    live.sort_by_key(|(name, _)| *name);
+
+    if let Some((name, binding)) = live.first() {
+        return Err(format_exit_error(
+            source_path,
+            fn_name,
+            name,
+            &binding.ty_name,
+        ));
+    }
+    Ok(())
+}
+
+fn format_exit_error(source_path: &str, fn_name: &str, var_name: &str, ty_name: &str) -> String {
+    format!(
+        "{}:<unknown>: error[linear-use]: linear value `{}: linear {}` not consumed before scope `{}` exits",
+        source_path, var_name, ty_name, fn_name
+    )
 }
 
 /// Recursive walk. Returns the first single-use violation.
@@ -151,9 +186,17 @@ fn walk(
 ) -> Result<(), String> {
     match node {
         Node::Block { stmts, .. } => {
+            let existing_names: HashSet<String> = bindings.keys().cloned().collect();
             for s in stmts {
                 walk(s, bindings, fn_name, source_path)?;
             }
+            let mut introduced = HashMap::new();
+            for (name, binding) in bindings.iter() {
+                if !existing_names.contains(name) {
+                    introduced.insert(name.clone(), binding.clone());
+                }
+            }
+            ensure_consumed_at_exit(&introduced, fn_name, source_path)?;
             Ok(())
         }
         Node::LetStatement {
@@ -286,16 +329,21 @@ fn walk(
             }
             #[cfg(not(feature = "z3"))]
             {
-                // Without Z3, use the conservative snapshot/restore
-                // approach: each branch starts fresh, consumption
-                // in one branch doesn't affect the merge.
+                // Without Z3, each branch starts fresh. Consumption is
+                // still definite when both branches consume the same
+                // binding, so preserve that fact at the merge point.
                 let snap = bindings.clone();
                 walk(consequence, bindings, fn_name, source_path)?;
+                let consequence_state = bindings.clone();
                 *bindings = snap.clone();
                 if let Some(alt) = alternative {
                     walk(alt, bindings, fn_name, source_path)?;
+                    let alternative_state = bindings.clone();
+                    *bindings = snap;
+                    merge_definite_consumption(bindings, &consequence_state, &alternative_state);
+                } else {
+                    *bindings = snap;
                 }
-                *bindings = snap;
             }
             Ok(())
         }
@@ -458,6 +506,7 @@ fn walk(
         Node::FunctionLiteral {
             parameters, body, ..
         } => {
+            let outer_names: HashSet<String> = bindings.keys().cloned().collect();
             let mut inner = bindings.clone();
             for (ty, pname) in parameters {
                 if is_linear(ty) {
@@ -472,6 +521,13 @@ fn walk(
                 }
             }
             walk(body, &mut inner, fn_name, source_path)?;
+            let mut local_bindings = HashMap::new();
+            for (name, binding) in inner.iter() {
+                if !outer_names.contains(name) {
+                    local_bindings.insert(name.clone(), binding.clone());
+                }
+            }
+            ensure_consumed_at_exit(&local_bindings, fn_name, source_path)?;
             // Propagate outer-binding consumption back. Only outer
             // names (those present in the original `bindings`)
             // matter; the closure's own parameter bindings stay
@@ -498,6 +554,31 @@ fn walk(
         // Literals and terminal nodes with no sub-expressions the
         // linearity pass cares about.
         _ => Ok(()),
+    }
+}
+
+fn merge_definite_consumption(
+    bindings: &mut HashMap<String, LinearBinding>,
+    left: &HashMap<String, LinearBinding>,
+    right: &HashMap<String, LinearBinding>,
+) {
+    let names: Vec<String> = bindings.keys().cloned().collect();
+    for name in names {
+        let left_consumed = left
+            .get(&name)
+            .is_some_and(|binding| binding.consumed_at.is_some());
+        let right_consumed = right
+            .get(&name)
+            .is_some_and(|binding| binding.consumed_at.is_some());
+        if left_consumed
+            && right_consumed
+            && let Some(binding) = bindings.get_mut(&name)
+        {
+            binding.consumed_at = left
+                .get(&name)
+                .and_then(|binding| binding.consumed_at)
+                .or_else(|| right.get(&name).and_then(|binding| binding.consumed_at));
+        }
     }
 }
 
