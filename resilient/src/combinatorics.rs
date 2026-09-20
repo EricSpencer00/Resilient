@@ -11,6 +11,36 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+const MAX_GENERATED_ELEMENTS: usize = 10_000_000;
+
+fn checked_generated_count(name: &str, count: Option<usize>) -> RResult<usize> {
+    let Some(count) = count else {
+        return Err(format!("{name}: result size overflow"));
+    };
+    if count > MAX_GENERATED_ELEMENTS {
+        return Err(format!(
+            "{name}: result would exceed {MAX_GENERATED_ELEMENTS} elements (got {count})"
+        ));
+    }
+    Ok(count)
+}
+
+fn checked_product_size(name: &str, left: usize, right: usize) -> RResult<usize> {
+    checked_generated_count(name, left.checked_mul(right))
+}
+
+fn checked_combinations_count(n: usize, k: usize) -> Option<usize> {
+    let k = k.min(n - k);
+    (1..=k).try_fold(1usize, |acc, i| {
+        let value = (acc as u128) * (n - k + i) as u128 / i as u128;
+        (value <= usize::MAX as u128).then_some(value as usize)
+    })
+}
+
+fn checked_permutations_count(n: usize, k: usize) -> Option<usize> {
+    (0..k).try_fold(1usize, |acc, i| acc.checked_mul(n - i))
+}
+
 /// `array_cartesian_product(a, b) -> Array`
 ///
 /// Returns an array of all `[x, y]` pairs where `x ∈ a` and `y ∈ b`.
@@ -23,7 +53,8 @@ type RResult<T> = Result<T, String>;
 pub(crate) fn builtin_array_cartesian_product(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(a), Value::Array(b)] => {
-            let mut out = Vec::with_capacity(a.len() * b.len());
+            let output_len = checked_product_size("array_cartesian_product", a.len(), b.len())?;
+            let mut out = Vec::with_capacity(output_len);
             for x in a {
                 for y in b {
                     out.push(Value::Array(vec![x.clone(), y.clone()]));
@@ -66,17 +97,11 @@ pub(crate) fn builtin_array_combinations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            // RES-1938: pre-size `out` to the exact C(n, k) when
-            // computable. Falls back to Vec::new() on overflow — that
-            // case yields gigantic outputs anyway and is dominated by
-            // the per-element work below.
-            let cap = (0..k).try_fold(1usize, |acc, i| {
-                acc.checked_mul(arr.len() - i).map(|m| m / (i + 1))
-            });
-            let mut out = match cap {
-                Some(c) => Vec::with_capacity(c),
-                None => Vec::new(),
-            };
+            let output_len = checked_generated_count(
+                "array_combinations",
+                checked_combinations_count(arr.len(), k),
+            )?;
+            let mut out = Vec::with_capacity(output_len);
             let mut indices: Vec<usize> = (0..k).collect();
             if k == 0 {
                 out.push(Value::Array(vec![]));
@@ -137,14 +162,11 @@ pub(crate) fn builtin_array_permutations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            // RES-1938: pre-size `out` to the exact P(n, k) when
-            // computable. Falls back to Vec::new() on overflow — same
-            // shape as the combinations pre-size above.
-            let cap = (0..k).try_fold(1usize, |acc, i| acc.checked_mul(arr.len() - i));
-            let mut out = match cap {
-                Some(c) => Vec::with_capacity(c),
-                None => Vec::new(),
-            };
+            let output_len = checked_generated_count(
+                "array_permutations",
+                checked_permutations_count(arr.len(), k),
+            )?;
+            let mut out = Vec::with_capacity(output_len);
             let mut used = vec![false; arr.len()];
             let mut current = Vec::with_capacity(k);
             fn permute(
@@ -306,7 +328,9 @@ pub(crate) fn builtin_array_cartesian_product_n(args: &[Value]) -> RResult<Value
             // Build the product iteratively.
             let mut result: Vec<Vec<Value>> = vec![vec![]];
             for arr in arrays_inner {
-                let mut new_result = Vec::with_capacity(result.len() * arr.len());
+                let output_len =
+                    checked_product_size("array_cartesian_product_n", result.len(), arr.len())?;
+                let mut new_result = Vec::with_capacity(output_len);
                 for existing in &result {
                     for item in arr {
                         let mut combo = existing.clone();
@@ -330,7 +354,7 @@ pub(crate) fn builtin_array_cartesian_product_n(args: &[Value]) -> RResult<Value
 
 #[cfg(test)]
 mod tests {
-    use crate::run_program;
+    use crate::{Value, run_program};
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
@@ -361,6 +385,19 @@ println(p[3][1]);"#);
 println(len(p));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn combinatorial_expansion_rejects_over_limit_before_generation() {
+        let values = Value::Array((0..4_000).map(Value::Int).collect());
+        let err = super::builtin_array_cartesian_product(&[values.clone(), values]).unwrap_err();
+        assert!(err.contains("would exceed 10000000"), "got: {err}");
+
+        let values = Value::Array((0..30).map(Value::Int).collect());
+        let err = super::builtin_array_combinations(&[values.clone(), Value::Int(15)]).unwrap_err();
+        assert!(err.contains("would exceed 10000000"), "got: {err}");
+        let err = super::builtin_array_permutations(&[values, Value::Int(15)]).unwrap_err();
+        assert!(err.contains("would exceed 10000000"), "got: {err}");
     }
 
     // ── array_combinations ────────────────────────────────────────────────────
