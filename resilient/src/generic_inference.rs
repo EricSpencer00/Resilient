@@ -134,87 +134,34 @@ fn collect_signatures(stmts: &[crate::span::Spanned<Node>]) -> HashMap<String, G
 // ---------------------------------------------------------------------------
 
 fn check_node(node: &Node, sigs: &HashMap<String, GenericSig>) -> Result<(), String> {
-    match node {
-        Node::Program(stmts) => {
-            for s in stmts {
-                check_node(&s.node, sigs)?;
-            }
+    // Keep this pass aligned with the complete AST traversal used by the
+    // other compiler analyses. The old hand-written match silently skipped
+    // calls inside structured expressions, so inference depended on syntax.
+    let mut first_error = None;
+    crate::uniqueness_walk::visit(node, &mut |node| {
+        if first_error.is_some() {
+            return;
         }
-        Node::Function {
-            body,
-            requires,
-            ensures,
-            ..
-        } => {
-            check_node(body, sigs)?;
-            for r in requires {
-                check_node(r, sigs)?;
-            }
-            for e in ensures {
-                check_node(e, sigs)?;
-            }
-        }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                check_node(s, sigs)?;
-            }
-        }
-        Node::CallExpression {
+        let Node::CallExpression {
             function,
             arguments,
             ..
-        } => {
-            // Recurse into arguments first.
-            for arg in arguments {
-                check_node(arg, sigs)?;
-            }
-            check_node(function, sigs)?;
-
-            // Check this specific call site.
-            if let Node::Identifier { name, .. } = function.as_ref()
-                && let Some(sig) = sigs.get(name.as_str())
-            {
-                check_call_site(name, sig, arguments)?;
-            }
+        } = node
+        else {
+            return;
+        };
+        if let Node::Identifier { name, .. } = function.as_ref()
+            && let Some(sig) = sigs.get(name.as_str())
+            && let Err(error) = check_call_site(name, sig, arguments)
+        {
+            first_error = Some(error);
         }
-        Node::LetStatement { value, .. } => check_node(value, sigs)?,
-        Node::StaticLet { value, .. } => check_node(value, sigs)?,
-        Node::Const { value, .. } => check_node(value, sigs)?,
-        Node::Assignment { value, .. } => check_node(value, sigs)?,
-        Node::ReturnStatement { value: Some(v), .. } => check_node(v, sigs)?,
-        Node::ReturnStatement { value: None, .. } => {}
-        Node::ExpressionStatement { expr, .. } => check_node(expr, sigs)?,
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            check_node(condition, sigs)?;
-            check_node(consequence, sigs)?;
-            if let Some(alt) = alternative {
-                check_node(alt, sigs)?;
-            }
-        }
-        Node::WhileStatement {
-            condition, body, ..
-        } => {
-            check_node(condition, sigs)?;
-            check_node(body, sigs)?;
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            check_node(iterable, sigs)?;
-            check_node(body, sigs)?;
-        }
-        Node::InfixExpression { left, right, .. } => {
-            check_node(left, sigs)?;
-            check_node(right, sigs)?;
-        }
-        Node::PrefixExpression { right, .. } => check_node(right, sigs)?,
-        // Leaves and structural nodes we don't recurse into for this pass.
-        _ => {}
+    });
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
