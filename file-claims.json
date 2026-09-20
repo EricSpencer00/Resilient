@@ -163,6 +163,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-4672-const-overflow",
       "claimed_at": "2026-09-20T18:50:18Z"
+    },
+    "resilient/src/const_eval_ext.rs": {
+      "branch": "res-4672-const-overflow",
+      "claimed_at": "2026-09-20T18:50:46Z"
     }
   }
 }
