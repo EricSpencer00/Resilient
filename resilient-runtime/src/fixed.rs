@@ -126,9 +126,7 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
     /// e.g. `Fixed<0, 64>`, which has no integer bits).
     #[inline]
     pub fn one() -> Option<Self> {
-        // RES-3883: `checked_shl` returns None for D >= 64 instead of
-        // panicking on the `1i64 << D` shift overflow.
-        Self::new(1i64.checked_shl(D)?)
+        Self::from_int(1)
     }
 
     /// Construct from an integer, scaling up by `2^D`. Returns
@@ -143,14 +141,21 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
         if !valid_width(N, D) {
             return None;
         }
-        // Avoid shifting by 64 — that's UB for i64 even at the
-        // raw integer level. D ≤ 63 because TOTAL_BITS ≤ 64 and
-        // N ≥ 1 in any sensible config; reject D == 64 here.
+        // Keep the intermediate wider than the raw representation so
+        // signed scaling cannot turn a positive overflow into a
+        // negative value before the range check.
         if D >= 64 {
             return None;
         }
-        let scaled = i.checked_shl(D)?;
-        Self::new(scaled)
+        let scale = 1i128 << D;
+        let scaled = (i as i128).checked_mul(scale)?;
+        let (lo, hi) = raw_range(N, D);
+        if scaled < lo as i128 || scaled > hi as i128 {
+            return None;
+        }
+        Some(Self {
+            raw: scaled as i64,
+        })
     }
 
     /// Truncate toward zero, returning the integer part.
@@ -166,13 +171,11 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
         if D >= 64 {
             return 0;
         }
-        // Arithmetic shift right. `>>` on signed i64 in Rust is
-        // arithmetic (sign-extending), but it floors toward
-        // -infinity, not zero. We want truncation toward zero so
-        // negative numbers round up: divide by 2^D using `/`
-        // semantics (Rust's integer division truncates toward 0).
-        let scale = 1i64 << D;
-        self.raw / scale
+        // Use an i128 scale because 2^63 is not representable as a
+        // positive i64. Division retains Rust's truncation-toward-zero
+        // semantics for negative values.
+        let scale = 1i128 << D;
+        (self.raw as i128 / scale) as i64
     }
 
     /// Lossy conversion from `f64`. Saturates at the storage
@@ -374,6 +377,26 @@ mod tests {
         // is i32::MAX + 1 — out of the 32-bit raw range.
         let r: Option<Fixed<16, 16>> = Fixed::from_int(32768);
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn from_int_rejects_signed_scale_overflow() {
+        assert!(Fixed::<1, 63>::from_int(1).is_none());
+        assert!(Fixed::<32, 32>::from_int(i64::MAX).is_none());
+        assert!(Fixed::<1, 63>::one().is_none());
+    }
+
+    #[test]
+    fn one_point_six_three_preserves_negative_one_boundary() {
+        let one = Fixed::<1, 63>::from_int(-1).unwrap();
+        assert_eq!(one.raw(), i64::MIN);
+        assert_eq!(one.to_int(), -1);
+    }
+
+    #[test]
+    fn one_point_six_three_truncates_subunit_values_toward_zero() {
+        assert_eq!(Fixed::<1, 63>::from_raw(-1).to_int(), 0);
+        assert_eq!(Fixed::<1, 63>::from_raw(i64::MAX).to_int(), 0);
     }
 
     // ---------- RES-3883: D >= 64 must return None, never panic ----------
