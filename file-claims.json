@@ -171,6 +171,10 @@
     "resilient/src/never_type.rs": {
       "branch": "res-4671-never-nested-returns",
       "claimed_at": "2026-09-20T18:43:43Z"
+    },
+    "resilient/src/recovers_to_bmc.rs": {
+      "branch": "res-4674-recovery-bmc-fail-closed",
+      "claimed_at": "2026-09-20T18:50:10Z"
     }
   }
 }
