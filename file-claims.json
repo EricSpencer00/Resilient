@@ -4,14 +4,6 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "resilient/src/repl.rs": {
-      "branch": "res-4445-repl-typecheck",
-      "claimed_at": "2026-09-19T22:25:09Z"
-    },
-    "resilient/tests/repl_typecheck_state.rs": {
-      "branch": "res-4445-repl-typecheck",
-      "claimed_at": "2026-09-19T22:25:09Z"
-    },
     "resilient/src/generic_enums.rs": {
       "branch": "res-4451-generic-enum-bindings",
       "claimed_at": "2026-09-19T23:14:15Z"
