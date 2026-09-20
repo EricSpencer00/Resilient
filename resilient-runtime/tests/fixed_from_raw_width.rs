@@ -3,7 +3,7 @@ use resilient_runtime::fixed::Fixed;
 #[test]
 fn from_raw_neutralizes_invalid_widths() {
     assert_eq!(Fixed::<8, 16>::from_raw(123).raw(), 0);
-    assert_eq!(Fixed::<u32::MAX, 1>::from_raw(-456).raw(), 0);
+    assert_eq!(Fixed::<{ u32::MAX }, 1>::from_raw(-456).raw(), 0);
 }
 
 #[test]
