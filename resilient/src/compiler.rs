@@ -2788,7 +2788,7 @@ fn compile_nested_fn(
         &captured,
         line,
     );
-    let fn_idx = fns.len() as u16;
+    let fn_idx = reserve_appended_function_slot(fns, next_fn_idx)?;
     fns.push(Function {
         name: name.to_string(),
         arity: 0,
@@ -3105,7 +3105,7 @@ fn build_postcheck_function(
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
     crate::dce::eliminate(&mut chunk);
 
-    let fn_idx = fns.len() as u16;
+    let fn_idx = reserve_appended_function_slot(fns, next_fn_idx)?;
     fns.push(Function {
         name: format!("{name}$postcheck"),
         arity,
@@ -3180,7 +3180,7 @@ fn build_defer_function(
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
     crate::dce::eliminate(&mut chunk);
 
-    let fn_idx = fns.len() as u16;
+    let fn_idx = reserve_appended_function_slot(fns, next_fn_idx)?;
     fns.push(Function {
         name: "$defer".to_string(),
         arity,
@@ -3190,6 +3190,22 @@ fn build_defer_function(
         fails: Box::default(),
         postcheck: None,
     });
+    Ok(fn_idx)
+}
+
+/// Reserve the next appended function-table slot after top-level functions.
+/// The vector length is the source of truth because named nested functions
+/// and synthesized helpers are appended directly rather than preallocated.
+fn reserve_appended_function_slot(
+    fns: &[Function],
+    next_fn_idx: &mut u16,
+) -> Result<u16, CompileError> {
+    let fn_idx = u16::try_from(fns.len())
+        .map_err(|_| CompileError::Unsupported("too many functions (>65535)"))?;
+    if fn_idx == u16::MAX || *next_fn_idx == u16::MAX {
+        return Err(CompileError::Unsupported("too many functions (>65535)"));
+    }
+    *next_fn_idx = (*next_fn_idx).max(fn_idx + 1);
     Ok(fn_idx)
 }
 
