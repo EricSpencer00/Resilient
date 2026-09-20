@@ -297,8 +297,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 // payloads, and `Option`'s `Some(..)` payload, at any depth. It is
 // deliberately scoped to constructors whose full domain can be read
 // straight off the pattern text with no type inference (declared enum
-// variants, `bool` literals, and `Option`'s two built-in variants) —
-// anything else (struct payloads, int/string/range literals, `Result`,
+// variants, `bool` literals, and the `Option` / `Result` built-in variants) —
+// anything else (struct payloads, int/string/range literals,
 // generic type parameters, ...) is treated as an opaque leaf and simply
 // not decomposed further, exactly like every check above. That keeps
 // this pass strictly additive: it only ever rejects programs no existing
@@ -306,10 +306,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 // checks already prove exhaustive.
 //
 // Deliberately out of scope (documented, not silently wrong): struct
-// payload fields and `Result::Ok`/`Err` payloads are not recursed into.
-// `struct_exhaustiveness.rs` already owns bool-domain struct coverage
-// at the top level; generalizing that cartesian truth table to nested
-// positions is a larger, separate follow-up.
+// payload fields are not recursed into. `struct_exhaustiveness.rs`
+// already owns bool-domain struct coverage at the top level; generalizing
+// that cartesian truth table to nested positions is a larger, separate
+// follow-up.
 
 /// One cell in the pattern matrix: either a real sub-pattern borrowed
 /// from the AST, or a synthetic wildcard standing in for a position a
@@ -386,6 +386,7 @@ enum ColKind {
     Skip,
     Bool,
     OptionK,
+    ResultK,
     Enum(String),
 }
 
@@ -399,6 +400,9 @@ fn detect_col_kind(rows: &[Vec<Cell>]) -> ColKind {
             Cell::P(crate::Pattern::Some(_)) | Cell::P(crate::Pattern::None) => {
                 return ColKind::OptionK;
             }
+            Cell::P(crate::Pattern::Ok(_)) | Cell::P(crate::Pattern::Err(_)) => {
+                return ColKind::ResultK;
+            }
             Cell::P(crate::Pattern::EnumVariant {
                 type_name: Some(tn),
                 variant_name,
@@ -406,6 +410,9 @@ fn detect_col_kind(rows: &[Vec<Cell>]) -> ColKind {
             }) => {
                 if tn == "Option" && (variant_name == "Some" || variant_name == "None") {
                     return ColKind::OptionK;
+                }
+                if tn == "Result" && (variant_name == "Ok" || variant_name == "Err") {
+                    return ColKind::ResultK;
                 }
                 return ColKind::Enum(tn.clone());
             }
@@ -508,7 +515,7 @@ fn extract_payload_cells<'p>(
 /// (`Pattern::EnumVariant { variant_name: "Some", .. }`) — the
 /// unqualified `Some(x)` form parses to `Pattern::Some` directly and is
 /// handled separately.
-fn extract_option_some_cell(payload: &crate::EnumPatternPayload) -> Cell<'_> {
+fn extract_single_payload_cell(payload: &crate::EnumPatternPayload) -> Cell<'_> {
     match payload {
         crate::EnumPatternPayload::Tuple(subs) if !subs.is_empty() => Cell::P(&subs[0]),
         crate::EnumPatternPayload::Named(fields) if !fields.is_empty() => {
@@ -610,7 +617,7 @@ fn matrix_exhaustive<'p>(
                         payload,
                         ..
                     }) if variant_name == "Some" => {
-                        Some(chain_one(extract_option_some_cell(payload), &r[1..]))
+                        Some(chain_one(extract_single_payload_cell(payload), &r[1..]))
                     }
                     _ => None,
                 })
@@ -646,6 +653,66 @@ fn matrix_exhaustive<'p>(
                 });
             }
             matrix_exhaustive(none_rows, enum_meta, stack)
+        }
+        ColKind::ResultK => {
+            let ok_rows: Vec<Vec<Cell>> = rows
+                .iter()
+                .filter_map(|r| match &r[0] {
+                    c if cell_is_wildcard(c) => Some(chain_wild(1, &r[1..])),
+                    Cell::P(crate::Pattern::Ok(inner)) => {
+                        Some(chain_one(Cell::P(inner.as_ref()), &r[1..]))
+                    }
+                    Cell::P(crate::Pattern::EnumVariant {
+                        type_name: Some(type_name),
+                        variant_name,
+                        payload,
+                        ..
+                    }) if type_name == "Result" && variant_name == "Ok" => {
+                        Some(chain_one(extract_single_payload_cell(payload), &r[1..]))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if ok_rows.is_empty() {
+                return Err(Witness {
+                    path: Vec::new(),
+                    missing: "`Ok(_)`".to_string(),
+                });
+            }
+            if let Err(mut w) = matrix_exhaustive(ok_rows, enum_meta, stack) {
+                w.path.insert(0, "Ok(..)".to_string());
+                return Err(w);
+            }
+
+            let err_rows: Vec<Vec<Cell>> = rows
+                .iter()
+                .filter_map(|r| match &r[0] {
+                    c if cell_is_wildcard(c) => Some(chain_wild(1, &r[1..])),
+                    Cell::P(crate::Pattern::Err(inner)) => {
+                        Some(chain_one(Cell::P(inner.as_ref()), &r[1..]))
+                    }
+                    Cell::P(crate::Pattern::EnumVariant {
+                        type_name: Some(type_name),
+                        variant_name,
+                        payload,
+                        ..
+                    }) if type_name == "Result" && variant_name == "Err" => {
+                        Some(chain_one(extract_single_payload_cell(payload), &r[1..]))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if err_rows.is_empty() {
+                return Err(Witness {
+                    path: Vec::new(),
+                    missing: "`Err(_)`".to_string(),
+                });
+            }
+            if let Err(mut w) = matrix_exhaustive(err_rows, enum_meta, stack) {
+                w.path.insert(0, "Err(..)".to_string());
+                return Err(w);
+            }
+            Ok(())
         }
         ColKind::Enum(name) => {
             let Some(variants) = enum_meta.get(name.as_str()) else {
@@ -1502,10 +1569,11 @@ fn handle(Status s) -> int {
     }
 }
 
-// RES-4011: nested/payload pattern exhaustiveness — `analyze_nested` /
-// `check_nested` tests. See the module-level comment above those
-// functions for the exact scope (enum-variant payloads and `Option`'s
-// `Some(..)` payload, recursively; everything else is left alone).
+// RES-4011 / RES-4458: nested/payload pattern exhaustiveness —
+// `analyze_nested` / `check_nested` tests. See the module-level comment
+// above those functions for the exact scope (enum-variant payloads,
+// `Option`'s `Some(..)` payload, and `Result`'s `Ok(..)` / `Err(..)`
+// payloads, recursively; everything else is left alone).
 #[cfg(test)]
 mod res4011_nested_exhaustiveness {
     use super::*;
@@ -1748,5 +1816,81 @@ fn f(Option<Shape> os) -> int {
 "#;
         let (prog, _) = crate::parse(src);
         assert!(check_nested(&prog, "test.rz").is_ok());
+    }
+
+    #[test]
+    fn missing_nested_variant_inside_result_ok_is_detected() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Result<Shape, Shape>> value) -> int {
+    return match value {
+        Some(Ok(Shape::Circle(r))) => r,
+        Some(Err(_)) => 0,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert_eq!(errs.len(), 1, "expected one nested error; got: {:?}", errs);
+        assert!(
+            errs[0].message.contains("Shape::Square"),
+            "error must name the missing Result::Ok payload variant: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn missing_nested_variant_inside_result_err_is_detected() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Result<Shape, Shape>> value) -> int {
+    return match value {
+        Some(Ok(_)) => 0,
+        Some(Err(Shape::Circle(r))) => r,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert_eq!(errs.len(), 1, "expected one nested error; got: {:?}", errs);
+        assert!(
+            errs[0].message.contains("Shape::Square"),
+            "error must name the missing Result::Err payload variant: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn fully_covered_nested_result_payloads_accept_bare_and_qualified_patterns() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Result<Shape, Shape>> value) -> int {
+    return match value {
+        Some(Result::Ok(Shape::Circle(r))) => r,
+        Some(Ok(Shape::Square(s))) => s,
+        Some(Result::Err(Shape::Circle(r))) => r,
+        Some(Err(Shape::Square(s))) => s,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert!(
+            errs.is_empty(),
+            "bare and qualified Result patterns cover every nested payload; got: {:?}",
+            errs
+        );
     }
 }
