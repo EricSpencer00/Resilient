@@ -8,7 +8,7 @@
 //
 // V1 emits warnings; V2 will escalate to errors under --v2-strict.
 
-use crate::Node;
+use crate::{Node, Pattern};
 use std::collections::HashSet;
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
@@ -73,58 +73,33 @@ impl Context {
 
     fn walk_for_live_blocks(&mut self, node: &Node) {
         match node {
-            Node::Function { name, body, .. } => {
+            Node::Function { name, .. } => {
                 let prev_fn = self.current_fn.take();
                 self.current_fn = Some(name.clone());
-                self.walk_for_live_blocks(body);
+                Self::for_each_child(node, |child| self.walk_for_live_blocks(child));
                 self.current_fn = prev_fn;
             }
             Node::LiveBlock {
-                body, invariants, ..
+                body,
+                invariants,
+                timeout,
+                ..
             } => {
                 self.check_node(body);
                 for inv in invariants {
                     self.check_node(inv);
                 }
-            }
-            Node::Block { stmts, .. } => {
-                for stmt in stmts {
-                    self.walk_for_live_blocks(stmt);
+                if let Some(timeout) = timeout {
+                    self.check_node(timeout);
                 }
             }
-            Node::IfStatement {
-                condition,
-                consequence,
-                alternative,
-                ..
-            } => {
-                self.walk_for_live_blocks(condition);
-                self.walk_for_live_blocks(consequence);
-                if let Some(alt) = alternative {
-                    self.walk_for_live_blocks(alt);
-                }
-            }
-            Node::WhileStatement {
-                condition, body, ..
-            } => {
-                self.walk_for_live_blocks(condition);
-                self.walk_for_live_blocks(body);
-            }
-            Node::ForInStatement { iterable, body, .. } => {
-                self.walk_for_live_blocks(iterable);
-                self.walk_for_live_blocks(body);
-            }
-            _ => {}
+            _ => Self::for_each_child(node, |child| self.walk_for_live_blocks(child)),
         }
     }
 
     fn check_node(&mut self, node: &Node) {
         match node {
-            Node::CallExpression {
-                function,
-                arguments,
-                ..
-            } => {
+            Node::CallExpression { function, .. } => {
                 // RES-1511: borrow the callee identifier as `&str` instead
                 // of cloning it. `extract_identifier` previously returned
                 // an owned `String` so the warning branches could compare
@@ -158,9 +133,7 @@ impl Context {
                         );
                     }
                 }
-                for arg in arguments {
-                    self.check_node(arg);
-                }
+                Self::for_each_child(node, |child| self.check_node(child));
             }
             Node::FunctionLiteral { .. } => {
                 let free = crate::free_vars::free_vars(node);
@@ -176,69 +149,385 @@ impl Context {
                         "recovery",
                     );
                 }
+                Self::for_each_child(node, |child| self.check_node(child));
+            }
+            Node::Function { name, .. } => {
+                let prev_fn = self.current_fn.take();
+                self.current_fn = Some(name.clone());
+                Self::for_each_child(node, |child| self.check_node(child));
+                self.current_fn = prev_fn;
+            }
+            _ => Self::for_each_child(node, |child| self.check_node(child)),
+        }
+    }
+
+    /// Visit every AST child that can contain an expression or statement.
+    ///
+    /// The recovery checker used to hand-list only blocks, conditionals,
+    /// loops, calls, and a few literals. That made safety warnings depend on
+    /// syntax shape: a call hidden in a match arm or a defer body was silently
+    /// omitted. Keeping the child enumeration in one place makes new
+    /// expression-bearing containers visible to both the live-block finder
+    /// and the closed-form checker.
+    fn for_each_child(node: &Node, mut visit: impl FnMut(&Node)) {
+        match node {
+            Node::Program(statements) => {
+                for statement in statements {
+                    visit(&statement.node);
+                }
+            }
+            Node::Extern { decls, .. } => {
+                for decl in decls {
+                    for expr in &decl.requires {
+                        visit(expr);
+                    }
+                    for expr in &decl.ensures {
+                        visit(expr);
+                    }
+                }
+            }
+            Node::Function {
+                defaults,
+                body,
+                requires,
+                ensures,
+                recovers_to,
+                ..
+            } => {
+                for default in defaults.iter().flatten() {
+                    visit(default);
+                }
+                visit(body);
+                for expr in requires {
+                    visit(expr);
+                }
+                for expr in ensures {
+                    visit(expr);
+                }
+                if let Some(expr) = recovers_to {
+                    visit(expr);
+                }
+            }
+            Node::LiveBlock {
+                body,
+                invariants,
+                timeout,
+                ..
+            } => {
+                visit(body);
+                for expr in invariants {
+                    visit(expr);
+                }
+                if let Some(expr) = timeout {
+                    visit(expr);
+                }
+            }
+            Node::Assert {
+                condition, message, ..
+            }
+            | Node::Assume {
+                condition, message, ..
+            } => {
+                visit(condition);
+                if let Some(message) = message {
+                    visit(message);
+                }
             }
             Node::Block { stmts, .. } => {
                 for stmt in stmts {
-                    self.check_node(stmt);
+                    visit(stmt);
                 }
             }
-            Node::LetStatement { value, .. } => {
-                self.check_node(value);
+            Node::LetStatement { value, .. }
+            | Node::StaticLet { value, .. }
+            | Node::Const { value, .. }
+            | Node::Assignment { value, .. }
+            | Node::BreakWith { value, .. }
+            | Node::NamedArg { value, .. }
+            | Node::NewtypeConstruct { value, .. } => visit(value),
+            Node::ReturnStatement { value, .. } => {
+                if let Some(value) = value {
+                    visit(value);
+                }
             }
-            Node::Assignment { value, .. } => {
-                self.check_node(value);
-            }
-            Node::Assert { condition, .. } => {
-                self.check_node(condition);
-            }
-            Node::Assume { condition, .. } => {
-                self.check_node(condition);
-            }
+            Node::DeferStatement { expr, .. }
+            | Node::InvariantStatement { expr, .. }
+            | Node::TryExpression { expr, .. } => visit(expr),
             Node::IfStatement {
                 condition,
                 consequence,
                 alternative,
                 ..
             } => {
-                self.check_node(condition);
-                self.check_node(consequence);
-                if let Some(alt) = alternative {
-                    self.check_node(alt);
+                visit(condition);
+                visit(consequence);
+                if let Some(alternative) = alternative {
+                    visit(alternative);
                 }
             }
             Node::WhileStatement {
-                condition, body, ..
+                condition,
+                body,
+                invariants,
+                ..
+            }
+            | Node::ForInStatement {
+                iterable: condition,
+                body,
+                invariants,
+                ..
             } => {
-                self.check_node(condition);
-                self.check_node(body);
-            }
-            Node::ForInStatement { iterable, body, .. } => {
-                self.check_node(iterable);
-                self.check_node(body);
-            }
-            Node::InfixExpression { left, right, .. } => {
-                self.check_node(left);
-                self.check_node(right);
-            }
-            Node::PrefixExpression { right, .. } => {
-                self.check_node(right);
-            }
-            Node::IndexExpression { target, index, .. } => {
-                self.check_node(target);
-                self.check_node(index);
-            }
-            Node::FieldAccess { target, .. } => {
-                self.check_node(target);
-            }
-            Node::ArrayLiteral { items, .. } => {
-                for elem in items {
-                    self.check_node(elem);
+                visit(condition);
+                visit(body);
+                for invariant in invariants {
+                    visit(invariant);
                 }
             }
-            Node::ExpressionStatement { expr, .. } => {
-                self.check_node(expr);
+            Node::ExpressionStatement { expr, .. }
+            | Node::UnsafeBlock { body: expr, .. }
+            | Node::BenchBlock { body: expr, .. } => visit(expr),
+            Node::PrefixExpression { right, .. }
+            | Node::FieldAccess { target: right, .. }
+            | Node::TupleIndex { tuple: right, .. } => visit(right),
+            Node::InfixExpression { left, right, .. } => {
+                visit(left);
+                visit(right);
             }
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
+                visit(function);
+                for argument in arguments {
+                    visit(argument);
+                }
+            }
+            Node::OptionalChain { object, access, .. } => {
+                visit(object);
+                if let crate::ChainAccess::Method(_, arguments) = access {
+                    for argument in arguments {
+                        visit(argument);
+                    }
+                }
+            }
+            Node::FunctionLiteral {
+                body,
+                requires,
+                ensures,
+                recovers_to,
+                ..
+            } => {
+                visit(body);
+                for expr in requires {
+                    visit(expr);
+                }
+                for expr in ensures {
+                    visit(expr);
+                }
+                if let Some(expr) = recovers_to {
+                    visit(expr);
+                }
+            }
+            Node::Match {
+                scrutinee, arms, ..
+            } => {
+                visit(scrutinee);
+                for (pattern, guard, body) in arms {
+                    Self::for_each_pattern_child(pattern, &mut visit);
+                    if let Some(guard) = guard {
+                        visit(guard);
+                    }
+                    visit(body);
+                }
+            }
+            Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+                visit(value)
+            }
+            Node::StructLiteral { fields, base, .. } => {
+                for (_, value) in fields {
+                    visit(value);
+                }
+                if let Some(base) = base {
+                    visit(base);
+                }
+            }
+            Node::FieldAssignment { target, value, .. } => {
+                visit(target);
+                visit(value);
+            }
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
+                visit(target);
+                visit(index);
+                visit(value);
+            }
+            Node::ArrayLiteral { items, .. }
+            | Node::SetLiteral { items, .. }
+            | Node::TupleLiteral { items, .. } => {
+                for item in items {
+                    visit(item);
+                }
+            }
+            Node::IndexExpression { target, index, .. } => {
+                visit(target);
+                visit(index);
+            }
+            Node::Slice { target, lo, hi, .. } => {
+                visit(target);
+                if let Some(lo) = lo {
+                    visit(lo);
+                }
+                if let Some(hi) = hi {
+                    visit(hi);
+                }
+            }
+            Node::MapLiteral { entries, .. } => {
+                for (key, value) in entries {
+                    visit(key);
+                    visit(value);
+                }
+            }
+            Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+                for method in methods {
+                    visit(method);
+                }
+            }
+            Node::Actor {
+                state_init,
+                concurrent_ensures,
+                handlers,
+                ..
+            } => {
+                visit(state_init);
+                for expr in concurrent_ensures {
+                    visit(expr);
+                }
+                for handler in handlers {
+                    for expr in &handler.ensures {
+                        visit(expr);
+                    }
+                    visit(&handler.body);
+                }
+            }
+            Node::ActorDecl {
+                state_fields,
+                always_clauses,
+                eventually_clauses,
+                receive_handlers,
+                handlers,
+                ..
+            } => {
+                for (_, _, initializer) in state_fields {
+                    visit(initializer);
+                }
+                for expr in always_clauses {
+                    visit(expr);
+                }
+                for clause in eventually_clauses {
+                    visit(&clause.post);
+                }
+                for handler in receive_handlers {
+                    for expr in &handler.requires {
+                        visit(expr);
+                    }
+                    for expr in &handler.ensures {
+                        visit(expr);
+                    }
+                    visit(&handler.body);
+                }
+                for handler in handlers {
+                    for expr in &handler.ensures {
+                        visit(expr);
+                    }
+                    visit(&handler.body);
+                }
+            }
+            Node::ClusterDecl { invariants, .. } => {
+                for invariant in invariants {
+                    visit(invariant);
+                }
+            }
+            Node::TryCatch { body, handlers, .. } => {
+                for stmt in body {
+                    visit(stmt);
+                }
+                for (_, stmts) in handlers {
+                    for stmt in stmts {
+                        visit(stmt);
+                    }
+                }
+            }
+            Node::Quantifier { range, body, .. } => {
+                match range {
+                    crate::quantifiers::QuantRange::Range { lo, hi } => {
+                        visit(lo);
+                        visit(hi);
+                    }
+                    crate::quantifiers::QuantRange::Iterable(iterable) => visit(iterable),
+                }
+                visit(body);
+            }
+            Node::Range { lo, hi, .. } => {
+                visit(lo);
+                visit(hi);
+            }
+            Node::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    if let crate::string_interp::StringPart::Expr(expr) = part {
+                        visit(expr);
+                    }
+                }
+            }
+            Node::ModuleDecl { body, .. } => {
+                for item in body {
+                    visit(item);
+                }
+            }
+            Node::StaticAssert { condition, .. } => visit(condition),
             _ => {}
+        }
+    }
+
+    fn for_each_pattern_child(pattern: &Pattern, visit: &mut impl FnMut(&Node)) {
+        match pattern {
+            Pattern::Literal(node) => visit(node),
+            Pattern::Or(patterns)
+            | Pattern::Tuple(patterns)
+            | Pattern::TupleStruct {
+                fields: patterns, ..
+            } => {
+                for pattern in patterns {
+                    Self::for_each_pattern_child(pattern, visit);
+                }
+            }
+            Pattern::Bind(_, pattern)
+            | Pattern::Some(pattern)
+            | Pattern::Ok(pattern)
+            | Pattern::Err(pattern) => Self::for_each_pattern_child(pattern, visit),
+            Pattern::Struct { fields, .. } => {
+                for (_, pattern) in fields {
+                    Self::for_each_pattern_child(pattern, visit);
+                }
+            }
+            Pattern::EnumVariant { payload, .. } => match payload {
+                crate::EnumPatternPayload::None => {}
+                crate::EnumPatternPayload::Named(fields) => {
+                    for (_, pattern) in fields {
+                        Self::for_each_pattern_child(pattern, visit);
+                    }
+                }
+                crate::EnumPatternPayload::Tuple(patterns) => {
+                    for pattern in patterns {
+                        Self::for_each_pattern_child(pattern, visit);
+                    }
+                }
+            },
+            Pattern::Identifier(_) | Pattern::Wildcard | Pattern::Range { .. } | Pattern::None => {}
         }
     }
 }
@@ -258,6 +547,15 @@ fn extract_identifier(node: &Node) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::parse;
+
+    fn recovery_diagnostics(src: &str) -> Vec<crate::typechecker::CheckDiagnostic> {
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "source must parse: {errors:?}");
+        let (result, diagnostics) =
+            crate::typechecker::collect_check_diagnostics(|| check(&prog, "test"));
+        assert!(result.is_ok());
+        diagnostics
+    }
 
     #[test]
     fn no_live_block_returns_ok() {
@@ -321,5 +619,27 @@ mod tests {
         let src = "extern { fn malloc(int n) -> int; fn free(int p) -> int; }\nfn f() {\n    live {\n        let p = malloc(10);\n        let _ = free(p);\n    }\n}\nf();\n";
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn opaque_call_inside_match_arm_is_reported() {
+        let src = "extern { fn malloc(int n) -> int; }\nfn f(int x) -> int {\n    live { return match x { 0 => malloc(x), _ => x, }; }\n}\nf(5);\n";
+        let diagnostics = recovery_diagnostics(src);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.plain.contains("opaque FFI call to 'malloc'"))
+        );
+    }
+
+    #[test]
+    fn recursive_call_inside_try_handler_is_reported() {
+        let src = "fn f(int x) -> int {\n    live {\n        try { return x; } catch Timeout { return f(x); }\n    }\n}\nf(5);\n";
+        let diagnostics = recovery_diagnostics(src);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .plain
+                .contains("function 'f' recursively calls itself")
+        }));
     }
 }
