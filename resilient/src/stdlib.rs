@@ -3272,12 +3272,16 @@ fn iter_range(args: &[Value]) -> RResult<Value> {
     if step > 0 {
         while i < end {
             result.push(Value::Int(i));
-            i += step;
+            i = i
+                .checked_add(step)
+                .ok_or_else(|| "iter::range: step overflow at signed boundary".to_string())?;
         }
     } else {
         while i > end {
             result.push(Value::Int(i));
-            i += step;
+            i = i
+                .checked_add(step)
+                .ok_or_else(|| "iter::range: step overflow at signed boundary".to_string())?;
         }
     }
     Ok(Value::Array(result))
