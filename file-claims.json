@@ -121,8 +121,12 @@
       "claimed_at": "2026-09-20T16:54:33Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-4640-axiom-certificates",
-      "claimed_at": "2026-09-20T17:05:27Z"
+      "branch": "res-4641-noninterference-match",
+      "claimed_at": "2026-09-20T17:07:59Z"
+    },
+    "resilient/src/noninterference.rs": {
+      "branch": "res-4641-noninterference-match",
+      "claimed_at": "2026-09-20T17:07:59Z"
     }
   }
 }
