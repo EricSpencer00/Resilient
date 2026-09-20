@@ -170,6 +170,7 @@ mod playground_runtime_comment_copy_smoke;
 mod projection_bounds_smoke;
 mod projection_where_clause_golden;
 mod projection_where_clause_smoke;
+mod random_int_range_safety;
 mod readme_install_release_tag_smoke;
 mod readme_project_status_copy_smoke;
 mod readme_self_hosting_status_smoke;

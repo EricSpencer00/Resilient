@@ -2812,7 +2812,9 @@ fn random_int(args: &[Value]) -> RResult<Value> {
     if lo >= hi {
         return Err(format!("random::int: lo ({}) must be < hi ({})", lo, hi));
     }
-    Ok(Value::Int(lo + (random_seed() % (hi - lo) as u64) as i64))
+    crate::sample_i64_range(lo, hi, random_seed())
+        .map(Value::Int)
+        .ok_or_else(|| "random::int: bounds do not form a valid i64 range".to_string())
 }
 fn random_float(_args: &[Value]) -> RResult<Value> {
     Ok(Value::Float((random_seed() as f64 / u64::MAX as f64).abs()))
@@ -4907,6 +4909,22 @@ mod tests {
         let bindings = resolve_std_import("math", Some("m")).unwrap();
         assert!(bindings.iter().any(|(name, _)| name == "m_pi"));
         assert!(bindings.iter().any(|(name, _)| name == "m_log"));
+    }
+
+    #[test]
+    fn random_int_handles_full_signed_range_without_overflow() {
+        let lo = i64::MIN;
+        let hi = i64::MAX;
+        for _ in 0..200 {
+            let value = random_int(&[Value::Int(lo), Value::Int(hi)]).unwrap();
+            let Value::Int(value) = value else {
+                panic!("expected Int, got {value:?}");
+            };
+            assert!(
+                value >= lo && value < hi,
+                "value {value} outside [{lo}, {hi})"
+            );
+        }
     }
 
     #[test]
