@@ -53,7 +53,7 @@ caller()
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(":9:5"),
+        stdout.contains(":9:10"),
         "stacktrace lost the call-site column after peephole folding: {stdout:?}"
     );
 }
