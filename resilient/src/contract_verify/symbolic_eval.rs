@@ -92,13 +92,13 @@ pub(crate) fn model_body(body: &Node) -> Option<ResultModel> {
             let else_ret = return_value(tail)?;
             build_branch(condition, then_ret, else_ret)
         }
+        // { try { return E; } catch Variant { return F; } ... }
+        [Node::TryCatch { body, handlers, .. }] => try_model(body, handlers),
         // { return E; }
         [only] => {
             let ret = return_value(only)?;
             model_return_expression(ret)
         }
-        // { try { return E; } catch Variant { return F; } ... }
-        [Node::TryCatch { body, handlers, .. }] => try_model(body, handlers),
         _ => None,
     }
 }
