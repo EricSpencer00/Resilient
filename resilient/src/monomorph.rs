@@ -868,6 +868,33 @@ main();
     }
 
     #[test]
+    fn struct_map_index_and_field_calls_are_specialized() {
+        let src = r#"
+struct Box { int value }
+fn identity<T>(T x) -> T { return x; }
+fn main() {
+    let values = [identity(1)];
+    let boxed = new Box { value: identity(2) };
+    let entries = {"answer" -> identity(3)};
+    let indexed = values[identity(0)];
+    let projected = identity(4).value;
+}
+main();
+"#;
+        let lowered = lower_src(src);
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$Int"), 1);
+        let targets = lowered_call_targets(&lowered);
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|name| *name == "identity$Int")
+                .count(),
+            5,
+            "every nested executable call should be rewritten: {targets:?}"
+        );
+    }
+
+    #[test]
     fn mangle_name_single_param() {
         assert_eq!(mangle_name("identity", &[Type::Int]), "identity$Int");
         assert_eq!(mangle_name("identity", &[Type::String]), "identity$String");
