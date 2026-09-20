@@ -536,6 +536,11 @@ pub enum VmError {
     /// bound will eventually hit this rather than grow unbounded
     /// memory or panic.
     ClosureCapacityExceeded,
+    /// RES-4579 (D-E1 tail, closures): a `Value::Closure` referred to a
+    /// capture slab slot that has not been allocated by `MakeClosure`.
+    /// Rejecting the handle before reading the fixed arena keeps forged
+    /// bytecode from observing zero-initialized capture state as real data.
+    InvalidClosureHandle(u16),
     /// RES-4083 (D-E1 tail, packed locals slab): a new frame's
     /// locals window would run past the `Vm`'s shared `SLAB`
     /// capacity. The typed substitute for growing the packed pool —
@@ -1081,6 +1086,9 @@ impl<
                         return Err(VmError::InvalidFunctionLayout(func_idx));
                     }
                     Self::validate_function_layout(func_idx, f, required_locals)?;
+                    if slab_idx as usize >= self.closure_top {
+                        return Err(VmError::InvalidClosureHandle(slab_idx));
+                    }
                     let captures = self
                         .closure_slab
                         .get(slab_idx as usize)
@@ -2791,6 +2799,33 @@ mod tests {
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::TypeMismatch("call closure"))
+        );
+    }
+
+    #[test]
+    fn forged_closure_handle_cannot_read_unallocated_capture_slot() {
+        let callee = [Instr::LoadLocal(0), Instr::Return];
+        let functions = [FunctionDef {
+            code: &callee,
+            arity: 0,
+            local_count: 1,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Closure {
+                func_idx: 0,
+                slab_idx: 0,
+            }),
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidClosureHandle(0))
         );
     }
 
