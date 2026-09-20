@@ -462,9 +462,7 @@ impl<const N: usize> DmaTransfer<'_, N> {
 /// and returns the transfer handle so unit tests can inspect the
 /// resulting linked list.
 #[inline]
-pub fn dma_start_transfer<'a, const N: usize>(
-    chain: &'a mut DmaChain<N>,
-) -> DmaTransfer<'a, N> {
+pub fn dma_start_transfer<'a, const N: usize>(chain: &'a mut DmaChain<N>) -> DmaTransfer<'a, N> {
     chain.start()
 }
 
@@ -909,13 +907,8 @@ mod tests {
         for offset in [0usize, 8] {
             dma_chain_append(
                 &mut chain,
-                dma_descriptor_new(
-                    src_addr() + offset,
-                    dst_addr() + offset,
-                    4,
-                    DmaWidth::Word,
-                )
-                .unwrap(),
+                dma_descriptor_new(src_addr() + offset, dst_addr() + offset, 4, DmaWidth::Word)
+                    .unwrap(),
             )
             .unwrap();
         }
