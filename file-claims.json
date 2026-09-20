@@ -4,10 +4,6 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "resilient/src/generic_enums.rs": {
-      "branch": "res-4451-generic-enum-bindings",
-      "claimed_at": "2026-09-19T23:14:15Z"
-    },
     "resilient-runtime/src/vm/serde.rs": {
       "branch": "res-4463-bytecode-control-flow",
       "claimed_at": "2026-09-20T00:29:17Z"
