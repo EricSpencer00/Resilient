@@ -12,8 +12,10 @@
 #      allowlist, run auto-resolve-extensions.sh and continue.
 #      Otherwise abort the rebase and exit nonzero — that needs a human.
 #   4. push the rebased branch to origin (feature branch).
-#   5. fast-forward push the rebased HEAD into origin/agents/integration
-#      so sibling agents see this work immediately.
+#   5. reconcile agents/integration against the pushed feature branch. When
+#      squash merges left patch-equivalent history behind, the reconciliation
+#      helper may repair the ref under an explicit lease; otherwise this path
+#      only performs a fast-forward promotion.
 #   6. stamp the PR with the `integration-synced` label (if --pr given)
 #      so agent-auto-merge.yml knows this PR is sync-safe.
 #
@@ -152,21 +154,56 @@ fi
 # this refuses.
 git push --force-with-lease origin "$branch"
 
-# Fast-forward integration. If someone else moved integration forward
-# since our fetch, retry once.
+# Promote through the same patch-equivalence guard used by the scheduled
+# integration reconciler. The feature branch is the explicit candidate: a
+# divergent integration ref may be replaced only when every integration-only
+# patch is represented by this candidate. A candidate that is already present
+# in integration needs no ref mutation; every other successful promotion must
+# use the current integration SHA as a force-with-lease.
+promoted=0
 for attempt in 1 2 3; do
-    if git push origin "HEAD:refs/heads/$INTEGRATION_REF"; then
-        echo "integration: fast-forwarded to $(git rev-parse --short HEAD)"
-        break
+    if ! bash "$SCRIPT_DIR/reconcile-integration.sh" \
+        --remote origin \
+        --main-ref origin/main \
+        --integration "$INTEGRATION_REF" \
+        --candidate-ref "$branch"; then
+        echo "integration reconciliation failed (attempt $attempt)" >&2
+    else
+        git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -3
+        candidate_sha="$(git rev-parse --verify "$branch^{commit}")"
+        integration_tracking_ref="origin/$INTEGRATION_REF"
+        integration_sha="$(git rev-parse --verify "$integration_tracking_ref^{commit}" 2>/dev/null || true)"
+
+        if [[ -z "$integration_sha" ]]; then
+            echo "integration: reconciliation did not produce a readable ref" >&2
+        elif git merge-base --is-ancestor "$candidate_sha" "$integration_sha"; then
+            echo "integration: candidate already included at $(git rev-parse --short "$integration_sha")"
+            promoted=1
+            break
+        elif git merge-base --is-ancestor "$integration_sha" "$candidate_sha"; then
+            if git push \
+                "--force-with-lease=refs/heads/$INTEGRATION_REF:$integration_sha" \
+                origin "$candidate_sha:refs/heads/$INTEGRATION_REF"; then
+                echo "integration: promoted candidate to $(git rev-parse --short "$candidate_sha")"
+                promoted=1
+                break
+            fi
+            echo "integration push lost its lease (attempt $attempt)" >&2
+        else
+            echo "integration: candidate is not based on or included by the reconciled ref" >&2
+        fi
     fi
-    echo "integration push failed (attempt $attempt), refetching and retrying..."
-    git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -1
-    git rebase "origin/main" || {
-        echo "integration: concurrent conflicting change landed — re-run sync-integration" >&2
-        exit 6
-    }
-    git push --force-with-lease origin "$branch"
+
+    if (( attempt < 3 )); then
+        echo "integration promotion retry $((attempt + 1))/3 after refetch"
+        git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -3
+    fi
 done
+
+if (( promoted == 0 )); then
+    echo "integration: refusing to mark sync complete without candidate promotion" >&2
+    exit 6
+fi
 
 # Stamp the PR if known.
 if [[ -n "$PR" && "$PR" != "null" ]]; then

@@ -54,9 +54,13 @@ if git merge-base --is-ancestor "$int_sha" "$main_sha"; then
   exit 0
 fi
 
-if git merge-base --is-ancestor "$main_sha" "$int_sha"; then
+if git merge-base --is-ancestor "$main_sha" "$int_sha" && [[ -z "$CANDIDATE_REF" ]]; then
   echo "agents/integration is ahead of main (expected: in-flight work)"
   exit 0
+fi
+
+if git merge-base --is-ancestor "$main_sha" "$int_sha"; then
+  echo "agents/integration is ahead of main — evaluating the explicit candidate ref"
 fi
 
 cherry_report="$(git cherry "$main_sha" "$int_sha")"
