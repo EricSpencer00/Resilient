@@ -81,6 +81,10 @@ const DEFAULT_RATE_LIMIT_PER_MIN: u32 = 100;
 /// Default bounded worker-pool size for concurrent HTTP connections
 /// (RES-3937).
 const DEFAULT_MAX_CONNECTIONS: usize = 16;
+/// Upper bound for operator-configured HTTP worker pools. Keeping this
+/// separate from the default prevents an environment typo from turning the
+/// listener into an unbounded thread and queue allocation request.
+const MAX_MCP_CONNECTIONS: usize = 1024;
 /// Default grace period for draining in-flight requests on shutdown
 /// (RES-3942), in seconds.
 const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
@@ -123,11 +127,10 @@ impl HttpHardeningConfig {
                 "RESILIENT_MCP_RATE_LIMIT_PER_MIN",
                 DEFAULT_RATE_LIMIT_PER_MIN,
             ),
-            max_connections: env_var_usize(
+            max_connections: bounded_worker_count(env_var_usize(
                 "RESILIENT_MCP_MAX_CONNECTIONS",
                 DEFAULT_MAX_CONNECTIONS,
-            )
-            .max(1),
+            )),
             shutdown_drain: Duration::from_secs(env_var_u64(
                 "RESILIENT_MCP_SHUTDOWN_DRAIN_SECS",
                 DEFAULT_SHUTDOWN_DRAIN_SECS,
@@ -144,6 +147,10 @@ fn env_var_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn bounded_worker_count(value: usize) -> usize {
+    value.clamp(1, MAX_MCP_CONNECTIONS)
 }
 
 fn env_var_u64(key: &str, default: u64) -> u64 {
@@ -3812,6 +3819,22 @@ mod tests {
             shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
             api_key: None,
         }
+    }
+
+    #[test]
+    fn worker_count_preserves_default_and_valid_values() {
+        assert_eq!(bounded_worker_count(DEFAULT_MAX_CONNECTIONS), 16);
+        assert_eq!(bounded_worker_count(1), 1);
+        assert_eq!(
+            bounded_worker_count(MAX_MCP_CONNECTIONS),
+            MAX_MCP_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn worker_count_clamps_zero_and_oversized_values() {
+        assert_eq!(bounded_worker_count(0), 1);
+        assert_eq!(bounded_worker_count(usize::MAX), MAX_MCP_CONNECTIONS);
     }
 
     #[test]
