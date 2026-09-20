@@ -259,6 +259,14 @@
     "resilient/tests/bytes_slice_width_boundary.rs": {
       "branch": "res-4754-bytes-slice-width",
       "claimed_at": "2026-09-20T22:35:57Z"
+    },
+    "resilient/src/file_io.rs": {
+      "branch": "res-4756-file-read-bound",
+      "claimed_at": "2026-09-20T22:40:09Z"
+    },
+    "resilient/tests/file_read_chunk_boundary.rs": {
+      "branch": "res-4756-file-read-bound",
+      "claimed_at": "2026-09-20T22:40:09Z"
     }
   }
 }
