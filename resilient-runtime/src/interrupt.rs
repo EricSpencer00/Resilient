@@ -148,7 +148,7 @@ fn nvic_priority_addr(irq: u8) -> Result<usize, InterruptError> {
     Ok(NVIC_IPR_BASE + irq as usize)
 }
 
-/// Validate an IRQ number before passing it to an unsafe NVIC helper.
+/// Validate an IRQ number before passing it to an NVIC MMIO helper.
 #[inline]
 pub fn validate_irq(irq: u8) -> Result<(), InterruptError> {
     nvic_priority_addr(irq).map(|_| ())
