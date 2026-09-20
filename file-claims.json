@@ -167,6 +167,10 @@
     "resilient/tests/row_polymorphism_match.rs": {
       "branch": "res-4665-row-match",
       "claimed_at": "2026-09-20T18:31:39Z"
+    },
+    "resilient/src/never_type.rs": {
+      "branch": "res-4671-never-nested-returns",
+      "claimed_at": "2026-09-20T18:43:43Z"
     }
   }
 }
