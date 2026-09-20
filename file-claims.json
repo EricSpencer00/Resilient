@@ -268,13 +268,9 @@
       "branch": "res-4757-heap-overflow-guard",
       "claimed_at": "2026-09-20T22:42:39Z"
     },
-    "resilient/src/const_fold.rs": {
-      "branch": "res-4761-const-fold-guard",
-      "claimed_at": "2026-09-20T22:50:05Z"
-    },
-    "resilient/tests/const_fold_jump_guard.rs": {
-      "branch": "res-4761-const-fold-guard",
-      "claimed_at": "2026-09-20T22:50:05Z"
+    "resilient/src/deque.rs": {
+      "branch": "res-4760-deque-capacity-overflow",
+      "claimed_at": "2026-09-20T22:50:11Z"
     }
   }
 }
