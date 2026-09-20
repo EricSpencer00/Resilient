@@ -251,6 +251,14 @@
     "resilient/src/source_map.rs": {
       "branch": "res-4748-source-map-count",
       "claimed_at": "2026-09-20T22:27:13Z"
+    },
+    "resilient/src/bytes_slicing.rs": {
+      "branch": "res-4754-bytes-slice-width",
+      "claimed_at": "2026-09-20T22:35:57Z"
+    },
+    "resilient/tests/bytes_slice_width_boundary.rs": {
+      "branch": "res-4754-bytes-slice-width",
+      "claimed_at": "2026-09-20T22:35:57Z"
     }
   }
 }
