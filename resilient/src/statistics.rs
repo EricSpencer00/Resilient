@@ -157,7 +157,7 @@ pub(crate) fn builtin_stats_percentile(args: &[Value]) -> RResult<Value> {
             if xs.is_empty() {
                 return Err("stats_percentile: empty array".to_string());
             }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            xs.sort_by(|a, b| a.total_cmp(b));
             let idx = p / 100.0 * (xs.len() - 1) as f64;
             let lo = idx.floor() as usize;
             let hi = idx.ceil() as usize;
@@ -887,7 +887,7 @@ pub(crate) fn builtin_mat_lu(args: &[Value]) -> RResult<Value> {
 
 #[cfg(test)]
 mod tests {
-    use crate::run_program;
+    use crate::{Value, run_program};
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
@@ -954,6 +954,24 @@ println(stats_percentile([5.0, 1.0, 3.0], 100.0));"#);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert!(approx(lines[0], 1.0), "expected 1.0, got {}", lines[0]);
         assert!(approx(lines[1], 5.0), "expected 5.0, got {}", lines[1]);
+    }
+
+    #[test]
+    fn percentile_nan_uses_total_order_without_panicking() {
+        let result = super::builtin_stats_percentile(&[
+            Value::Array(vec![
+                Value::Float(3.0),
+                Value::Float(f64::NAN),
+                Value::Float(1.0),
+            ]),
+            Value::Float(50.0),
+        ])
+        .expect("NaN input should not panic or return an error");
+
+        let Value::Float(percentile) = result else {
+            panic!("expected a float percentile result");
+        };
+        assert_eq!(percentile, 3.0);
     }
 
     // ── zscore ───────────────────────────────────────────────────────────────
