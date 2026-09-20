@@ -262,6 +262,13 @@ mod tests {
         Interpreter::eval_const_expr(value, &HashMap::new(), &mut evaluating, mode)
     }
 
+    fn assert_const_int(result: Result<Value, String>, expected: i64) {
+        match result {
+            Ok(Value::Int(actual)) => assert_eq!(actual, expected),
+            other => panic!("expected integer constant, got {other:?}"),
+        }
+    }
+
     fn pos(line: usize, column: usize) -> Pos {
         Pos::new(line, column, 0)
     }
@@ -541,14 +548,8 @@ println(to_string(a + b));
     #[test]
     fn const_integer_arithmetic_obeys_overflow_mode() {
         let max_plus_one = "const VALUE = 9223372036854775807 + 1;";
-        assert_eq!(
-            eval_const(max_plus_one, OverflowMode::Wrap),
-            Ok(Value::Int(i64::MIN))
-        );
-        assert_eq!(
-            eval_const(max_plus_one, OverflowMode::Saturate),
-            Ok(Value::Int(i64::MAX))
-        );
+        assert_const_int(eval_const(max_plus_one, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(eval_const(max_plus_one, OverflowMode::Saturate), i64::MAX);
         assert!(
             eval_const(max_plus_one, OverflowMode::Trap)
                 .unwrap_err()
@@ -557,14 +558,8 @@ println(to_string(a + b));
 
         let min = "0 - 9223372036854775807 - 1";
         let min_overflow = format!("const VALUE = -({min});");
-        assert_eq!(
-            eval_const(&min_overflow, OverflowMode::Wrap),
-            Ok(Value::Int(i64::MIN))
-        );
-        assert_eq!(
-            eval_const(&min_overflow, OverflowMode::Saturate),
-            Ok(Value::Int(i64::MAX))
-        );
+        assert_const_int(eval_const(&min_overflow, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(eval_const(&min_overflow, OverflowMode::Saturate), i64::MAX);
         assert!(
             eval_const(&min_overflow, OverflowMode::Trap)
                 .unwrap_err()
@@ -572,13 +567,10 @@ println(to_string(a + b));
         );
 
         let min_div_neg_one = format!("const VALUE = ({min}) / -1;");
-        assert_eq!(
-            eval_const(&min_div_neg_one, OverflowMode::Wrap),
-            Ok(Value::Int(i64::MIN))
-        );
-        assert_eq!(
+        assert_const_int(eval_const(&min_div_neg_one, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(
             eval_const(&min_div_neg_one, OverflowMode::Saturate),
-            Ok(Value::Int(i64::MAX))
+            i64::MAX,
         );
         assert!(
             eval_const(&min_div_neg_one, OverflowMode::Trap)
