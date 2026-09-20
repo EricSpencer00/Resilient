@@ -39,6 +39,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4505-generic-enum-type-consistency",
       "claimed_at": "2026-09-20T07:58:13Z"
+    },
+    "resilient/src/rzbc_emit.rs": {
+      "branch": "res-4510-rzbc-return-safety",
+      "claimed_at": "2026-09-20T08:22:51Z"
     }
   }
 }
