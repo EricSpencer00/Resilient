@@ -360,6 +360,26 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         }
     }
 
+    // RES-4626: handler entries store absolute PCs, so compacting a folded
+    // branch must relocate them alongside jump targets. Otherwise an
+    // exception or retry dispatched after the fold can enter the old code.
+    for entry in &mut chunk.try_handlers {
+        for arm in &mut entry.arms {
+            if let Some(&new_pc) = old_to_new.get(arm.handler_pc)
+                && new_pc != usize::MAX
+            {
+                arm.handler_pc = new_pc;
+            }
+        }
+    }
+    for entry in &mut chunk.live_handlers {
+        if let Some(&new_pc) = old_to_new.get(entry.body_start_pc)
+            && new_pc != usize::MAX
+        {
+            entry.body_start_pc = new_pc;
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
 }
@@ -430,7 +450,7 @@ fn is_jump_op(op: Op) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::{Chunk, Op};
+    use crate::bytecode::{CatchArm, Chunk, LiveHandlerEntry, Op, TryHandlerEntry};
 
     fn chunk_from_ops(ops: Vec<Op>) -> Chunk {
         let mut c = Chunk::new();
@@ -645,6 +665,37 @@ mod tests {
         assert_eq!(chunk.code.len(), 2, "got {:?}", chunk.code);
         assert_eq!(chunk.code[0], Op::Add);
         assert_eq!(chunk.code[1], Op::Return);
+    }
+
+    #[test]
+    fn constant_branch_folding_remaps_handler_pcs() {
+        // Folding removes PCs 0 and 1, so a handler originally at PC 3 must
+        // move to PC 1 with the surviving Return instruction.
+        let mut chunk = Chunk::new();
+        let fidx = chunk.add_constant(Value::Bool(false)).unwrap();
+        chunk.emit(Op::Const(fidx), 1); // [0]
+        chunk.emit(Op::JumpIfTrue(1), 1); // [1] never taken
+        chunk.emit(Op::Add, 1); // [2]
+        chunk.emit(Op::Return, 1); // [3] handler body
+        chunk.try_handlers.push(TryHandlerEntry {
+            arms: vec![CatchArm {
+                variant: "Failure".into(),
+                handler_pc: 3,
+            }],
+        });
+        chunk.live_handlers.push(LiveHandlerEntry {
+            body_start_pc: 3,
+            max_retries: 1,
+            backoff: None,
+            backoff_kind: crate::BackoffKind::Exponential,
+            timeout_ns: None,
+        });
+
+        fold_constant_branches(&mut chunk);
+
+        assert_eq!(chunk.code, vec![Op::Add, Op::Return]);
+        assert_eq!(chunk.try_handlers[0].arms[0].handler_pc, 1);
+        assert_eq!(chunk.live_handlers[0].body_start_pc, 1);
     }
 
     #[test]
