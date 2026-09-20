@@ -6,7 +6,7 @@
 //! * `array_from_fn(n, fn)` — build an Array of `n` elements by calling
 //!   `fn(i)` for `i` in `0..(n-1)`.
 
-use crate::{Interpreter, Value, collection_budget::MAX_GENERATED_ELEMENTS};
+use crate::{Interpreter, Value, collection_extras::MAX_GENERATED_ELEMENTS};
 
 type RResult<T> = Result<T, String>;
 

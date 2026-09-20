@@ -7,9 +7,12 @@
 //! * `array_iterate(init, n, fn)` — apply `fn` to value `n` times, returning
 //!   an Array of all `n+1` values starting with `init`.
 
-use crate::{Interpreter, MapKey, Value, collection_budget::MAX_GENERATED_ELEMENTS};
+use crate::{Interpreter, MapKey, Value};
 
 type RResult<T> = Result<T, String>;
+
+/// Maximum number of elements a single eager collection builtin may generate.
+pub(crate) const MAX_GENERATED_ELEMENTS: usize = 10_000_000;
 
 /// `array_frequency_map(arr) -> Map`
 ///

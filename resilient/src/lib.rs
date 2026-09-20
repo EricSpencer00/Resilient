@@ -22,7 +22,6 @@ mod array_dedup_none;
 mod array_flatten_depth;
 mod array_functional;
 mod array_struct_sort;
-mod collection_budget;
 mod collection_extras;
 mod int_parse_radix;
 mod map_functional;
