@@ -27,6 +27,14 @@
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4523-direct-postcheck-parity",
+      "claimed_at": "2026-09-20T10:20:07Z"
+    },
+    "resilient/src/vm_direct_postcheck_tests.rs": {
+      "branch": "res-4523-direct-postcheck-parity",
+      "claimed_at": "2026-09-20T10:20:07Z"
     }
   }
 }
