@@ -27,7 +27,11 @@ case "${1:-}" in
     exit 1
     ;;
   api)
-    printf '%s\n' "$*" >> "${MOCK_GH_API_LOG:?}"
+    api_stdin=""
+    if [[ "$*" == *"--input -"* ]]; then
+      api_stdin="$(cat)"
+    fi
+    printf 'args=%s stdin=%s\n' "$*" "$api_stdin" >> "${MOCK_GH_API_LOG:?}"
     if [[ "${MOCK_GH_API_FAIL:-0}" == 1 ]]; then
       echo "REST failure" >&2
       exit 1
@@ -62,7 +66,7 @@ printf '%s\n' true > "$MOCK_GH_DRAFT_FILE"
 if ! github_mark_pr_ready 123 >"$TMP/ready.out" 2>&1; then
   fail "GraphQL ready failure should fall back to REST"
 fi
-if ! grep -q 'pulls/123' "$MOCK_GH_API_LOG"; then
+if ! grep -q -- '--method PATCH.*pulls/123.*draft=false' "$MOCK_GH_API_LOG"; then
   fail "REST ready fallback did not PATCH the pull request"
 fi
 echo "case1 ok: ready transition falls back to REST"
@@ -71,7 +75,8 @@ echo "case1 ok: ready transition falls back to REST"
 if ! github_add_pr_label 123 agent-vetted 0E8A16 "guardrail passed" >"$TMP/label.out" 2>&1; then
   fail "GraphQL label failure should fall back to REST"
 fi
-if ! grep -q 'issues/123/labels' "$MOCK_GH_API_LOG"; then
+if ! grep -q -- '--method POST.*labels.*name=agent-vetted' "$MOCK_GH_API_LOG" ||
+   ! grep -q -- '--method POST.*issues/123/labels.*agent-vetted' "$MOCK_GH_API_LOG"; then
   fail "REST label fallback did not update the pull request"
 fi
 echo "case2 ok: label mutation falls back to REST"
@@ -80,7 +85,7 @@ echo "case2 ok: label mutation falls back to REST"
 if ! github_comment_pr 123 "handoff body" >"$TMP/comment.out" 2>&1; then
   fail "GraphQL comment failure should fall back to REST"
 fi
-if ! grep -q 'issues/123/comments' "$MOCK_GH_API_LOG"; then
+if ! grep -q -- '--method POST.*issues/123/comments.*body=handoff body' "$MOCK_GH_API_LOG"; then
   fail "REST comment fallback did not create the issue comment"
 fi
 echo "case3 ok: comment mutation falls back to REST"
@@ -110,7 +115,13 @@ printf '%s\n' true > "$MOCK_GH_DRAFT_FILE"
 if github_mark_pr_ready 123 >"$TMP/rest-failure.out" 2>&1; then
   fail "REST fallback failure must remain fatal"
 fi
-echo "case6 ok: REST fallback errors remain fatal"
+if github_add_pr_label 123 agent-vetted 0E8A16 "guardrail passed" >"$TMP/label-failure.out" 2>&1; then
+  fail "REST label fallback failure must remain fatal"
+fi
+if github_comment_pr 123 "handoff body" >"$TMP/comment-failure.out" 2>&1; then
+  fail "REST comment fallback failure must remain fatal"
+fi
+echo "case6 ok: REST fallback errors remain fatal for ready, label, and comment paths"
 
 PATH="$OLD_PATH"
 echo "PASS: test-github-rest-fallback.sh"
