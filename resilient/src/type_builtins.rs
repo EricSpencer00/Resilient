@@ -164,9 +164,11 @@ pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) ->
             "array_from_fn: requested {n} elements exceeds the maximum of {MAX_GENERATED_ELEMENTS}"
         ));
     }
+    let count = i64::try_from(n)
+        .map_err(|_| "array_from_fn: n does not fit the integer callback index".to_string())?;
 
     let mut out = Vec::with_capacity(n);
-    for i in 0..n {
+    for i in 0..count {
         out.push(interp.apply_function(&f, vec![Value::Int(i)])?);
     }
     Ok(Value::Array(out))
