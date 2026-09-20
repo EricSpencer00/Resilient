@@ -27851,7 +27851,7 @@ impl Interpreter {
         // RES-2660: evaluate static_assert conditions now that all
         // const declarations are resolved. Failures surface as
         // compile-time errors — no runtime cost for passing asserts.
-        crate::static_assert::check_with_consts(statements, &self.consts)?;
+        crate::static_assert::check_with_consts(statements, &self.consts, self.overflow_mode)?;
 
         // RES-2697: evaluate TraitDecl nodes first so that default method
         // bodies are registered before impl blocks are hoisted below.

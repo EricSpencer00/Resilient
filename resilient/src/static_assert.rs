@@ -197,6 +197,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 pub(crate) fn check_with_consts(
     statements: &[crate::span::Spanned<Node>],
     consts: &std::rc::Rc<HashMap<String, Value>>,
+    overflow_mode: crate::vm::OverflowMode,
 ) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
 
@@ -211,7 +212,7 @@ pub(crate) fn check_with_consts(
         };
 
         let mut evaluating: Vec<String> = Vec::new();
-        match eval_const_bool(condition, consts, &mut evaluating) {
+        match eval_const_bool(condition, consts, &mut evaluating, overflow_mode) {
             Ok(true) => {}
             Ok(false) => {
                 errors.push(format!(
