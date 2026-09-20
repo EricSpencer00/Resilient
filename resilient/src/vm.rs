@@ -857,8 +857,7 @@ fn run_inner(
 /// running a live block's body; `stack`/`locals`/`frames`/`try_stack`
 /// are shared by `&mut` reference with the caller so a retry can see
 /// (and roll back) whatever the failed attempt mutated.
-#[allow(clippy::too_many_arguments)]
-fn chunk_for_frame<'a>(program: &'a Program, chunk_idx: usize) -> Result<&'a Chunk, VmError> {
+fn chunk_for_frame(program: &Program, chunk_idx: usize) -> Result<&Chunk, VmError> {
     if chunk_idx == usize::MAX {
         Ok(&program.main)
     } else {
@@ -871,7 +870,7 @@ fn chunk_for_frame<'a>(program: &'a Program, chunk_idx: usize) -> Result<&'a Chu
 }
 
 #[inline]
-fn try_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a TryHandlerEntry, VmError> {
+fn try_handler_for(chunk: &Chunk, index: u16) -> Result<&TryHandlerEntry, VmError> {
     chunk
         .try_handlers
         .get(index as usize)
@@ -879,7 +878,7 @@ fn try_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a TryHandlerEnt
 }
 
 #[inline]
-fn live_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a LiveHandlerEntry, VmError> {
+fn live_handler_for(chunk: &Chunk, index: u16) -> Result<&LiveHandlerEntry, VmError> {
     chunk
         .live_handlers
         .get(index as usize)
@@ -889,6 +888,7 @@ fn live_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a LiveHandlerE
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_dispatch_loop(
     program: &Program,
     stack: &mut Vec<Value>,
