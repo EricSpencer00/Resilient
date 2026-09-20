@@ -199,6 +199,10 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
 pub enum VerifyError {
     /// The document is not valid JSON at all.
     InvalidJson(String),
+    /// The document has no certificate schema identity.
+    MissingSchema,
+    /// The document identifies a schema this verifier does not understand.
+    UnsupportedSchema(String),
     /// The document has no `"schema_version"` field.
     MissingSchemaVersion,
     /// `"schema_version"` is present but this build doesn't know how
@@ -219,6 +223,13 @@ impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VerifyError::InvalidJson(e) => write!(f, "certificate is not valid JSON: {e}"),
+            VerifyError::MissingSchema => {
+                write!(f, "certificate is missing the \"schema\" field")
+            }
+            VerifyError::UnsupportedSchema(schema) => write!(
+                f,
+                "certificate schema `{schema}` is not supported (expected `{SCHEMA}`)"
+            ),
             VerifyError::MissingSchemaVersion => {
                 write!(f, "certificate is missing the \"schema_version\" field")
             }
@@ -238,12 +249,12 @@ impl std::fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
-/// C-E5: parse and validate the `"schema_version"` field of a
+/// C-E5: parse and validate the certificate identity and version of a
 /// certificate document. Feature-independent — every build, z3 or
 /// not, can run this cheap structural check before deciding whether
 /// to trust anything else in the document. Never panics: malformed
-/// JSON, a missing field, and an unrecognized version all come back
-/// as a specific [`VerifyError`] variant.
+/// JSON, a missing identity/version, and an unrecognized identity/version
+/// all come back as a specific [`VerifyError`] variant.
 ///
 /// Public library API for external verifiers (and the future
 /// `rz verify-contract-cert` CLI wiring tracked under #3933 · C-E5);
@@ -260,6 +271,13 @@ pub fn verify_schema_version(json: &str) -> Result<u64, VerifyError> {
         .ok_or(VerifyError::MissingSchemaVersion)?;
     if version != SCHEMA_VERSION {
         return Err(VerifyError::UnsupportedSchemaVersion(version));
+    }
+    let schema = value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(VerifyError::MissingSchema)?;
+    if schema != SCHEMA {
+        return Err(VerifyError::UnsupportedSchema(schema.to_string()));
     }
     Ok(version)
 }
@@ -434,6 +452,24 @@ mod tests {
         assert_eq!(
             verify_schema_version(r#"{"schema_version": 99}"#),
             Err(VerifyError::UnsupportedSchemaVersion(99))
+        );
+    }
+
+    #[test]
+    fn verify_schema_version_rejects_missing_schema_identity() {
+        assert_eq!(
+            verify_schema_version(r#"{"schema_version": 1}"#),
+            Err(VerifyError::MissingSchema)
+        );
+    }
+
+    #[test]
+    fn verify_schema_version_rejects_foreign_schema_identity() {
+        assert_eq!(
+            verify_schema_version(r#"{"schema":"other-certificate/v1","schema_version":1}"#),
+            Err(VerifyError::UnsupportedSchema(
+                "other-certificate/v1".to_string()
+            ))
         );
     }
 
