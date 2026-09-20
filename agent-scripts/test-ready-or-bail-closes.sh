@@ -174,7 +174,7 @@ case "${MOCK_GH_READY_MODE:-}" in
     exit 1
     ;;
   failure)
-    echo "GraphQL: unexpected failure" >&2
+    echo "permission denied: unexpected failure" >&2
     exit 1
     ;;
   *)
@@ -213,5 +213,9 @@ printf '%s\n' "$OUTPUT" | grep -q "unexpected failure" \
 echo "case8c ok: unrelated gh pr ready failure remains fatal"
 
 PATH="$OLD_PATH"
+
+# RES-4509: keep the GraphQL/REST fallback regression suite inside the
+# existing CI-invoked self-test entry point without changing workflows.
+bash "$REPO_ROOT/agent-scripts/test-github-rest-fallback.sh"
 
 echo "PASS: test-ready-or-bail-closes.sh"

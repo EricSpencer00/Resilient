@@ -29,6 +29,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=github-rest-fallback.sh
+source "$SCRIPT_DIR/github-rest-fallback.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
@@ -56,7 +58,7 @@ if [[ "$branch" == "main" || "$branch" == "$INTEGRATION_REF" ]]; then
 fi
 
 if [[ -z "$PR" ]]; then
-    PR="$(gh pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+    PR="$(github_rest_find_open_pr "$branch" 2>/dev/null || true)"
 fi
 
 echo "Syncing $branch against origin/main (tracking via $INTEGRATION_REF)"
@@ -168,13 +170,8 @@ done
 
 # Stamp the PR if known.
 if [[ -n "$PR" && "$PR" != "null" ]]; then
-    gh pr edit "$PR" --add-label "integration-synced" >/dev/null 2>&1 || {
-        # Label may not exist yet; create it.
-        gh label create "integration-synced" --color "0E8A16" \
-            --description "PR has been synced with agents/integration via sync-integration.sh" \
-            2>/dev/null || true
-        gh pr edit "$PR" --add-label "integration-synced" >/dev/null 2>&1 || true
-    }
+    github_add_pr_label "$PR" "integration-synced" "0E8A16" \
+        "PR has been synced with agents/integration via sync-integration.sh" >/dev/null
     echo "stamped PR #$PR with integration-synced"
 fi
 
