@@ -135,6 +135,14 @@
     "resilient/src/dyn_trait.rs": {
       "branch": "res-4646-dyn-trait-arity",
       "claimed_at": "2026-09-20T17:21:54Z"
+    },
+    "resilient/src/traits.rs": {
+      "branch": "res-4648-trait-return-annotation",
+      "claimed_at": "2026-09-20T17:26:17Z"
+    },
+    "resilient/tests/trait_signature_regression.rs": {
+      "branch": "res-4648-trait-return-annotation",
+      "claimed_at": "2026-09-20T17:26:17Z"
     }
   }
 }
