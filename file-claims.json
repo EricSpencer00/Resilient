@@ -23,14 +23,6 @@
     "resilient/src/traits.rs": {
       "branch": "res-4460-trait-method-signatures",
       "claimed_at": "2026-09-20T00:10:31Z"
-    },
-    "resilient/src/enum_exhaustiveness.rs": {
-      "branch": "res-4458-result-exhaustiveness",
-      "claimed_at": "2026-09-20T00:15:17Z"
-    },
-    "resilient/tests/nested_result_exhaustiveness.rs": {
-      "branch": "res-4458-result-exhaustiveness",
-      "claimed_at": "2026-09-20T00:15:17Z"
     }
   }
 }
