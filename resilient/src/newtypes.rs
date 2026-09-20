@@ -220,7 +220,7 @@ fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
         } => {
             lower_node(scrutinee, newtypes);
             for (_, guard, body) in arms.iter_mut() {
-                lower_optional(guard, newtypes);
+                lower_optional_node(guard, newtypes);
                 lower_node(body, newtypes);
             }
         }
@@ -362,6 +362,12 @@ fn lower_nodes(nodes: &mut [Node], newtypes: &HashMap<String, String>) {
 }
 
 fn lower_optional(node: &mut Option<Box<Node>>, newtypes: &HashMap<String, String>) {
+    if let Some(node) = node {
+        lower_node(node, newtypes);
+    }
+}
+
+fn lower_optional_node(node: &mut Option<Node>, newtypes: &HashMap<String, String>) {
     if let Some(node) = node {
         lower_node(node, newtypes);
     }
