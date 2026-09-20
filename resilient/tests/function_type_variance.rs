@@ -150,3 +150,24 @@ let pair = invoke(fn((int, string) value) -> (int, string) {
         "generic/composite callback signatures should remain valid: {diagnostics}"
     );
 }
+
+#[test]
+fn generic_callback_can_precede_binding_argument() {
+    let (diagnostics, code) = check_source(
+        r#"
+fn apply<T>(fn(T) -> T callback, T value) -> T {
+    return callback(value);
+}
+
+fn double(int value) -> int {
+    return value * 2;
+}
+
+let result = apply(double, 5);
+"#,
+    );
+    assert_eq!(
+        code, 0,
+        "a callback may precede the argument that binds its generic type: {diagnostics}"
+    );
+}

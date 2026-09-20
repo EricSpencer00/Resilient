@@ -6139,6 +6139,160 @@ impl TypeChecker {
         }
     }
 
+    /// Keep unresolved generic wildcards permissive at a call boundary while
+    /// applying the directional function relation to concrete components.
+    /// An explicit `any` in a concrete function type is still checked by
+    /// `function_subtype`; only a declared type parameter gets this inference
+    /// fallback.
+    fn generic_argument_satisfies(
+        &self,
+        actual: &Type,
+        expected: &Type,
+        declared: &Type,
+        type_params: &std::collections::HashSet<&str>,
+    ) -> bool {
+        if let Type::Struct(name) = declared
+            && type_params.contains(name.as_str())
+        {
+            return true;
+        }
+        if actual == expected {
+            return true;
+        }
+        match (actual, expected, declared) {
+            (
+                Type::Function {
+                    params: actual_params,
+                    return_type: actual_return,
+                },
+                Type::Function {
+                    params: expected_params,
+                    return_type: expected_return,
+                },
+                Type::Function {
+                    params: declared_params,
+                    return_type: declared_return,
+                },
+            ) if actual_params.len() == expected_params.len()
+                && declared_params.len() == expected_params.len() =>
+            {
+                actual_params
+                    .iter()
+                    .zip(expected_params.iter())
+                    .zip(declared_params.iter())
+                    .all(|((actual, expected), declared)| {
+                        self.generic_function_component_satisfies(
+                            expected,
+                            actual,
+                            declared,
+                            type_params,
+                        )
+                    })
+                    && self.generic_function_component_satisfies(
+                        actual_return,
+                        expected_return,
+                        declared_return,
+                        type_params,
+                    )
+            }
+            (
+                Type::Option(actual_inner),
+                Type::Option(expected_inner),
+                Type::Option(declared_inner),
+            ) => self.generic_argument_satisfies(
+                actual_inner,
+                expected_inner,
+                declared_inner,
+                type_params,
+            ),
+            (
+                Type::Tuple(actual_elems),
+                Type::Tuple(expected_elems),
+                Type::Tuple(declared_elems),
+            ) => {
+                actual_elems.len() == expected_elems.len()
+                    && declared_elems.len() == expected_elems.len()
+                    && actual_elems
+                        .iter()
+                        .zip(expected_elems.iter())
+                        .zip(declared_elems.iter())
+                        .all(|((actual, expected), declared)| {
+                            self.generic_argument_satisfies(actual, expected, declared, type_params)
+                        })
+            }
+            _ => self.type_satisfies(actual, expected),
+        }
+    }
+
+    fn generic_function_component_satisfies(
+        &self,
+        sub: &Type,
+        sup: &Type,
+        declared: &Type,
+        type_params: &std::collections::HashSet<&str>,
+    ) -> bool {
+        if let Type::Struct(name) = declared
+            && type_params.contains(name.as_str())
+        {
+            return true;
+        }
+        match (sub, sup, declared) {
+            (
+                Type::Function {
+                    params: sub_params,
+                    return_type: sub_return,
+                },
+                Type::Function {
+                    params: sup_params,
+                    return_type: sup_return,
+                },
+                Type::Function {
+                    params: declared_params,
+                    return_type: declared_return,
+                },
+            ) if sub_params.len() == sup_params.len()
+                && declared_params.len() == sup_params.len() =>
+            {
+                self.generic_function_component_satisfies(
+                    &Type::Tuple(sup_params.clone()),
+                    &Type::Tuple(sub_params.clone()),
+                    &Type::Tuple(declared_params.clone()),
+                    type_params,
+                ) && self.generic_function_component_satisfies(
+                    sub_return,
+                    sup_return,
+                    declared_return,
+                    type_params,
+                )
+            }
+            (Type::Option(sub_inner), Type::Option(sup_inner), Type::Option(declared_inner)) => {
+                self.generic_function_component_satisfies(
+                    sub_inner,
+                    sup_inner,
+                    declared_inner,
+                    type_params,
+                )
+            }
+            (Type::Tuple(sub_elems), Type::Tuple(sup_elems), Type::Tuple(declared_elems)) => {
+                sub_elems.len() == sup_elems.len()
+                    && declared_elems.len() == sup_elems.len()
+                    && sub_elems
+                        .iter()
+                        .zip(sup_elems.iter())
+                        .zip(declared_elems.iter())
+                        .all(|((sub, sup), declared)| {
+                            self.generic_function_component_satisfies(
+                                sub,
+                                sup,
+                                declared,
+                                type_params,
+                            )
+                        })
+            }
+            _ => self.function_subtype(sub, sup),
+        }
+    }
+
     fn type_satisfies(&self, actual: &Type, expected: &Type) -> bool {
         if actual == expected {
             return true;
@@ -12001,10 +12155,10 @@ impl TypeChecker {
                                 )?;
                             }
 
-                            // RES-2701: substitute generic type params recursively
-                            // so composite types like `fn(T) -> T` use a concrete
-                            // binding when one is available; unbound parameters
-                            // still fall back to Any.
+                            // RES-2701: substitute generic type params recursively.
+                            // Unresolved parameters remain Any; the generic
+                            // relation below keeps declared wildcards distinct
+                            // from an explicit any.
                             // RES-4067: once an earlier argument has bound T to
                             // a concrete struct, retain a proven `T::Assoc`
                             // parameter projection instead of erasing it to Any.
@@ -12022,7 +12176,7 @@ impl TypeChecker {
                                     callee_name,
                                     type_params,
                                     &tp_bindings,
-                                    true,
+                                    false,
                                 );
                                 &substituted
                             } else if let Some(tp) = &callee_type_params {
@@ -12040,7 +12194,17 @@ impl TypeChecker {
                             {
                                 deferred_projection_checks.push(i);
                             }
-                            if !self.type_satisfies(&arg_type, effective_param)
+                            let argument_satisfies = if callee_type_params.is_some() {
+                                self.generic_argument_satisfies(
+                                    &arg_type,
+                                    effective_param,
+                                    param_type,
+                                    &tp_set,
+                                )
+                            } else {
+                                self.type_satisfies(&arg_type, effective_param)
+                            };
+                            if !argument_satisfies
                                 && !self.satisfies_trait_param(&arg_type, effective_param)
                             {
                                 if rich_diag_enabled() {
@@ -12103,10 +12267,20 @@ impl TypeChecker {
                                     callee_name,
                                     type_params,
                                     &tp_bindings,
-                                    true,
+                                    false,
                                 );
                                 let arg_type = &checked_arg_types[i];
-                                if !self.type_satisfies(arg_type, &effective_param)
+                                let argument_satisfies = if callee_type_params.is_some() {
+                                    self.generic_argument_satisfies(
+                                        arg_type,
+                                        &effective_param,
+                                        param_type,
+                                        &tp_set,
+                                    )
+                                } else {
+                                    self.type_satisfies(arg_type, &effective_param)
+                                };
+                                if !argument_satisfies
                                     && !self.satisfies_trait_param(arg_type, &effective_param)
                                 {
                                     let arg = &arguments[i];
