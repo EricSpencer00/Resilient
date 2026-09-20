@@ -279,6 +279,10 @@
     "resilient/tests/stats_histogram_boundary.rs": {
       "branch": "res-4762-stats-histogram-bound",
       "claimed_at": "2026-09-20T22:53:02Z"
+    },
+    "resilient/src/pkg_registry.rs": {
+      "branch": "res-4766-archive-size",
+      "claimed_at": "2026-09-20T23:03:57Z"
     }
   }
 }
