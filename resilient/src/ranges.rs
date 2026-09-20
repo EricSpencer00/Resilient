@@ -53,9 +53,7 @@ pub(crate) fn parse_range_tail(
     if inclusive {
         parser.next_token(); // skip `=`
     }
-    let hi = parser
-        .parse_expression(0)
-        .unwrap_or(Node::IntegerLiteral { value: 0, span });
+    let hi = parse_range_upper_bound(parser, span, if inclusive { "..=" } else { ".." });
     Some(Node::Range {
         lo: Box::new(lo),
         hi: Box::new(hi),
@@ -186,6 +184,47 @@ pub(crate) fn iterate_range(lo: i64, hi: i64, inclusive: bool) -> impl Iterator<
     lo..end
 }
 
+/// Parse a required range upper bound, recording a diagnostic when the
+/// expression is absent. The placeholder keeps the AST recoverable so later
+/// statements can still be parsed after the error.
+pub(crate) fn parse_range_upper_bound(
+    parser: &mut crate::Parser,
+    span: span::Span,
+    operator: &str,
+) -> Node {
+    let errors_before = parser.errors.len();
+    if matches!(
+        parser.current_token,
+        Token::Colon
+            | Token::Comma
+            | Token::Eof
+            | Token::LeftBrace
+            | Token::RightBrace
+            | Token::RightParen
+            | Token::Semicolon
+    ) {
+        let tok = parser.current_token.clone();
+        parser.record_error_expected(format!(
+            "Expected expression after {} in range, found {}",
+            operator, tok
+        ));
+        return Node::IntegerLiteral { value: 0, span };
+    }
+    match parser.parse_expression(0) {
+        Some(hi) => hi,
+        None => {
+            if parser.errors.len() == errors_before {
+                let tok = parser.current_token.clone();
+                parser.record_error_expected(format!(
+                    "Expected expression after {} in range, found {}",
+                    operator, tok
+                ));
+            }
+            Node::IntegerLiteral { value: 0, span }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +312,24 @@ mod tests {
                 other => panic!("expected Range on let RHS, got {:?}", other),
             },
             other => panic!("expected LetStatement, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn missing_range_upper_bound_reports_parse_error() {
+        for src in ["let r = 1..;\n", "let r = 1..=;\n", "for i in 1.. { }\n"] {
+            let lexer = crate::Lexer::new(src);
+            let mut parser = crate::Parser::new_silent(lexer);
+            let _ = parser.parse_program();
+            let has_error = parser
+                .errors
+                .iter()
+                .any(|error| error.contains("Expected expression after"));
+            assert!(
+                has_error,
+                "missing upper bound should be diagnosed for {src:?}: {:?}",
+                parser.errors
+            );
         }
     }
 }
