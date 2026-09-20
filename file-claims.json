@@ -4,10 +4,6 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-3977-nested-array-flatten",
-      "claimed_at": "2026-09-19T21:47:21Z"
-    },
     "resilient/src/repl.rs": {
       "branch": "res-4445-repl-typecheck",
       "claimed_at": "2026-09-19T22:25:09Z"
