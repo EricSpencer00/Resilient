@@ -53,6 +53,13 @@ commit_file "$repo" value.txt shared candidate-patch
 candidate_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" push origin "$candidate_sha:refs/heads/candidate" >/dev/null 2>&1
 
+if (cd "$repo" && bash "$SYNC" --pr null --no-push --candidate-ref main) > "$TEST_ROOT/invalid-candidate.log" 2>&1; then
+  echo "expected an arbitrary candidate ref to be rejected" >&2
+  exit 1
+fi
+grep -q "candidate ref must identify the current feature branch" "$TEST_ROOT/invalid-candidate.log"
+echo "PASS candidate ref restriction"
+
 output="$(cd "$repo" && bash "$SYNC" --pr null --integration agents/integration)"
 [[ "$(remote_sha "$repo" refs/heads/agents/integration)" == "$candidate_sha" ]]
 grep -Eq "promoted candidate|candidate already included" <<< "$output"

@@ -22,6 +22,7 @@
 # Usage:
 #   agent-scripts/sync-integration.sh                  # infer PR from branch
 #   agent-scripts/sync-integration.sh --pr 300
+#   agent-scripts/sync-integration.sh --pr 300 --candidate-ref feature
 #   agent-scripts/sync-integration.sh --no-push        # dry run, rebase only
 #
 # This script is idempotent: running it again after main advances will
@@ -39,12 +40,14 @@ cd "$REPO_ROOT"
 PR=""
 PUSH=1
 INTEGRATION_REF="agents/integration"
+CANDIDATE_REF=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr) PR="$2"; shift 2 ;;
         --no-push) PUSH=0; shift ;;
         --integration) INTEGRATION_REF="$2"; shift 2 ;;
+        --candidate-ref) CANDIDATE_REF="$2"; shift 2 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
@@ -58,6 +61,17 @@ if [[ "$branch" == "main" || "$branch" == "$INTEGRATION_REF" ]]; then
     echo "refuse: must run on a feature branch, not $branch" >&2
     exit 2
 fi
+
+if [[ -z "$CANDIDATE_REF" ]]; then
+    CANDIDATE_REF="$branch"
+fi
+case "$CANDIDATE_REF" in
+    "$branch"|HEAD|"refs/heads/$branch") ;;
+    *)
+        echo "refuse: candidate ref must identify the current feature branch" >&2
+        exit 2
+        ;;
+esac
 
 if [[ -z "$PR" ]]; then
     PR="$(github_rest_find_open_pr "$branch" 2>/dev/null || true)"
@@ -166,7 +180,7 @@ for attempt in 1 2 3; do
         --remote origin \
         --main-ref origin/main \
         --integration "$INTEGRATION_REF" \
-        --candidate-ref "$branch"; then
+        --candidate-ref "$CANDIDATE_REF"; then
         echo "integration reconciliation failed (attempt $attempt)" >&2
     else
         git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -3

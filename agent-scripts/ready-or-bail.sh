@@ -102,6 +102,7 @@ fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 PR=""
 DRY_RUN=0
@@ -116,7 +117,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$PR" ]; then
-  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   PR="$(github_rest_find_open_pr "$BRANCH" 2>/dev/null || true)"
   if [ -z "$PR" ] || [ "$PR" = "null" ]; then
     echo "Could not infer open PR for branch $BRANCH. Pass --pr N." >&2
@@ -131,7 +131,7 @@ if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
   echo
   echo "Guardrail green → syncing against agents/integration before marking ready."
   if (( DRY_RUN == 0 )); then
-    if ! bash "$SCRIPT_DIR/sync-integration.sh" --pr "$PR"; then
+    if ! bash "$SCRIPT_DIR/sync-integration.sh" --pr "$PR" --candidate-ref "$BRANCH"; then
       echo "sync-integration failed — leaving PR #$PR as draft."
       github_comment_pr "$PR" "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
       exit 2
