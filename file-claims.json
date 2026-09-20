@@ -235,6 +235,10 @@
     "resilient/src/format_builtin.rs": {
       "branch": "res-4722-template-capacity",
       "claimed_at": "2026-09-20T21:43:39Z"
+    },
+    "resilient/src/array_cumulative.rs": {
+      "branch": "res-4730-array-cumulative-no-staging",
+      "claimed_at": "2026-09-20T21:59:09Z"
     }
   }
 }
