@@ -31,6 +31,10 @@
     "resilient-runtime/src/vm/serde.rs": {
       "branch": "res-4463-bytecode-control-flow",
       "claimed_at": "2026-09-20T00:29:17Z"
+    },
+    "resilient-runtime/src/dma.rs": {
+      "branch": "res-4465-dma-transfer",
+      "claimed_at": "2026-09-20T00:42:22Z"
     }
   }
 }
