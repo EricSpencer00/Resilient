@@ -192,6 +192,7 @@ fn find_return_literal_mismatch(node: &Node, want: usize) -> Option<(usize, Span
         Node::Block { stmts, .. } => stmts
             .iter()
             .find_map(|s| find_return_literal_mismatch(s, want)),
+        Node::ExpressionStatement { expr, .. } => find_return_literal_mismatch(expr.as_ref(), want),
         Node::IfStatement {
             consequence,
             alternative,
