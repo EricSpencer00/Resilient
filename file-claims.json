@@ -247,14 +247,6 @@
     "resilient/src/refinement_types.rs": {
       "branch": "res-4663-refinement-constant-proof-v2",
       "claimed_at": "2026-09-20T22:18:21Z"
-    },
-    "resilient/src/source_map.rs": {
-      "branch": "res-4748-source-map-count",
-      "claimed_at": "2026-09-20T22:25:22Z"
-    },
-    "resilient/tests/source_map_instruction_count.rs": {
-      "branch": "res-4748-source-map-count",
-      "claimed_at": "2026-09-20T22:25:22Z"
     }
   }
 }
