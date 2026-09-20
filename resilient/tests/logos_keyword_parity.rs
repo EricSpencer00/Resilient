@@ -1,3 +1,5 @@
+#![cfg(feature = "logos-lexer")]
+
 use std::process::Command;
 
 #[test]
