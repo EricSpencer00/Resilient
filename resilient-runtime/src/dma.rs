@@ -18,9 +18,9 @@
 //!   descriptor IDs and stitches `next` pointers together. Lets
 //!   firmware build a chain without `alloc`, and the type system
 //!   keeps every borrow consistent.
-//! - [`DmaTransfer`]: the consumed handle you hand to
-//!   [`dma_start_transfer`]. The chain moves into the handle, so
-//!   no one can mutate descriptors mid-flight.
+//! - [`DmaTransfer`]: the borrowed handle you hand to
+//!   [`dma_start_transfer`]. The handle holds an exclusive borrow of
+//!   the chain, so no one can move or mutate descriptors mid-flight.
 //!
 //! # Why no_std?
 //!
@@ -38,13 +38,13 @@
 //! the Resilient surface language. A `linear` DMA buffer is consumed
 //! at most once — exactly what you want for a transfer whose
 //! hardware semantics overlap reads and writes. The API mirror on
-//! this side is movement, not borrowing: [`DmaChain::append`] takes
-//! `&mut self` (only one chain builder at a time) and
-//! [`DmaChain::start`] takes `self` by value, returning a
-//! [`DmaTransfer`] that owns the chain for the duration of the
-//! transfer. Once you call `start`, the chain is unreachable; the
-//! compiler enforces no further mutation. That's the runtime half
-//! of the linearity story — the language half is in `linear.rs`.
+//! this side is borrowing: [`DmaChain::append`] takes `&mut self`
+//! (only one chain builder at a time), and [`DmaChain::start`] takes
+//! `&mut self`, returning a [`DmaTransfer`] that exclusively borrows
+//! the chain for the duration of the transfer. The compiler prevents
+//! the chain from being moved, mutated, or dropped while the transfer
+//! is live. That's the runtime half of the linearity story — the
+//! language half is in `linear.rs`.
 //!
 //! # Compile-time validation
 //!
@@ -344,10 +344,9 @@ impl<const N: usize> DmaChain<N> {
         let new_index = self.len;
         self.len += 1;
         // Patch the previous tail to point at the new entry. The
-        // pointer is valid as long as the chain isn't moved, which
-        // is the invariant `DmaTransfer` enforces by taking the
-        // chain by value (or `Pin` for callers who put the chain
-        // in a static).
+        // pointer is valid as long as the chain isn't moved. The
+        // transfer API enforces that invariant with an exclusive
+        // borrow for the transfer's lifetime.
         if new_index > 0 {
             // SAFETY: index 0..new_index-1 is initialised (the loop
             // invariant of `len`) and the slot at new_index is the
@@ -390,11 +389,11 @@ impl<const N: usize> DmaChain<N> {
         }
     }
 
-    /// Consume the chain and produce a [`DmaTransfer`] handle ready
-    /// to hand to the hardware. After this call the chain is
-    /// unreachable — exactly the linearity guarantee a `linear`
-    /// DMA buffer needs.
-    pub fn start(self) -> DmaTransfer<N> {
+    /// Borrow the chain exclusively for a [`DmaTransfer`] handle ready
+    /// to hand to the hardware. The borrow keeps the descriptor arena
+    /// at a stable address and prevents mutation, movement, or drop
+    /// until the transfer is released.
+    pub fn start(&mut self) -> DmaTransfer<'_, N> {
         DmaTransfer { chain: self }
     }
 }
@@ -410,20 +409,20 @@ pub fn dma_chain_append<const N: usize>(
     chain.append(desc)
 }
 
-/// A consumed chain ready for DMA execution.
+/// An exclusively borrowed chain ready for DMA execution.
 ///
-/// Holds the chain by value so no one can mutate descriptors while
-/// the engine reads them. Drop this when the transfer is complete
-/// (the storage is freed when the handle goes out of scope).
+/// Holds an exclusive borrow of the chain so no one can move or
+/// mutate descriptors while the engine reads them. Drop this when
+/// the transfer is complete; the chain remains owned by its caller.
 ///
 /// We deliberately do NOT implement `Clone`/`Copy` on this type —
 /// duplicating a transfer would alias the underlying descriptor
 /// storage, defeating the linearity guarantee.
-pub struct DmaTransfer<const N: usize> {
-    chain: DmaChain<N>,
+pub struct DmaTransfer<'a, const N: usize> {
+    chain: &'a mut DmaChain<N>,
 }
 
-impl<const N: usize> DmaTransfer<N> {
+impl<const N: usize> DmaTransfer<'_, N> {
     /// Number of descriptors in the underlying chain.
     #[inline]
     pub const fn descriptor_count(&self) -> usize {
@@ -463,7 +462,7 @@ impl<const N: usize> DmaTransfer<N> {
 /// and returns the transfer handle so unit tests can inspect the
 /// resulting linked list.
 #[inline]
-pub fn dma_start_transfer<const N: usize>(chain: DmaChain<N>) -> DmaTransfer<N> {
+pub fn dma_start_transfer<'a, const N: usize>(chain: &'a mut DmaChain<N>) -> DmaTransfer<'a, N> {
     chain.start()
 }
 
@@ -739,7 +738,7 @@ mod tests {
         dma_chain_append(&mut chain, d_fn).unwrap();
         assert_eq!(chain.len(), 1);
 
-        let transfer = dma_start_transfer(chain);
+        let transfer = dma_start_transfer(&mut chain);
         assert_eq!(transfer.descriptor_count(), 1);
     }
 
@@ -809,7 +808,7 @@ mod tests {
 
     #[test]
     fn empty_chain_start_has_null_head() {
-        let chain: DmaChain<4> = DmaChain::new();
+        let mut chain: DmaChain<4> = DmaChain::new();
         let transfer = chain.start();
         assert!(transfer.head_ptr().is_null());
         assert_eq!(transfer.descriptor_count(), 0);
@@ -817,7 +816,7 @@ mod tests {
 
     #[test]
     fn empty_chain_total_bytes_is_zero() {
-        let chain: DmaChain<4> = DmaChain::new();
+        let mut chain: DmaChain<4> = DmaChain::new();
         let transfer = chain.start();
         assert_eq!(transfer.total_bytes(), 0);
     }
@@ -842,11 +841,8 @@ mod tests {
         }
         let transfer = chain.start();
         assert_eq!(transfer.descriptor_count(), 16);
-        // Walk via the safe index accessor only. `start` moved the
-        // arena, so stored `next` pointers reference the pre-move
-        // chain and must never be dereferenced or compared against
-        // post-move addresses — only the null/non-null tail sentinel
-        // is meaningful here.
+        // Walk via the safe index accessor. The transfer borrows the
+        // arena, so every stored link remains at its stable address.
         assert!(!transfer.head_ptr().is_null());
         for i in 0..16 {
             let desc = transfer.descriptor(i).unwrap();
@@ -873,5 +869,47 @@ mod tests {
         let err = DmaDescriptor::new(src_addr(), dst_addr(), DMA_MAX_LENGTH + 1, DmaWidth::Byte)
             .unwrap_err();
         assert!(matches!(err, DmaError::LengthTooLarge { .. }));
+    }
+
+    #[test]
+    fn start_transfer_preserves_every_descriptor_link() {
+        let mut chain: DmaChain<3> = DmaChain::new();
+        for offset in [0usize, 8, 16] {
+            chain
+                .append(
+                    DmaDescriptor::new(src_addr() + offset, dst_addr() + offset, 4, DmaWidth::Word)
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let transfer = chain.start();
+        let first = transfer.descriptor(0).unwrap();
+        let second = transfer.descriptor(1).unwrap();
+        let third = transfer.descriptor(2).unwrap();
+        assert_eq!(transfer.head_ptr(), first as *const _);
+        assert_eq!(first.next, second as *const _);
+        assert_eq!(second.next, third as *const _);
+        assert!(third.next.is_null());
+    }
+
+    #[test]
+    fn free_function_start_preserves_descriptor_links() {
+        let mut chain: DmaChain<2> = DmaChain::new();
+        for offset in [0usize, 8] {
+            dma_chain_append(
+                &mut chain,
+                dma_descriptor_new(src_addr() + offset, dst_addr() + offset, 4, DmaWidth::Word)
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let transfer = dma_start_transfer(&mut chain);
+        let first = transfer.descriptor(0).unwrap();
+        let second = transfer.descriptor(1).unwrap();
+        assert_eq!(transfer.head_ptr(), first as *const _);
+        assert_eq!(first.next, second as *const _);
+        assert!(second.next.is_null());
     }
 }
