@@ -3716,6 +3716,66 @@ mod tests {
         );
     }
 
+    fn stable_metrics_response_shape(response: &str) -> String {
+        let (headers, body) = response
+            .split_once("\r\n\r\n")
+            .expect("metrics response must contain a header separator");
+        let status = headers.lines().next().expect("metrics response status");
+        let content_type = headers
+            .lines()
+            .find(|line| line.starts_with("Content-Type:"))
+            .expect("metrics response content type");
+        let body_shape = body
+            .lines()
+            .map(|line| {
+                if line.starts_with('#') {
+                    return line.to_string();
+                }
+                let mut fields = line.split_whitespace();
+                let name = fields.next().expect("metric sample name");
+                let value = fields.next().expect("metric sample value");
+                assert!(
+                    value.parse::<f64>().is_ok(),
+                    "metric sample value must be numeric: {line}"
+                );
+                assert!(
+                    fields.next().is_none(),
+                    "unexpected fields in metric sample: {line}"
+                );
+                format!("{name} <sample>")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{status}\n{content_type}\n{body_shape}")
+    }
+
+    #[test]
+    fn http_metrics_parity_ignores_samples_but_keeps_shape() {
+        let first = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: text/plain; version=0.0.4\r\n",
+            "Content-Length: 42\r\n\r\n",
+            "# HELP requests_total Requests\n",
+            "# TYPE requests_total counter\n",
+            "requests_total 3\n",
+            "request_duration_seconds_bucket{le=\"0.001\"} 1\n",
+        );
+        let second = first
+            .replace("Content-Length: 42", "Content-Length: 44")
+            .replace("requests_total 3", "requests_total 100")
+            .replace("} 1", "} 98");
+        assert_eq!(
+            stable_metrics_response_shape(first),
+            stable_metrics_response_shape(&second)
+        );
+
+        let different_metric = second.replace("requests_total 100", "errors_total 100");
+        assert_ne!(
+            stable_metrics_response_shape(first),
+            stable_metrics_response_shape(&different_metric)
+        );
+    }
+
     #[test]
     fn http_versioned_and_legacy_routes_match_for_every_endpoint() {
         for (method, legacy_path, versioned_path) in [
@@ -3733,10 +3793,18 @@ mod tests {
                 format!("{method} {versioned_path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
             let legacy_response = http_response_for_request(&legacy_request, &test_config());
             let versioned_response = http_response_for_request(&versioned_request, &test_config());
-            assert_eq!(
-                versioned_response, legacy_response,
-                "versioned route {versioned_path} diverged from {legacy_path}"
-            );
+            if method == "GET" && legacy_path == "/metrics" {
+                assert_eq!(
+                    stable_metrics_response_shape(&versioned_response),
+                    stable_metrics_response_shape(&legacy_response),
+                    "versioned route {versioned_path} diverged from {legacy_path}"
+                );
+            } else {
+                assert_eq!(
+                    versioned_response, legacy_response,
+                    "versioned route {versioned_path} diverged from {legacy_path}"
+                );
+            }
         }
 
         let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
