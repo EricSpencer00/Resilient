@@ -248,9 +248,9 @@
       "branch": "res-4663-refinement-constant-proof-v2",
       "claimed_at": "2026-09-20T22:18:21Z"
     },
-    "resilient/src/combinatorics.rs": {
-      "branch": "res-4745-combinatorial-bound",
-      "claimed_at": "2026-09-20T22:20:55Z"
+    "resilient/src/peephole.rs": {
+      "branch": "res-4746-peephole-jump-bound",
+      "claimed_at": "2026-09-20T22:22:27Z"
     }
   }
 }
