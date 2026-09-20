@@ -293,18 +293,42 @@ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
         }
     };
 
-    if n < 1 {
-        return Err(format!("array_windows: window size must be >= 1, got {n}"));
-    }
-    let n = n as usize;
-    if arr.len() < n {
+    let Some((n, window_count)) = checked_window_output(arr.len(), n)? else {
         return Ok(Value::Array(vec![]));
-    }
-    let mut out = Vec::with_capacity(arr.len() - n + 1);
-    for start in 0..=(arr.len() - n) {
+    };
+    let mut out = Vec::with_capacity(window_count);
+    for start in 0..window_count {
         out.push(Value::Array(arr[start..start + n].to_vec()));
     }
     Ok(Value::Array(out))
+}
+
+const MAX_TOTAL_WINDOW_ELEMENTS: usize = 1_000_000_000;
+
+fn checked_window_output(array_len: usize, window_len: i64) -> RResult<Option<(usize, usize)>> {
+    if window_len < 1 {
+        return Err(format!(
+            "array_windows: window size must be >= 1, got {window_len}"
+        ));
+    }
+    let window_len = usize::try_from(window_len).map_err(|_| {
+        format!("array_windows: window size {window_len} does not fit this target's index type")
+    })?;
+    if array_len < window_len {
+        return Ok(None);
+    }
+    let window_count = array_len - window_len + 1;
+    let total_elements = window_count.checked_mul(window_len).ok_or_else(|| {
+        format!(
+            "array_windows: output size overflow for {window_count} windows of {window_len} elements"
+        )
+    })?;
+    if total_elements > MAX_TOTAL_WINDOW_ELEMENTS {
+        return Err(format!(
+            "array_windows: output has {total_elements} elements, exceeding the maximum of {MAX_TOTAL_WINDOW_ELEMENTS}"
+        ));
+    }
+    Ok(Some((window_len, window_count)))
 }
 
 /// `array_take_while(arr, fn) -> Array`
@@ -691,6 +715,15 @@ println(len(ws));"#);
         let r = run(r#"let ws = array_windows([1,2,3], 0);
 println(ws);"#);
         assert!(!r.ok, "expected error for window size 0");
+    }
+
+    #[test]
+    fn windows_reject_oversized_output_before_allocating() {
+        let err = checked_window_output(1_000_001, 500_001).unwrap_err();
+        assert!(
+            err.contains("exceeding the maximum"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── array_take_while / array_drop_while ───────────────────────────────────
