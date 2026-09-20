@@ -82,6 +82,13 @@ pub const MAX_TIMERS: usize = 8;
 /// `500` means 50%; `1000` is fully-on; `0` is fully-off.
 pub const PWM_DUTY_MAX: u16 = 1000;
 
+/// Maximum callbacks delivered for one [`tick`] call.
+///
+/// Timer counts still record every elapsed period, but a very large elapsed
+/// window coalesces callbacks after this budget so an interrupt cannot spend
+/// unbounded time replaying missed events.
+pub const MAX_CALLBACKS_PER_TICK: u32 = 64;
+
 /// Operational mode of a timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerMode {
@@ -187,8 +194,8 @@ struct TimerState {
     /// Time accumulated toward the next expiry, in microseconds.
     /// Reset to 0 on expiry / reset / restart.
     accum_us: u32,
-    /// Number of callback invocations since the last reset. For
-    /// PWM mode this counts completed PWM periods, not edges.
+    /// Number of elapsed periods since the last reset. For PWM mode
+    /// this counts completed PWM periods, not edges.
     count: u32,
     /// Free-running elapsed time since start, in microseconds.
     /// Survives expiry / restart in periodic mode; cleared by
@@ -488,8 +495,9 @@ pub fn timer_delay_ms(id: TimerId, ms: u32) -> Result<(), TimerError> {
 /// On real firmware, hook this to a periodic systick interrupt
 /// (or the dedicated timer-block interrupt). Tests call it
 /// directly with a virtual elapsed window. A single `tick` may
-/// fire multiple expiries for a fast periodic timer; the runtime
-/// handles that without losing pulses.
+/// account for multiple expiries for a fast periodic timer; the
+/// callback delivery is capped at [`MAX_CALLBACKS_PER_TICK`] so
+/// elapsed input cannot create unbounded interrupt work.
 pub fn tick(elapsed_us: u32) {
     // Two-phase: collect the callbacks to fire under the lock,
     // then drop the lock and fire them. Firing under the lock
@@ -501,23 +509,28 @@ pub fn tick(elapsed_us: u32) {
                 continue;
             }
             slot.elapsed_us = slot.elapsed_us.saturating_add(elapsed_us as u64);
-            let mut remaining = elapsed_us;
-            while remaining > 0 {
-                let needed = slot.period_us.saturating_sub(slot.accum_us);
-                if remaining < needed {
-                    slot.accum_us = slot.accum_us.saturating_add(remaining);
-                    remaining = 0;
-                } else {
-                    remaining = remaining.saturating_sub(needed);
+            let total_us = slot.accum_us as u64 + elapsed_us as u64;
+            let expiries = total_us / slot.period_us as u64;
+            let remainder_us = (total_us % slot.period_us as u64) as u32;
+
+            if matches!(slot.mode, TimerMode::OneShot) {
+                if expiries > 0 {
                     slot.accum_us = 0;
                     slot.count = slot.count.saturating_add(1);
-                    to_fire[idx].0 = slot.callback;
-                    to_fire[idx].1 = to_fire[idx].1.saturating_add(1);
-                    if matches!(slot.mode, TimerMode::OneShot) {
-                        slot.status = Status::Expired;
-                        break;
-                    }
+                    to_fire[idx] = (slot.callback, 1);
+                    slot.status = Status::Expired;
+                } else {
+                    slot.accum_us = remainder_us;
                 }
+            } else {
+                slot.accum_us = remainder_us;
+                slot.count = slot
+                    .count
+                    .saturating_add(expiries.min(u32::MAX as u64) as u32);
+                to_fire[idx] = (
+                    slot.callback,
+                    expiries.min(MAX_CALLBACKS_PER_TICK as u64) as u32,
+                );
             }
         }
     });
@@ -643,6 +656,21 @@ mod tests {
     }
 
     #[test]
+    fn extreme_periodic_window_has_bounded_callback_delivery() {
+        let _g = lock();
+        reset_cb();
+        let id = timer_init(TimerConfig::periodic(1_000_000)).unwrap(); // 1us period.
+        timer_set_callback(id, Some(bump_cb)).unwrap();
+        timer_start(id).unwrap();
+
+        tick(u32::MAX);
+
+        assert_eq!(timer_count(id).unwrap(), u32::MAX);
+        assert_eq!(timer_elapsed_us(id).unwrap(), u32::MAX as u64);
+        assert_eq!(CB_COUNT.load(Ordering::SeqCst), MAX_CALLBACKS_PER_TICK);
+    }
+
+    #[test]
     fn one_shot_fires_once_and_auto_stops() {
         let _g = lock();
         reset_cb();
@@ -653,6 +681,22 @@ mod tests {
         assert_eq!(CB_COUNT.load(Ordering::SeqCst), 1);
         // Further ticks don't re-fire.
         tick(5_000);
+        assert_eq!(CB_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn extreme_one_shot_window_still_fires_once() {
+        let _g = lock();
+        reset_cb();
+        let id = timer_init(TimerConfig::one_shot(1_000_000)).unwrap(); // 1us period.
+        timer_set_callback(id, Some(bump_cb)).unwrap();
+        timer_start(id).unwrap();
+
+        tick(u32::MAX);
+        tick(u32::MAX);
+
+        assert_eq!(timer_count(id).unwrap(), 1);
+        assert_eq!(timer_elapsed_us(id).unwrap(), u32::MAX as u64);
         assert_eq!(CB_COUNT.load(Ordering::SeqCst), 1);
     }
 
