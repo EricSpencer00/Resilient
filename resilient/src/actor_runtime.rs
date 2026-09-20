@@ -139,6 +139,22 @@ impl std::fmt::Display for MailboxError {
     }
 }
 
+/// Failure returned when the process has exhausted the representable PID
+/// space. PID zero is reserved, so allocating past `u64::MAX` cannot be
+/// repaired by wrapping or reusing an existing identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PidAllocationError {
+    Exhausted,
+}
+
+impl std::fmt::Display for PidAllocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exhausted => f.write_str("actor PID space exhausted"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Scheduler
 // ---------------------------------------------------------------------------
@@ -167,9 +183,13 @@ impl Scheduler {
 
     /// Allocate a fresh PID. Each call increments the internal
     /// counter; PIDs are never reused within a process run.
-    pub fn fresh_pid(&mut self) -> ActorPid {
-        self.next_pid += 1;
-        ActorPid(self.next_pid)
+    pub fn fresh_pid(&mut self) -> Result<ActorPid, PidAllocationError> {
+        let next_pid = self
+            .next_pid
+            .checked_add(1)
+            .ok_or(PidAllocationError::Exhausted)?;
+        self.next_pid = next_pid;
+        Ok(ActorPid(next_pid))
     }
 
     /// Mark `pid` as runnable. Idempotent — calling on an
@@ -239,14 +259,14 @@ thread_local! {
 /// Allocate a fresh PID, register an empty mailbox for it, and mark
 /// it as runnable. PR 2's `spawn` builtin calls this immediately
 /// before enqueueing the actor's initial frame.
-pub fn register_actor() -> ActorPid {
-    let pid = SCHEDULER.with(|s| s.borrow_mut().fresh_pid());
+pub fn register_actor() -> Result<ActorPid, PidAllocationError> {
+    let pid = SCHEDULER.with(|s| s.borrow_mut().fresh_pid())?;
     MAILBOX_REGISTRY.with(|m| {
         m.borrow_mut()
             .insert(pid, VecDeque::with_capacity(DEFAULT_MAILBOX_CAPACITY));
     });
     SCHEDULER.with(|s| s.borrow_mut().mark_runnable(pid));
-    pid
+    Ok(pid)
 }
 
 /// Append `msg` to `pid`'s mailbox. Returns `WouldBlock` when the
@@ -329,7 +349,7 @@ pub fn mark_runnable(pid: ActorPid) {
 /// Allocate a new actor running `fn_value`, return `Value::ActorPid`.
 /// Stores the function body in `ACTOR_FN_REGISTRY` for PR 3's scheduler.
 pub fn actor_spawn(fn_value: Value) -> Result<Value, String> {
-    let pid = register_actor();
+    let pid = register_actor().map_err(|e| e.to_string())?;
     ACTOR_FN_REGISTRY.with(|r| r.borrow_mut().insert(pid, fn_value));
     Ok(Value::ActorPid(pid.0))
 }
@@ -501,17 +521,53 @@ mod tests {
 
     fn fresh() -> ActorPid {
         reset_for_test();
-        register_actor()
+        register_actor().expect("fresh PID should be available")
     }
 
     #[test]
     fn register_actor_allocates_fresh_pid() {
         reset_for_test();
-        let p1 = register_actor();
-        let p2 = register_actor();
+        let p1 = register_actor().expect("first PID should be available");
+        let p2 = register_actor().expect("second PID should be available");
         assert_ne!(p1, p2);
         assert_eq!(p1.0 + 1, p2.0);
         assert!(!p1.is_none());
+    }
+
+    #[test]
+    fn scheduler_pid_exhaustion_is_fail_closed() {
+        let mut scheduler = Scheduler::new();
+        scheduler.next_pid = u64::MAX;
+
+        assert_eq!(
+            scheduler.fresh_pid(),
+            Err(PidAllocationError::Exhausted),
+            "the scheduler must reject an unrepresentable PID"
+        );
+        assert_eq!(
+            scheduler.next_pid,
+            u64::MAX,
+            "failed allocation must not mutate the counter"
+        );
+    }
+
+    #[test]
+    fn register_actor_pid_exhaustion_leaves_runtime_state_unchanged() {
+        reset_for_test();
+        SCHEDULER.with(|s| s.borrow_mut().next_pid = u64::MAX);
+
+        let err = register_actor().expect_err("exhausted PID space should fail");
+        assert_eq!(err, PidAllocationError::Exhausted);
+        assert_eq!(
+            MAILBOX_REGISTRY.with(|m| m.borrow().len()),
+            0,
+            "failed registration must not create a mailbox"
+        );
+        assert_eq!(
+            SCHEDULER.with(|s| s.borrow().next_pid),
+            u64::MAX,
+            "failed registration must preserve the exhausted counter"
+        );
     }
 
     #[test]
@@ -643,7 +699,7 @@ mod tests {
     #[test]
     fn deadlock_when_only_blocked_actors_remain() {
         let p1 = fresh();
-        let p2 = register_actor();
+        let p2 = register_actor().expect("second PID should be available");
         mark_blocked(p1);
         mark_blocked(p2);
         // Drain the runnable queue (initially p1 and p2 were marked
@@ -656,9 +712,9 @@ mod tests {
     #[test]
     fn scheduler_pops_in_fifo_order() {
         reset_for_test();
-        let p1 = register_actor();
-        let p2 = register_actor();
-        let p3 = register_actor();
+        let p1 = register_actor().expect("first PID should be available");
+        let p2 = register_actor().expect("second PID should be available");
+        let p3 = register_actor().expect("third PID should be available");
         SCHEDULER.with(|s| {
             let mut sched = s.borrow_mut();
             assert_eq!(sched.pop_runnable(), Some(p1));
