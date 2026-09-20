@@ -830,6 +830,41 @@ fn run_postcheck(
     }
 }
 
+/// RES-4119: execute the deferred thunks attached to a frame that is
+/// leaving the direct-threaded dispatcher. The thunk receives the frame's
+/// live locals at drain time and runs in an isolated VM call, matching the
+/// match-dispatch implementation. Continue draining after an error so every
+/// deferred action runs, but preserve the first error for the caller.
+fn run_deferred_calls(
+    program: &Program,
+    locals: &[Value],
+    popped: &CallFrame,
+    overflow_mode: OverflowMode,
+) -> Result<(), VmError> {
+    let mut first_defer_err: Option<VmError> = None;
+    for defer_fn_idx in popped.defers.iter().rev() {
+        let arity = program
+            .functions
+            .get(*defer_fn_idx as usize)
+            .ok_or(VmError::FunctionOutOfBounds(*defer_fn_idx))?
+            .arity as usize;
+        let args: Vec<Value> = locals
+            .get(popped.locals_base..)
+            .and_then(|slots| slots.get(..arity))
+            .map(<[Value]>::to_vec)
+            .unwrap_or_default();
+        if let Err(e) = run_postcheck(program, *defer_fn_idx, args, overflow_mode)
+            && first_defer_err.is_none()
+        {
+            first_defer_err = Some(e);
+        }
+    }
+    if let Some(e) = first_defer_err {
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// RES-091: the original dispatch loop, factored out so `run` can
 /// wrap any returned error with source-line info. `last_pc` is
 /// updated at the top of every iteration so the outer wrapper knows
@@ -1300,39 +1335,9 @@ fn run_dispatch_loop(
                 // semantics.
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
-                // RES-4119: drain `popped`'s deferred calls in LIFO
-                // order — mirrors the tree-walking interpreter's
-                // `defer_stack` drain (`lib.rs`), which always runs
-                // every deferred expr (remembering only the first
-                // error) before honoring the function's own return
-                // value. Args are read from `popped`'s *live* locals
-                // right now (drain time), not snapshotted at
-                // `Op::DeferPush` time — see the `CallFrame::defers`
-                // doc comment for why that matches the interpreter.
-                // Each thunk runs as its own isolated
-                // `run_postcheck`-style sub-call, so mutations inside a
-                // deferred call can't corrupt the frame that's
-                // unwinding.
-                let mut first_defer_err: Option<VmError> = None;
-                for defer_fn_idx in popped.defers.iter().rev() {
-                    let arity = program
-                        .functions
-                        .get(*defer_fn_idx as usize)
-                        .ok_or(VmError::FunctionOutOfBounds(*defer_fn_idx))?
-                        .arity as usize;
-                    let args: Vec<Value> = locals
-                        .get(popped.locals_base..popped.locals_base + arity)
-                        .map(<[Value]>::to_vec)
-                        .unwrap_or_default();
-                    if let Err(e) = run_postcheck(program, *defer_fn_idx, args, overflow_mode)
-                        && first_defer_err.is_none()
-                    {
-                        first_defer_err = Some(e);
-                    }
-                }
-                if let Some(e) = first_defer_err {
-                    return Err(e);
-                }
+                // RES-4119: drain `popped`'s deferred calls in LIFO order
+                // before checking its postconditions.
+                run_deferred_calls(program, locals, &popped, overflow_mode)?;
                 // RES-4041: run `popped`'s `ensures`/`recovers_to`
                 // postcondition checks now, while its own parameters are
                 // still addressable via `popped.locals_base` — mirrors
@@ -3883,16 +3888,19 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_STORE_STATIC] = h_store_static;
     table[OP_KIND_LOAD_STATIC] = h_load_static;
     table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
-    table[OP_KIND_DEFER_PUSH] = h_defer_unsupported;
+    table[OP_KIND_DEFER_PUSH] = h_defer_push;
     table
 };
 
-/// See `OP_KIND_DEFER_PUSH`.
+/// RES-4119: register a deferred thunk on the current direct-dispatch frame.
 #[inline(never)]
-fn h_defer_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported(
-        "defer (RESILIENT_DISPATCH=direct doesn't implement RES-4119 defer recursion yet)",
-    ))
+fn h_defer_push(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::DeferPush(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    state.frames[frame_idx].defers.push(idx);
+    Ok(Step::Continue)
 }
 
 /// RES-3995: `run_direct` doesn't implement live-block retry semantics
@@ -4057,6 +4065,9 @@ fn run_direct(
                 return Ok(state.stack.pop().unwrap_or(Value::Void));
             }
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            // RES-4119: an implicit end-of-chunk is a function exit too;
+            // drain its deferred thunks before releasing the live locals.
+            run_deferred_calls(state.program, &state.locals, &popped, state.overflow_mode)?;
             let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
             write_back_upvalues(&popped, caller_base, &mut state.locals);
             state.locals.truncate(popped.locals_base);
@@ -4424,6 +4435,9 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let ret = state.stack.pop().unwrap_or(Value::Void);
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+    // RES-4119: preserve the Match engine's LIFO drain and first-error
+    // semantics before tearing down the frame's live locals.
+    run_deferred_calls(state.program, &state.locals, &popped, state.overflow_mode)?;
     // RES-4041: the Direct (table-dispatch) engine doesn't implement
     // the postcheck's isolated nested-call recursion yet (same scope
     // cut as `OP_KIND_ENTER_LIVE`'s live-block retry semantics) —
@@ -5681,6 +5695,18 @@ mod tests {
             chunk.code.push(*op);
             chunk.line_info.push(1);
         }
+        Function {
+            name: name.to_string(),
+            arity,
+            chunk,
+            local_count,
+            upvalue_source_slots: Box::default(),
+            fails: Box::default(),
+            postcheck: None,
+        }
+    }
+
+    fn function_from_chunk(name: &str, arity: u8, local_count: u16, chunk: Chunk) -> Function {
         Function {
             name: name.to_string(),
             arity,
@@ -7554,6 +7580,55 @@ mod tests {
         assert_both_eq(
             "fn first() { static let value = 3; return value; } +             fn second() { static let value = 7; return value; } +             return first() * 10 + second();",
         );
+    }
+
+    #[test]
+    fn res4628_direct_defer_runs_before_explicit_return() {
+        // The deferred expression errors after the function has produced its
+        // return value; both dispatchers must still drain it before unwinding.
+        assert_both_eq("fn f() -> int { defer 1 / 0; return 7; } f();");
+    }
+
+    #[test]
+    fn res4628_direct_defer_preserves_lifo_first_error() {
+        let src = "fn f() { defer 1 / 0; defer [1][5]; } f();";
+        let (_, direct) = run_both(src);
+        let err = direct.expect_err("direct dispatch must drain deferred calls");
+        assert!(
+            matches!(err.kind(), VmError::ArrayIndexOutOfBounds { .. }),
+            "later deferred action must win in LIFO order: {err:?}"
+        );
+    }
+
+    #[test]
+    fn res4628_direct_defer_runs_on_implicit_end_of_chunk() {
+        let mut main = Chunk::new();
+        main.emit(Op::Call(0), 1);
+        main.emit(Op::Return, 1);
+
+        let mut body = Chunk::new();
+        body.emit(Op::DeferPush(1), 1);
+
+        let mut thunk = Chunk::new();
+        let one = thunk.add_constant(Value::Int(1)).unwrap();
+        let zero = thunk.add_constant(Value::Int(0)).unwrap();
+        thunk.emit(Op::Const(one), 1);
+        thunk.emit(Op::Const(zero), 1);
+        thunk.emit(Op::Div, 1);
+        thunk.emit(Op::ReturnFromCall, 1);
+
+        let p = Program {
+            main,
+            functions: vec![
+                function_from_chunk("implicit", 0, 0, body),
+                function_from_chunk("$defer", 0, 0, thunk),
+            ],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let err = run_with(&p, OverflowMode::Wrap, Dispatch::Direct)
+            .expect_err("implicit direct return must drain defer");
+        assert_eq!(err.kind(), &VmError::DivideByZero);
     }
 
     #[test]
