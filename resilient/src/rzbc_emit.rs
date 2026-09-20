@@ -106,21 +106,16 @@
 //! how those relative offsets become the `.rzbc` format's absolute
 //! `u32` targets.
 //!
-//! # Known gap: empty-stack `Return`
+//! # Empty-stack `Return`
 //!
 //! The host VM's `Op::Return` tolerates an empty operand stack
 //! (returns `Value::Void`); the embedded [`resilient_runtime::vm::Vm`]'s
 //! `Instr::Return` pops the stack and surfaces `VmError::StackUnderflow`
-//! on empty. A program whose last top-level statement is *not* a bare
-//! expression (e.g. it ends with `let`/an assignment) type-checks and
-//! builds cleanly under this module's subset check, but diverges at
-//! *runtime* between the two backends. Closing this gap needs either
-//! a `Void` variant on the embedded `Value` or a static "does this
-//! chunk always leave exactly one value for `Return`" analysis —
-//! both out of scope for this bridge PR. Documented, not silently
-//! swept under the rug; a real embedded program that wants a return
-//! value should end with a bare expression (mirrors the function-body
-//! implicit-return convention `compiler.rs` already uses).
+//! on empty. Before translating a chunk, this module performs a bounded
+//! control-flow walk over the supported opcode subset and rejects any
+//! reachable return with no value on the operand stack. That turns the
+//! backend mismatch into an actionable compile-time diagnostic instead
+//! of emitting a blob that is guaranteed to fail at runtime.
 
 use crate::Value as HostValue;
 use crate::bytecode::{Chunk, Op, Program, TryHandlerEntry as HostTryHandlerEntry};
@@ -203,19 +198,18 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
     let main_try_base = global_try_handlers.len();
     let main_handlers = flatten_try_handlers(&program.main.try_handlers, &variant_map, target)?;
     global_try_handlers.extend(main_handlers);
-    let main_instrs =
-        translate_chunk_transformed(&program.main, target, main_try_base, None, &arities)?;
-
+    if program.functions.is_empty() && !global_try_handlers.is_empty() {
+        return Err(unsupported(
+            target,
+            "top-level `try { }` blocks require the function-table `.rzbc` format, but this \
+             program declares no functions — a `try` around nothing but builtin/expression \
+             code has no `fails`-declaring callee to ever dispatch a catch arm for"
+                .to_string(),
+        ));
+    }
     if program.functions.is_empty() {
-        if !global_try_handlers.is_empty() {
-            return Err(unsupported(
-                target,
-                "top-level `try { }` blocks require the function-table `.rzbc` format, but this \
-                 program declares no functions — a `try` around nothing but builtin/expression \
-                 code has no `fails`-declaring callee to ever dispatch a catch arm for"
-                    .to_string(),
-            ));
-        }
+        let main_instrs =
+            translate_chunk_transformed(&program.main, target, main_try_base, None, &arities)?;
         let cap = rzbc_serde::HEADER_LEN + main_instrs.len() * MAX_INSTR_WIRE_WIDTH;
         let mut buf = vec![0u8; cap];
         let len = rzbc_serde::encode(&main_instrs, &mut buf).map_err(|e| {
@@ -294,6 +288,8 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
             &arities,
         )?);
     }
+    let main_instrs =
+        translate_chunk_transformed(&program.main, target, main_try_base, None, &arities)?;
 
     let functions: Vec<EncodeFunctionDef<'_>> = program
         .functions
@@ -438,7 +434,12 @@ fn flatten_try_handlers(
 /// see the module docs for why this index-preserving property is
 /// exactly what makes [`jump_target`]'s offset-to-absolute-index math
 /// sound.
-fn translate_chunk(chunk: &Chunk, target: &str, try_base: usize) -> Result<Vec<Instr>, EmitError> {
+fn translate_chunk(
+    chunk: &Chunk,
+    target: &str,
+    try_base: usize,
+    arities: &[u16],
+) -> Result<Vec<Instr>, EmitError> {
     let mut out = Vec::with_capacity(chunk.code.len());
     for (i, op) in chunk.code.iter().enumerate() {
         let instr = match *op {
@@ -543,6 +544,7 @@ fn translate_chunk(chunk: &Chunk, target: &str, try_base: usize) -> Result<Vec<I
         };
         out.push(instr);
     }
+    validate_return_stack(&chunk.code, target, arities)?;
     Ok(out)
 }
 
@@ -568,7 +570,7 @@ fn translate_chunk_transformed(
     let transformed_code = transform_ops(&chunk.code, chunk, target, shift, arities)?;
     let mut transformed_chunk = chunk.clone();
     transformed_chunk.code = transformed_code;
-    translate_chunk(&transformed_chunk, target, try_base)
+    translate_chunk(&transformed_chunk, target, try_base, arities)
 }
 
 /// RES-4083 (host closure emission): find the constant-pool index of
@@ -617,6 +619,78 @@ fn op_stack_effect(op: &Op, arities: &[u16]) -> Option<i32> {
         Op::Call(idx) => 1 - *arities.get(idx as usize)? as i32,
         _ => return None,
     })
+}
+/// Reject a reachable `Return`/`ReturnFromCall` whose execution stack is
+/// empty. The abstract depth is capped at `code.len() + 1`: larger depths
+/// are indistinguishable for this check, and the cap keeps stack-leaking
+/// malformed control-flow graphs finite without accepting a zero-depth path.
+fn validate_return_stack(code: &[Op], target: &str, arities: &[u16]) -> Result<(), EmitError> {
+    if code.is_empty() {
+        return Ok(());
+    }
+
+    let depth_cap = code.len().saturating_add(1);
+    let mut pending = vec![(0usize, 0usize)];
+    let mut seen = vec![Vec::<usize>::new(); code.len()];
+
+    while let Some((pc, depth)) = pending.pop() {
+        if pc >= code.len() || seen[pc].contains(&depth) {
+            continue;
+        }
+        seen[pc].push(depth);
+
+        match code[pc] {
+            Op::Return | Op::ReturnFromCall => {
+                if depth == 0 {
+                    return Err(unsupported(
+                        target,
+                        format!(
+                            "return at instruction {pc} can execute with an empty operand stack; \
+                             end the embedded program/function with a value-producing expression"
+                        ),
+                    ));
+                }
+                continue;
+            }
+            op => {
+                let Some(effect) = op_stack_effect(&op, arities) else {
+                    // The normal translation pass reports unsupported
+                    // opcodes with a more specific diagnostic.
+                    return Ok(());
+                };
+                let next_depth = depth as i64 + effect as i64;
+                if next_depth < 0 {
+                    return Err(unsupported(
+                        target,
+                        format!(
+                            "opcode `{:?}` at instruction {pc} would underflow the embedded \
+                             operand stack",
+                            op
+                        ),
+                    ));
+                }
+                let next_depth = (next_depth as usize).min(depth_cap);
+                match op {
+                    Op::Jump(offset) => {
+                        let dest = pc as i64 + 1 + offset as i64;
+                        if dest >= 0 && (dest as usize) < code.len() {
+                            pending.push((dest as usize, next_depth));
+                        }
+                    }
+                    Op::JumpIfFalse(offset) | Op::JumpIfTrue(offset) => {
+                        let dest = pc as i64 + 1 + offset as i64;
+                        if dest >= 0 && (dest as usize) < code.len() {
+                            pending.push((dest as usize, next_depth));
+                        }
+                        pending.push((pc + 1, next_depth));
+                    }
+                    _ => pending.push((pc + 1, next_depth)),
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// RES-4083 (closure call-site arguments): rewrite `code` so every
@@ -1846,6 +1920,36 @@ mod tests {
             err.reason.contains("jump target"),
             "reason was: {}",
             err.reason
+        );
+    }
+    #[test]
+    fn rejects_empty_stack_return() {
+        let main = chunk_from(
+            vec![Op::Const(0), Op::StoreLocal(0), Op::Return],
+            vec![HostValue::Int(7)],
+        );
+        let program = program_from(main);
+        let err = compile_to_rzbc(&program, "thumbv7em-none-eabihf").unwrap_err();
+        assert!(
+            err.reason.contains("empty operand stack"),
+            "reason was: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn executes_non_empty_return_after_stack_validation() {
+        let main = chunk_from(vec![Op::Const(0), Op::Return], vec![HostValue::Int(7)]);
+        let blob = compile_to_rzbc(&program_from(main), "thumbv7em-none-eabihf")
+            .expect("value-producing return should translate");
+
+        let mut out = [Instr::Return; 8];
+        let count = rzbc_serde::decode(&blob, &mut out).expect("emitted blob should decode");
+        let mut vm = resilient_runtime::vm::Vm::<8, 2>::new();
+        assert_eq!(
+            vm.run(&out[..count]),
+            Ok(RtValue::Int(7)),
+            "non-empty returns must preserve existing embedded behavior"
         );
     }
 }
