@@ -227,8 +227,6 @@ enum Tok {
     Live,
     #[token("assert")]
     Assert,
-    #[token("assume")]
-    Assume,
     #[token("if")]
     If,
     #[token("else")]
@@ -269,8 +267,6 @@ enum Tok {
     New,
     #[token("match")]
     Match,
-    #[token("extern")]
-    Extern,
     #[token("use")]
     Use,
     // RES-360: `as` keyword — namespace alias in `use "f" as name;`.
@@ -312,8 +308,6 @@ enum Tok {
     ConcurrentEnsures,
     #[token("always")]
     Always,
-    #[token("const")]
-    Const,
     // RES-388 follow-up: bounded-liveness `eventually(after: h): expr;`.
     #[token("eventually")]
     Eventually,
@@ -350,10 +344,6 @@ enum Tok {
     // RES-290: `trait Name { fn sig(...); ... }` trait declaration keyword.
     #[token("trait")]
     Trait,
-    #[token("enum")]
-    Enum,
-    #[token("unsafe")]
-    Unsafe,
     #[token("pub")]
     Pub,
     // RES-2535: `where` keyword for post-signature generic bound clauses.
@@ -362,8 +352,6 @@ enum Tok {
     // RES-2660: `static_assert(expr, msg)` compile-time assertion keyword.
     #[token("static_assert")]
     StaticAssert,
-    #[token("defer")]
-    Defer,
     // RES-2613: `bench "name" { body }` — benchmark block keyword.
     #[token("bench")]
     Bench,
@@ -871,7 +859,6 @@ fn convert(t: Tok) -> Token {
         Tok::Let => Token::Let,
         Tok::Live => Token::Live,
         Tok::Assert => Token::Assert,
-        Tok::Assume => Token::Assume,
         Tok::If => Token::If,
         Tok::Else => Token::Else,
         Tok::Return => Token::Return,
@@ -890,7 +877,6 @@ fn convert(t: Tok) -> Token {
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
         Tok::Match => Token::Match,
-        Tok::Extern => Token::Extern,
         Tok::Use => Token::Use,
         Tok::As => Token::As,
         Tok::ColonColon => Token::DoubleColon,
@@ -905,7 +891,6 @@ fn convert(t: Tok) -> Token {
         Tok::Receive => Token::Receive,
         Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
         Tok::Always => Token::Always,
-        Tok::Const => Token::Const,
         Tok::Eventually => Token::Eventually,
         Tok::Try => Token::Try,
         Tok::Catch => Token::Catch,
@@ -924,16 +909,10 @@ fn convert(t: Tok) -> Token {
         Tok::Supervisor => Token::Supervisor,
         // RES-290: trait keyword.
         Tok::Trait => Token::Trait,
-        Tok::Enum => Token::Enum,
-        Tok::Unsafe => Token::Unsafe,
-        Tok::Pub => Token::Pub,
         // RES-2535: where keyword for post-signature generic bounds.
         Tok::Where => Token::Where,
         // RES-2660: static_assert keyword.
         Tok::StaticAssert => Token::StaticAssert,
-        Tok::Defer => Token::Defer,
-        // RES-2613: bench block keyword.
-        Tok::Bench => Token::Bench,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
