@@ -270,11 +270,15 @@
     },
     "resilient/src/statistics.rs": {
       "branch": "res-4762-stats-histogram-bound",
-      "claimed_at": "2026-09-20T22:52:54Z"
+      "claimed_at": "2026-09-20T22:53:02Z"
     },
     "resilient/tests/statistics_histogram_boundary.rs": {
       "branch": "res-4762-stats-histogram-bound",
       "claimed_at": "2026-09-20T22:52:54Z"
+    },
+    "resilient/tests/stats_histogram_boundary.rs": {
+      "branch": "res-4762-stats-histogram-bound",
+      "claimed_at": "2026-09-20T22:53:02Z"
     }
   }
 }
