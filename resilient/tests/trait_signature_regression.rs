@@ -19,7 +19,7 @@ fn run_check(tag: &str, source: &str) -> (bool, String) {
     let source_path = dir.join("main.rz");
     std::fs::write(&source_path, source).expect("write temporary source");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_rz"))
-        .args(["check", "--quiet"])
+        .args(["check"])
         .arg(&source_path)
         .output()
         .expect("run rz check");
