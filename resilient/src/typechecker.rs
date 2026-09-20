@@ -603,6 +603,21 @@ fn infer_flat_mapped_array_return(callback_type: Option<&Type>, fallback: Type) 
     fallback
 }
 
+/// RES-3977: flattening one tracked array layer recovers the inner element
+/// type. Non-nested or partially unknown arrays retain their declared
+/// untyped result so flattening never invents an element type.
+fn infer_flattened_array_return(array_type: Option<&Type>, fallback: Type) -> Type {
+    match array_type {
+        Some(Type::TypedArray(inner)) => match inner.as_ref() {
+            Type::TypedArray(elem) if !matches!(elem.as_ref(), Type::Any) => {
+                Type::TypedArray(elem.clone())
+            }
+            _ => fallback,
+        },
+        _ => fallback,
+    }
+}
+
 /// RES-2713: map a literal-pattern node to its type so
 /// `match_pattern_binding_types` can validate that the literal is
 /// type-compatible with the match scrutinee.
@@ -10280,11 +10295,8 @@ impl TypeChecker {
                     // `Option(elem)` instead of erasing to untyped
                     // `Array`/`Option(Any)` when the target itself is
                     // element-tracked. `map`/`flat_map`/`push`/`flatten`
-                    // are excluded: their result element type can differ
-                    // from the input (callback return type, appended
-                    // value, or nested-array unwrapping), which this
-                    // call site — seeing only the target, not the
-                    // argument — cannot prove.
+                    // are handled separately because their result element
+                    // type can differ from the input.
                     let elem_array_ret = match &tgt_ty {
                         Type::TypedArray(elem) => Type::TypedArray(elem.clone()),
                         _ => Type::Array,
@@ -10317,13 +10329,12 @@ impl TypeChecker {
                             params: vec![],
                             return_type: Box::new(elem_array_ret.clone()),
                         },
-                        // `flatten` unwraps one level of nesting
-                        // (`array<array<T>>` -> `array<T>`), which this
-                        // call site cannot prove without inspecting the
-                        // target's element type further — left untyped.
                         "flatten" => Type::Function {
                             params: vec![],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(infer_flattened_array_return(
+                                Some(&tgt_ty),
+                                Type::Array,
+                            )),
                         },
                         // RES-2707: `reduce` accepts 1 arg (fn, uses first elem as init)
                         // or 2 args (init, fn). Return Type::Any so the call site skips
@@ -11965,6 +11976,11 @@ impl TypeChecker {
                                 } else if callee_name == "array_flat_map" {
                                     infer_flat_mapped_array_return(
                                         checked_arg_types.get(1),
+                                        preserved,
+                                    )
+                                } else if callee_name == "array_flatten" {
+                                    infer_flattened_array_return(
+                                        checked_arg_types.first(),
                                         preserved,
                                     )
                                 } else {
@@ -19975,6 +19991,38 @@ mod res3923_array_element_type {
     fn flat_map_unknown_callback_result_stays_untyped() {
         check_ok(
             "fn main() { let xs = [1, 2, 3]; let ys = array_flat_map(xs, fn(int x) -> Array { return []; }); let ok: string = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn standalone_flatten_tracks_nested_element_type() {
+        check_err(
+            "fn main() { let xs = [[1, 2], [3]]; let ys = array_flatten(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [[1, 2], [3]]; let ys = array_flatten(xs); let ok: int = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn flatten_method_tracks_nested_element_type() {
+        check_err(
+            "fn main() { let xs = [[1, 2], [3]]; let ys = xs.flatten(); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [[1, 2], [3]]; let ys = xs.flatten(); let ok: int = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn flatten_unknown_shape_stays_untyped() {
+        check_ok(
+            "fn main() { let xs: array = []; let ys = array_flatten(xs); let ok: string = ys[0]; }\nmain();\n",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = xs.flatten(); let ok: string = ys[0]; }\nmain();\n",
         );
     }
 
