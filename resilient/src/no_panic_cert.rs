@@ -78,10 +78,7 @@ fn called_functions(node: &Node) -> HashSet<String> {
     calls
 }
 
-fn reachable_panic(
-    root: &str,
-    functions: &HashMap<String, &Node>,
-) -> Option<(String, String)> {
+fn reachable_panic(root: &str, functions: &HashMap<String, &Node>) -> Option<(String, String)> {
     let mut pending = vec![root.to_owned()];
     let mut visited = HashSet::new();
 

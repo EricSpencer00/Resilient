@@ -62,7 +62,10 @@ fn helper() -> int {
 certified();
 "#,
     );
-    assert!(!success, "transitive unwrap unexpectedly passed: {diagnostics}");
+    assert!(
+        !success,
+        "transitive unwrap unexpectedly passed: {diagnostics}"
+    );
     assert!(
         diagnostics.contains("certified")
             && diagnostics.contains("helper")
