@@ -127,10 +127,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // the typechecker pass doesn't have access to the interpreter's
     // const table.
     let mut consts: HashMap<String, Value> = HashMap::new();
+    let overflow_mode = crate::vm::OverflowMode::from_env();
     for stmt in statements {
         if let Node::Const { name, value, .. } = &stmt.node {
             let mut evaluating: Vec<String> = vec![name.clone()];
-            match crate::Interpreter::eval_const_expr(value, &consts, &mut evaluating) {
+            match crate::Interpreter::eval_const_expr(
+                value,
+                &consts,
+                &mut evaluating,
+                overflow_mode,
+            ) {
                 Ok(v) => {
                     consts.insert(name.clone(), v);
                 }
@@ -155,7 +161,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         };
 
         let mut evaluating: Vec<String> = Vec::new();
-        match eval_const_bool(condition, &consts, &mut evaluating) {
+        match eval_const_bool(condition, &consts, &mut evaluating, overflow_mode) {
             Ok(true) => {
                 // Assertion passed — nothing to do.
             }
@@ -238,8 +244,9 @@ fn eval_const_bool(
     node: &Node,
     consts: &HashMap<String, Value>,
     evaluating: &mut Vec<String>,
+    overflow_mode: crate::vm::OverflowMode,
 ) -> Result<bool, String> {
-    let value = crate::Interpreter::eval_const_expr(node, consts, evaluating)?;
+    let value = crate::Interpreter::eval_const_expr(node, consts, evaluating, overflow_mode)?;
     match value {
         Value::Bool(b) => Ok(b),
         other => Err(format!("expected boolean, got {}", other)),

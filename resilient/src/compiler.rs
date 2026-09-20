@@ -1119,7 +1119,12 @@ fn resolve_top_level_consts(stmts: &[crate::span::Spanned<Node>]) -> HashMap<Str
             continue;
         };
         let mut evaluating = vec![name.clone()];
-        if let Ok(v) = crate::Interpreter::eval_const_expr(value, &resolved, &mut evaluating) {
+        if let Ok(v) = crate::Interpreter::eval_const_expr(
+            value,
+            &resolved,
+            &mut evaluating,
+            crate::vm::OverflowMode::from_env(),
+        ) {
             resolved.insert(name.clone(), v);
         }
     }

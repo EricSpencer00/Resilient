@@ -27306,7 +27306,7 @@ impl Interpreter {
             // so that any reference to itself (direct self-reference or
             // mutual recursion that circles back here) is detected.
             let mut evaluating: Vec<String> = vec![name.clone()];
-            let v = Self::eval_const_expr(value, &resolved, &mut evaluating)
+            let v = Self::eval_const_expr(value, &resolved, &mut evaluating, self.overflow_mode)
                 .map_err(|e| decorate_runtime_error(e, &stmt.span))?;
             resolved.insert(name.clone(), v);
         }
@@ -27331,6 +27331,7 @@ impl Interpreter {
         node: &Node,
         resolved: &HashMap<String, Value>,
         evaluating: &mut Vec<String>,
+        overflow_mode: vm::OverflowMode,
     ) -> RResult<Value> {
         match node {
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
@@ -27354,9 +27355,9 @@ impl Interpreter {
             Node::PrefixExpression {
                 operator, right, ..
             } => {
-                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                let rv = Self::eval_const_expr(right, resolved, evaluating, overflow_mode)?;
                 match (*operator, rv) {
-                    ("-", Value::Int(i)) => Ok(Value::Int(-i)),
+                    ("-", Value::Int(i)) => overflow_mode.neg_for_eval(i).map(Value::Int),
                     ("-", Value::Float(f)) => Ok(Value::Float(-f)),
                     ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (op, v) => Err(format!(
@@ -27371,25 +27372,26 @@ impl Interpreter {
                 right,
                 ..
             } => {
-                let lv = Self::eval_const_expr(left, resolved, evaluating)?;
-                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                let lv = Self::eval_const_expr(left, resolved, evaluating, overflow_mode)?;
+                let rv = Self::eval_const_expr(right, resolved, evaluating, overflow_mode)?;
                 match (*operator, lv, rv) {
-                    ("+", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-                    ("-", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-                    ("*", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+                    // RES-4672: compile-time arithmetic must use the same
+                    // overflow policy as runtime evaluation. The helpers
+                    // also handle signed MIN/-1 without panicking.
+                    ("+", Value::Int(a), Value::Int(b)) => {
+                        overflow_mode.add_for_eval(a, b, "+").map(Value::Int)
+                    }
+                    ("-", Value::Int(a), Value::Int(b)) => {
+                        overflow_mode.sub_for_eval(a, b, "-").map(Value::Int)
+                    }
+                    ("*", Value::Int(a), Value::Int(b)) => {
+                        overflow_mode.mul_for_eval(a, b, "*").map(Value::Int)
+                    }
                     ("/", Value::Int(a), Value::Int(b)) => {
-                        if b == 0 {
-                            Err("error: division by zero in constant expression".to_string())
-                        } else {
-                            Ok(Value::Int(a / b))
-                        }
+                        overflow_mode.div_for_eval(a, b).map(Value::Int)
                     }
                     ("%", Value::Int(a), Value::Int(b)) => {
-                        if b == 0 {
-                            Err("error: modulo by zero in constant expression".to_string())
-                        } else {
-                            Ok(Value::Int(a % b))
-                        }
+                        overflow_mode.rem_for_eval(a, b).map(Value::Int)
                     }
                     ("+", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
                     ("-", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
@@ -27422,8 +27424,20 @@ impl Interpreter {
                     ("&", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a & b)),
                     ("|", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a | b)),
                     ("^", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a ^ b)),
-                    ("<<", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a << b)),
-                    (">>", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a >> b)),
+                    ("<<", Value::Int(a), Value::Int(b)) => {
+                        if !(0..64).contains(&b) {
+                            Err(format!("shift amount out of range: {}", b))
+                        } else {
+                            Ok(Value::Int(a << b))
+                        }
+                    }
+                    (">>", Value::Int(a), Value::Int(b)) => {
+                        if !(0..64).contains(&b) {
+                            Err(format!("shift amount out of range: {}", b))
+                        } else {
+                            Ok(Value::Int(a >> b))
+                        }
+                    }
                     (op, lv, rv) => Err(format!(
                         "error: operator '{}' on ({}, {}) is not supported in a constant expression",
                         op, lv, rv
@@ -27438,15 +27452,17 @@ impl Interpreter {
                 alternative,
                 ..
             } => {
-                let cond = Self::eval_const_expr(condition, resolved, evaluating)?;
+                let cond = Self::eval_const_expr(condition, resolved, evaluating, overflow_mode)?;
                 let Value::Bool(b) = cond else {
                     return Err("error: condition in const `if` must evaluate to bool".to_string());
                 };
                 if b {
-                    Self::eval_const_expr(consequence, resolved, evaluating)
+                    Self::eval_const_expr(consequence, resolved, evaluating, overflow_mode)
                 } else {
                     match alternative {
-                        Some(alt) => Self::eval_const_expr(alt, resolved, evaluating),
+                        Some(alt) => {
+                            Self::eval_const_expr(alt, resolved, evaluating, overflow_mode)
+                        }
                         None => Ok(Value::Void),
                     }
                 }
@@ -27454,7 +27470,7 @@ impl Interpreter {
             // RES-2580: unwrap expression-statement wrapper (parser emits
             // ExpressionStatement for bare-expression blocks like `{ A }`).
             Node::ExpressionStatement { expr, .. } => {
-                Self::eval_const_expr(expr, resolved, evaluating)
+                Self::eval_const_expr(expr, resolved, evaluating, overflow_mode)
             }
             // RES-2580: block with single expression is allowed as a const value.
             Node::Block { stmts, .. } => {
@@ -27465,7 +27481,7 @@ impl Interpreter {
                         Node::ExpressionStatement { expr, .. } => expr.as_ref(),
                         other => other,
                     };
-                    Self::eval_const_expr(inner, resolved, evaluating)
+                    Self::eval_const_expr(inner, resolved, evaluating, overflow_mode)
                 } else {
                     Err(
                         "error: only single-expression blocks are valid in const expressions"
@@ -27477,7 +27493,12 @@ impl Interpreter {
             Node::TupleLiteral { items, .. } => {
                 let mut vals = Vec::with_capacity(items.len());
                 for item in items {
-                    vals.push(Self::eval_const_expr(item, resolved, evaluating)?);
+                    vals.push(Self::eval_const_expr(
+                        item,
+                        resolved,
+                        evaluating,
+                        overflow_mode,
+                    )?);
                 }
                 Ok(Value::Tuple(vals))
             }
