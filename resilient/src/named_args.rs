@@ -43,6 +43,19 @@ pub fn resolve(
     param_names: &[String],
     arguments: &[Node],
 ) -> Result<Vec<Node>, String> {
+    resolve_with_defaults(callee_label, param_names, &[], arguments)
+}
+
+/// Reorder named arguments while allowing omitted parameters whose defaults
+/// were declared on the callee. The ordinary [`resolve`] entry point keeps
+/// its strict all-parameters-bound behavior for callers that do not have a
+/// signature's default metadata available.
+fn resolve_with_defaults(
+    callee_label: &str,
+    param_names: &[String],
+    defaults: &[Option<Box<Node>>],
+    arguments: &[Node],
+) -> Result<Vec<Node>, String> {
     // If no named args are present we can hand the original list
     // back unchanged — preserves identity and avoids any clones for
     // the existing positional-only call path.
@@ -99,14 +112,17 @@ pub fn resolve(
         }
     }
 
-    // Every slot must be filled, otherwise the caller missed a
-    // parameter. The runtime previously left missing positional args
-    // unbound silently; with named args we surface the error.
+    // Fill omitted slots from the callee's declared defaults. Required
+    // parameters still produce the same lowering-time diagnostic as before.
     let mut out = Vec::with_capacity(param_names.len());
     for (i, slot) in slots.into_iter().enumerate() {
         match slot {
             Some(node) => out.push(node),
             None => {
+                if let Some(default) = defaults.get(i).and_then(|default| default.as_ref()) {
+                    out.push((**default).clone());
+                    continue;
+                }
                 return Err(format!(
                     "Missing argument for parameter `{}` of {}",
                     param_names[i], callee_label
@@ -115,6 +131,12 @@ pub fn resolve(
         }
     }
     Ok(out)
+}
+
+#[derive(Clone)]
+struct FnSignature {
+    param_names: Vec<String>,
+    defaults: Vec<Option<Box<Node>>>,
 }
 
 /// True if any element of `arguments` is a `Node::NamedArg`.
@@ -148,12 +170,12 @@ pub fn lower_program(program: &mut Node) -> Result<(), String> {
     // one entry per top-level fn plus impl-block methods. Programs
     // using named args typically have 8-32 fns; 16 covers the common
     // case without wasting space for tiny programs.
-    let mut sigs: HashMap<String, Vec<String>> = HashMap::with_capacity(16);
+    let mut sigs: HashMap<String, FnSignature> = HashMap::with_capacity(16);
     collect_signatures(program, &mut sigs);
     rewrite_calls(program, &sigs)
 }
 
-fn collect_signatures(node: &Node, sigs: &mut HashMap<String, Vec<String>>) {
+fn collect_signatures(node: &Node, sigs: &mut HashMap<String, FnSignature>) {
     match node {
         Node::Program(stmts) => {
             for s in stmts {
@@ -161,14 +183,20 @@ fn collect_signatures(node: &Node, sigs: &mut HashMap<String, Vec<String>>) {
             }
         }
         Node::Function {
-            name, parameters, ..
+            name,
+            parameters,
+            defaults,
+            ..
         } => {
             // Top-level fn declarations register their parameter names
             // here so call-site lowering can find them. Methods inside
             // `impl` blocks come through the ImplBlock arm below.
             sigs.insert(
                 name.clone(),
-                parameters.iter().map(|(_t, n)| n.clone()).collect(),
+                FnSignature {
+                    param_names: parameters.iter().map(|(_t, n)| n.clone()).collect(),
+                    defaults: defaults.clone(),
+                },
             );
         }
         Node::ImplBlock { methods, .. } => {
@@ -178,25 +206,29 @@ fn collect_signatures(node: &Node, sigs: &mut HashMap<String, Vec<String>>) {
             // with the call-site label set.
             for m in methods {
                 if let Node::Function {
-                    name, parameters, ..
+                    name,
+                    parameters,
+                    defaults,
+                    ..
                 } = m
                 {
+                    let skip_self = parameters
+                        .first()
+                        .map(|(_, n)| n == "self")
+                        .unwrap_or(false);
+                    let skip = if skip_self { 1 } else { 0 };
                     let names: Vec<String> = parameters
                         .iter()
-                        .skip(
-                            if parameters
-                                .first()
-                                .map(|(_, n)| n == "self")
-                                .unwrap_or(false)
-                            {
-                                1
-                            } else {
-                                0
-                            },
-                        )
+                        .skip(skip)
                         .map(|(_t, n)| n.clone())
                         .collect();
-                    sigs.insert(name.clone(), names);
+                    sigs.insert(
+                        name.clone(),
+                        FnSignature {
+                            param_names: names,
+                            defaults: defaults.iter().skip(skip).cloned().collect(),
+                        },
+                    );
                 }
             }
         }
@@ -444,10 +476,15 @@ fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, Vec<String>>) -> Result
                 None
             };
             if let Some(name) = callee_name
-                && let Some(param_names) = sigs.get(&name)
+                && let Some(signature) = sigs.get(&name)
             {
                 let label = format!("fn `{}`", name);
-                let lowered = resolve(&label, param_names, arguments)?;
+                let lowered = resolve_with_defaults(
+                    &label,
+                    &signature.param_names,
+                    &signature.defaults,
+                    arguments,
+                )?;
                 *arguments = lowered;
             }
             // Otherwise leave NamedArg nodes in place; the runtime
