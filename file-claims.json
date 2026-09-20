@@ -39,6 +39,10 @@
     "resilient/src/mcp_server.rs": {
       "branch": "res-4506-http-metrics-deterministic",
       "claimed_at": "2026-09-20T07:02:40Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4505-generic-enum-type-consistency",
+      "claimed_at": "2026-09-20T07:44:48Z"
     }
   }
 }
