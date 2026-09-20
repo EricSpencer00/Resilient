@@ -11,34 +11,6 @@
     "resilient-runtime/src/heap.rs": {
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/src/sum_types.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/src/imports.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/src/modules.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/tests/it/main.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/tests/it/inline_glob_import.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:32:41Z"
-    },
-    "resilient/src/formatter.rs": {
-      "branch": "res-4476-enum-module-visibility",
-      "claimed_at": "2026-09-20T03:33:12Z"
     }
   }
 }
