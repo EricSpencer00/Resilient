@@ -155,4 +155,63 @@ RESULT="$(compute_close_issue "$F")"
 [ -z "$RESULT" ] || fail "case7: expected empty (explicit Closes already present), got '$RESULT'"
 echo "case7 ok: Refs #4083 + explicit Closes #4083 (final increment) -> no append needed, explicit line stands"
 
+# ---------------------------------------------------------------------------
+# Case 8 (RES-4503): `gh pr ready` can report an already-ready PR as a
+# non-zero result. That state is idempotent and must still allow the guarded
+# label/merge path to continue, while unrelated failures must remain errors.
+# ---------------------------------------------------------------------------
+MOCK_BIN="$TMP/bin"
+mkdir -p "$MOCK_BIN"
+cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "${MOCK_GH_READY_MODE:-}" in
+  success)
+    echo "Pull request #123 is now ready for review"
+    exit 0
+    ;;
+  already)
+    echo "Pull request #123 is already ready for review" >&2
+    exit 1
+    ;;
+  failure)
+    echo "GraphQL: unexpected failure" >&2
+    exit 1
+    ;;
+  *)
+    echo "unknown mock mode" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$MOCK_BIN/gh"
+OLD_PATH="$PATH"
+PATH="$MOCK_BIN:$PATH"
+export MOCK_GH_READY_MODE
+
+MOCK_GH_READY_MODE=success
+if ! OUTPUT="$(mark_pr_ready 123 2>&1)"; then
+  fail "case8: successful gh pr ready result should pass"
+fi
+printf '%s\n' "$OUTPUT" | grep -q "now ready for review" \
+  || fail "case8: successful output was not preserved"
+echo "case8a ok: successful gh pr ready result passes"
+
+MOCK_GH_READY_MODE=already
+if ! OUTPUT="$(mark_pr_ready 123 2>&1)"; then
+  fail "case8: already-ready gh response should be idempotent"
+fi
+printf '%s\n' "$OUTPUT" | grep -q "already ready for review" \
+  || fail "case8: already-ready output was not preserved"
+echo "case8b ok: already-ready gh response passes idempotently"
+
+MOCK_GH_READY_MODE=failure
+if OUTPUT="$(mark_pr_ready 123 2>&1)"; then
+  fail "case8: unrelated gh pr ready failure must remain an error"
+fi
+printf '%s\n' "$OUTPUT" | grep -q "unexpected failure" \
+  || fail "case8: real failure output was not preserved"
+echo "case8c ok: unrelated gh pr ready failure remains fatal"
+
+PATH="$OLD_PATH"
+
 echo "PASS: test-ready-or-bail-closes.sh"
