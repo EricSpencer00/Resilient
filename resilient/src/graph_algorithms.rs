@@ -730,8 +730,11 @@ println(len(order));"#);
         match result {
             crate::Value::Array(nodes) => {
                 assert_eq!(nodes.len(), DEPTH);
-                assert_eq!(nodes.first(), Some(&crate::Value::Int(0)));
-                assert_eq!(nodes.last(), Some(&crate::Value::Int((DEPTH - 1) as i64)));
+                assert!(matches!(nodes.first(), Some(crate::Value::Int(0))));
+                assert!(matches!(
+                    nodes.last(),
+                    Some(crate::Value::Int(value)) if *value == (DEPTH - 1) as i64
+                ));
             }
             other => panic!("expected DFS array, got {other:?}"),
         }
