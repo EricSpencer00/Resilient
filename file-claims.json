@@ -35,6 +35,14 @@
     "resilient-runtime/src/dma.rs": {
       "branch": "res-4465-dma-descriptor-links",
       "claimed_at": "2026-09-20T00:57:03Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4471-const-vm-traversal",
+      "claimed_at": "2026-09-20T01:25:20Z"
+    },
+    "resilient/tests/const_vm_const_traversal.rs": {
+      "branch": "res-4471-const-vm-traversal",
+      "claimed_at": "2026-09-20T01:25:20Z"
     }
   }
 }
