@@ -22,6 +22,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck source=github-rest-fallback.sh
+source "$SCRIPT_DIR/github-rest-fallback.sh"
+
 # RES-4021: hardcoded denylist of tracker/umbrella issue numbers that must
 # NEVER be auto-closed by the Refs/Closes heuristic below, even when they're
 # the first "#N" mentioned in a PR body's "Refs #N · EPIC" convention line.
@@ -86,23 +89,7 @@ compute_close_issue() {
 # mark_pr_ready PR — transition a draft PR to ready, treating GitHub's
 # already-ready response as an idempotent success while preserving real errors.
 mark_pr_ready() {
-  local pr="$1"
-  local output_file
-  local status
-  output_file="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-ready.XXXXXX")"
-
-  if gh pr ready "$pr" >"$output_file" 2>&1; then
-    status=0
-  else
-    status=$?
-  fi
-
-  cat "$output_file"
-  if (( status != 0 )) && grep -Eiq 'already[[:space:]]+ready[[:space:]]+for[[:space:]]+review' "$output_file"; then
-    status=0
-  fi
-  rm -f "$output_file"
-  return "$status"
+  github_mark_pr_ready "$@"
 }
 
 # RES-4021: allow this file to be `source`d (e.g. by
@@ -184,11 +171,8 @@ PYEOF
   fi
 
   mark_pr_ready "$PR" | tail -2
-  gh label create "agent-vetted" \
-    --color "0E8A16" \
-    --description "ready-or-bail passed substantive local guardrails and integration sync" \
-    >/dev/null 2>&1 || true
-  gh pr edit "$PR" --add-label "agent-vetted" >/dev/null
+  github_add_pr_label "$PR" "agent-vetted" "0E8A16" \
+    "ready-or-bail passed substantive local guardrails and integration sync" >/dev/null
 
   BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
   gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"

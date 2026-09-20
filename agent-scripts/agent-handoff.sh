@@ -11,6 +11,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=github-rest-fallback.sh
+source "$SCRIPT_DIR/github-rest-fallback.sh"
+
 PR=""
 ISSUE=""
 PHASE="unknown"
@@ -76,4 +80,4 @@ ${SUMMARY:-No summary provided.}
 EOF
 )"
 
-gh pr comment "$PR" --body "$BODY"
+github_comment_pr "$PR" "$BODY"

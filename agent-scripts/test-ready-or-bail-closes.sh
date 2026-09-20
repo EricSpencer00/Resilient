@@ -174,7 +174,7 @@ case "${MOCK_GH_READY_MODE:-}" in
     exit 1
     ;;
   failure)
-    echo "GraphQL: unexpected failure" >&2
+    echo "permission denied: unexpected failure" >&2
     exit 1
     ;;
   *)
