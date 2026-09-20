@@ -8,18 +8,6 @@
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-4483-random-int-range-safety",
-      "claimed_at": "2026-09-20T04:18:26Z"
-    },
-    "resilient/src/stdlib.rs": {
-      "branch": "res-4483-random-int-range-safety",
-      "claimed_at": "2026-09-20T04:18:26Z"
-    },
-    "resilient/tests/it/random_int_range_safety.rs": {
-      "branch": "res-4483-random-int-range-safety",
-      "claimed_at": "2026-09-20T04:18:26Z"
-    },
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
@@ -171,10 +159,6 @@
     "resilient/src/never_type.rs": {
       "branch": "res-4671-never-nested-returns",
       "claimed_at": "2026-09-20T18:43:43Z"
-    },
-    "resilient/src/recovers_to_bmc.rs": {
-      "branch": "res-4674-recovery-bmc-fail-closed",
-      "claimed_at": "2026-09-20T18:50:10Z"
     }
   }
 }
