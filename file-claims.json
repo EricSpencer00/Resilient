@@ -111,10 +111,6 @@
     "resilient/src/contract_inference.rs": {
       "branch": "res-4622-range-loop-contracts",
       "claimed_at": "2026-09-20T16:21:32Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-4628-direct-defer",
-      "claimed_at": "2026-09-20T16:36:13Z"
     }
   }
 }
