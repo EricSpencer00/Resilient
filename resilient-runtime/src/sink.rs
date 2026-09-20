@@ -30,15 +30,13 @@
 //! # Thread-safety
 //!
 //! The global sink pointer lives in an `UnsafeCell` behind a
-//! `Sync` newtype. This is sound for embedded bare-metal
-//! (single-core / single-thread is the overwhelmingly common
-//! case) and for the runtime's unit tests (which serialize
-//! sink access via `SINK_TEST_LOCK` — see the `tests` submodule).
-//! A future ticket that introduces actual multi-threaded
-//! embedded use will need to either gate this cell behind
-//! `critical-section` or wrap it in a `spin::Mutex`.
+//! `Sync` newtype and an allocation-free lock. Concurrent writes
+//! are serialized; reentrant writes fail with
+//! [`SinkErr::WriteFailed`] rather than deadlocking. Installation
+//! or clearing attempted while a write is active is ignored.
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Error returned by `Sink::write_str` and the module-level
 /// `print` / `println` helpers. The variants are exhaustive and
@@ -70,22 +68,36 @@ pub trait Sink {
     fn write_str(&mut self, s: &str) -> Result<(), SinkErr>;
 }
 
-/// RES-180: global holder for the currently-installed sink. The
-/// `Sync` impl below is the sound-only-for-single-threaded
-/// promise documented in the module header.
+/// RES-180: global holder for the currently-installed sink.
 struct SinkCell(UnsafeCell<Option<*mut (dyn Sink + 'static)>>);
 
-// SAFETY: valid only under the single-threaded-or-serialized
-// access invariant documented at module level. Embedded bare-
-// metal: single-core. Runtime tests: SINK_TEST_LOCK serializes.
-// Multi-threaded embedded: not supported yet; see module docs.
+// SAFETY: all access to the cell is serialized by `OUT_LOCK`.
 unsafe impl Sync for SinkCell {}
 
 static OUT: SinkCell = SinkCell(UnsafeCell::new(None));
+static OUT_LOCK: AtomicBool = AtomicBool::new(false);
+
+struct SinkGuard;
+
+impl SinkGuard {
+    fn try_lock() -> Option<Self> {
+        OUT_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for SinkGuard {
+    fn drop(&mut self) {
+        OUT_LOCK.store(false, Ordering::Release);
+    }
+}
 
 /// Install `sink` as the global output sink. Overwrites any
 /// previous installation. After this call, `print` / `println`
-/// route text through `sink.write_str`.
+/// route text through `sink.write_str`. If another hook operation
+/// is active, the installation is ignored.
 ///
 /// # Lifetime
 ///
@@ -93,13 +105,10 @@ static OUT: SinkCell = SinkCell(UnsafeCell::new(None));
 /// — the common bare-metal pattern is `static mut MY_SINK: MyUart
 /// = ...; set_sink(&mut MY_SINK)` at `#[entry]` time.
 ///
-/// # Safety
-///
-/// Safe in single-threaded contexts (all embedded bare-metal,
-/// and serialized test use). Not safe to call from multiple
-/// threads concurrently; synchronize externally if your
-/// deployment is threaded.
 pub fn set_sink(sink: &'static mut dyn Sink) {
+    let Some(_guard) = SinkGuard::try_lock() else {
+        return;
+    };
     // SAFETY: single-threaded-write invariant — see module docs.
     unsafe {
         *OUT.0.get() = Some(sink as *mut dyn Sink);
@@ -110,6 +119,9 @@ pub fn set_sink(sink: &'static mut dyn Sink) {
 /// they can assert the "no sink" error path cleanly; production
 /// code almost never needs this.
 pub fn clear_sink() {
+    let Some(_guard) = SinkGuard::try_lock() else {
+        return;
+    };
     // SAFETY: same invariant as `set_sink`.
     unsafe {
         *OUT.0.get() = None;
@@ -120,6 +132,9 @@ pub fn clear_sink() {
 /// no sink has been installed. This is the primitive both
 /// `print` and `println` compose on top of.
 pub fn print(s: &str) -> Result<(), SinkErr> {
+    let Some(_guard) = SinkGuard::try_lock() else {
+        return Err(SinkErr::WriteFailed);
+    };
     // SAFETY: single-threaded-access invariant. The `*mut dyn
     // Sink` we hold came from a `&'static mut` passed into
     // `set_sink`, so it's a valid mutable reference to a

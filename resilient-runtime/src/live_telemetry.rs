@@ -19,35 +19,61 @@ unsafe impl Sync for BackendCell {}
 
 static BACKEND: BackendCell = BackendCell(UnsafeCell::new(None));
 static BACKEND_PRESENT: AtomicBool = AtomicBool::new(false);
+static BACKEND_LOCK: AtomicBool = AtomicBool::new(false);
+
+struct BackendGuard;
+
+impl BackendGuard {
+    fn try_lock() -> Option<Self> {
+        BACKEND_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for BackendGuard {
+    fn drop(&mut self) {
+        BACKEND_LOCK.store(false, Ordering::Release);
+    }
+}
 
 /// True when a backend was installed and not yet cleared.
 pub fn has_live_telemetry_backend() -> bool {
-    BACKEND_PRESENT.load(Ordering::Relaxed)
+    BACKEND_PRESENT.load(Ordering::Acquire)
 }
 
-/// Install `backend` as the global live-telemetry target.
-///
-/// # Safety
-///
-/// Same single-threaded-write contract as [`crate::sink::set_sink`](super::sink::set_sink).
+/// Install `backend` as the global live-telemetry target. If another
+/// telemetry operation is active, the installation is ignored.
 pub fn set_live_telemetry(backend: &'static mut dyn LiveTelemetryBackend) {
-    BACKEND_PRESENT.store(true, Ordering::Relaxed);
+    let Some(_guard) = BackendGuard::try_lock() else {
+        return;
+    };
     unsafe {
         *BACKEND.0.get() = Some(backend as *mut dyn LiveTelemetryBackend);
     }
+    BACKEND_PRESENT.store(true, Ordering::Release);
 }
 
-/// Remove the installed backend (primarily for tests).
+/// Remove the installed backend (primarily for tests). If another
+/// telemetry operation is active, the removal is ignored.
 pub fn clear_live_telemetry() {
-    BACKEND_PRESENT.store(false, Ordering::Relaxed);
+    let Some(_guard) = BackendGuard::try_lock() else {
+        return;
+    };
     unsafe {
         *BACKEND.0.get() = None;
     }
+    BACKEND_PRESENT.store(false, Ordering::Release);
 }
 
-/// Dispatch one retry event to the installed backend, if any.
+/// Dispatch one retry event to the installed backend, if any. A reentrant
+/// or concurrent emission is dropped instead of aliasing the mutable backend.
 pub fn emit_live_retry(block: &str, retry: usize, reason: &str, ts_ns: u64) {
-    if !BACKEND_PRESENT.load(Ordering::Relaxed) {
+    let Some(_guard) = BackendGuard::try_lock() else {
+        return;
+    };
+    if !BACKEND_PRESENT.load(Ordering::Acquire) {
         return;
     }
     unsafe {
