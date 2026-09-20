@@ -7780,7 +7780,8 @@ impl Parser {
     /// RES-2541: `pub use "path";` marks the imported declarations
     /// public; `use "path" { A, B };` selectively imports only the
     /// named declarations.
-    /// Also supports `use std::module;` and `use std::module as alias;`.
+    /// Also supports `use std::module;`, `use std::module as alias;`, and
+    /// top-level inline-module globs such as `use math::*;`.
     fn parse_use_statement(&mut self) -> Option<Node> {
         self.parse_use_statement_with_visibility(false)
     }
@@ -7796,9 +7797,12 @@ impl Parser {
                     self.next_token(); // consume '::'
                     match &self.current_token {
                         Token::Identifier(seg) => segments.push(seg.clone()),
+                        Token::Multiply if self.peek_token != Token::DoubleColon => {
+                            segments.push("*".to_string())
+                        }
                         _ => {
                             self.record_error(
-                                "Expected identifier after `::` in use path".to_string(),
+                                "Expected identifier or `*` after `::` in use path".to_string(),
                             );
                             return None;
                         }
@@ -7811,6 +7815,10 @@ impl Parser {
                 return None;
             }
         };
+        if path == "std::*" {
+            self.record_error("Glob imports are only supported for inline modules".to_string());
+            return None;
+        }
         let alias = if self.peek_token == Token::As {
             self.next_token();
             self.next_token();

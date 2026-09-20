@@ -11,6 +11,7 @@
 // unresolved `mod::item` references; wired into EXTENSION_PASSES.
 
 use crate::{Environment, Interpreter, Node, RResult, Value};
+use std::collections::HashMap;
 
 /// Evaluate a `mod name { ... }` block.
 ///
@@ -67,6 +68,102 @@ pub(crate) fn eval_module(
         }
     }
     Ok(Value::Void)
+}
+
+/// RES-4110: expand a top-level `use module::*` against an inline `mod`
+/// declaration. Inline modules are intentionally still represented as a
+/// single AST node, so the narrowest safe lowering is to clone their public
+/// declarations into the importing scope before typechecking and execution.
+///
+/// Only declarations that can currently carry `pub` are eligible. A glob
+/// never imports private items, and importing two public items with the same
+/// unqualified name is rejected instead of depending on declaration order.
+pub(crate) fn expand_inline_globs(program: &mut Node) -> Result<(), String> {
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+
+    let inline_modules: HashMap<String, Vec<Node>> = stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.node {
+            Node::ModuleDecl { name, body, .. } => Some((name.clone(), body.clone())),
+            _ => None,
+        })
+        .collect();
+
+    if !stmts
+        .iter()
+        .any(|stmt| matches!(&stmt.node, Node::Use { path, .. } if path.ends_with("::*")))
+    {
+        return Ok(());
+    }
+
+    let declared_names: std::collections::HashSet<String> = stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.node {
+            Node::Function { name, .. }
+            | Node::StructDecl { name, .. }
+            | Node::EnumDecl { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut imported_names = std::collections::HashSet::new();
+    let mut expanded = Vec::with_capacity(stmts.len());
+
+    for stmt in stmts.drain(..) {
+        let Node::Use {
+            path,
+            alias,
+            selectors,
+            span,
+            ..
+        } = &stmt.node
+        else {
+            expanded.push(stmt);
+            continue;
+        };
+
+        let Some(module_name) = path.strip_suffix("::*") else {
+            expanded.push(stmt);
+            continue;
+        };
+
+        if alias.is_some() || selectors.is_some() {
+            return Err(format!(
+                "inline module glob `use {path}` cannot use an alias or selectors"
+            ));
+        }
+
+        let Some(body) = inline_modules.get(module_name) else {
+            return Err(format!(
+                "inline module `{module_name}` could not be resolved for glob import"
+            ));
+        };
+
+        for item in body {
+            let Some(name) = glob_export_name(item) else {
+                continue;
+            };
+            if declared_names.contains(name) || !imported_names.insert(name.to_string()) {
+                return Err(format!(
+                    "ambiguous inline module glob import for `{name}` from `{module_name}`"
+                ));
+            }
+            expanded.push(crate::span::Spanned::new(item.clone(), *span));
+        }
+    }
+
+    *stmts = expanded;
+    Ok(())
+}
+
+fn glob_export_name(node: &Node) -> Option<&str> {
+    match node {
+        Node::Function { name, is_pub, .. } | Node::StructDecl { name, is_pub, .. } if *is_pub => {
+            Some(name)
+        }
+        _ => None,
+    }
 }
 
 /// Lightweight static pass — no-op for the MVP. Future extensions can

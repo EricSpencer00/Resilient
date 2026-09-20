@@ -138,38 +138,29 @@ entry point (`<dep_root>/src/sub/leaf/mod.rz`) is accepted as a fallback.
 Single-segment file paths (`use dep_name::foo;` → `<dep_root>/src/foo.rz`)
 remain unchanged.
 
-### Glob-import (`use mod::*;`) — deferred, v1.x decision (RES-4110)
+### Glob-import (`use mod::*;`) (RES-4110)
 
-Glob-import is **not implemented** and is being deferred again, this
-time explicitly rather than silently:
+Top-level glob imports now resolve against inline `mod` blocks. The glob
+imports only declarations explicitly marked `pub` and brings them into the
+unqualified scope:
 
-- File-based imports (`use "path.rz";`) already behave like an implicit
-  glob for `pub` items — every `pub` declaration in the target file is
-  spliced in unqualified (or selectively, with `{ A, B }`, or
-  transitively re-exported with `pub use`). There is no additional
-  value in a `use "path.rz" { * };` spelling; it would be a no-op alias
-  for the existing default.
-- The gap that would matter is `use mod_name::*;` for **inline**
-  `mod name { ... }` blocks (`modules.rs`), which flatten every item to
-  `mod_name::item` at parse time with no separate symbol table (see
-  "Inline `mod` blocks" above). Making `mod_name::*` bring those
-  flattened names into unqualified scope requires: (1) a new lexer/
-  parser form for a `*` path segment — today `parse_use_statement`
-  only accepts `Token::Identifier` after `::`, so `Token::Star` needs a
-  new arm; (2) a symbol-table pass over already-flattened
-  `mod_name::item` bindings to alias them unqualified in the importing
-  scope, since nothing currently records "which items belong to which
-  `mod` block" outside of `modules.rs::check`'s ephemeral per-call
-  `module_items` map; and (3) a decision on shadowing semantics when
-  two glob-imported `mod`s export the same unqualified name — Rust
-  treats this as an ambiguity error only if the name is actually used,
-  which is more design surface than a single PR should absorb alongside
-  the re-export and path-resolution work above.
-- **Decision:** ship `pub use` re-export coverage and multi-segment
-  dependency-module path resolution now; leave `use mod::*;` as a
-  follow-up ticket scoped to inline `mod` blocks specifically, once the
-  shadowing-on-conflict semantics are decided. Until then, reference
-  inline-module items by their fully-qualified `mod_name::item` name.
+```resilient
+mod math {
+    pub fn add(int x, int y) -> int { return x + y; }
+    fn helper() -> int { return 1; }
+}
+use math::*;
+fn main() { println(add(2, 3)); }
+```
+
+Private declarations remain reachable only through the module's qualified
+name. A glob import that would introduce a duplicate unqualified name — from
+another glob or from a top-level declaration — is rejected deterministically
+as ambiguous. This avoids silently changing which function a safety-critical
+program calls. The current slice is intentionally limited to top-level globs
+over inline modules; file and dependency imports keep their existing
+`pub`/selective/re-export behavior, and enum declarations do not yet carry a
+`pub` marker to export through this form.
 
 ---
 
