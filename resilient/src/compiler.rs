@@ -8917,8 +8917,7 @@ mod tests {
 
     // ---------- RES-407: bounds-check elision ----------
 
-    use std::sync::Mutex;
-    static BOUNDS_TEST_LOCK: Mutex<()> = Mutex::new(());
+    use crate::bounds_check::BOUNDS_TEST_LOCK;
 
     /// Walk every chunk in `prog` (main + all user fns) and count
     /// occurrences of `LoadIndex` and `LoadIndexUnchecked`.
