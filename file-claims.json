@@ -111,10 +111,6 @@
     "resilient/src/contract_inference.rs": {
       "branch": "res-4622-range-loop-contracts",
       "claimed_at": "2026-09-20T16:21:32Z"
-    },
-    "resilient/src/wcet_contracts.rs": {
-      "branch": "res-4630-wcet-control-flow",
-      "claimed_at": "2026-09-20T16:34:22Z"
     }
   }
 }
