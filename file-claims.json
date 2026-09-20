@@ -223,6 +223,14 @@
     "resilient/src/number_theory.rs": {
       "branch": "res-4711-number-theory-overflow",
       "claimed_at": "2026-09-20T21:19:07Z"
+    },
+    "resilient/src/numeric_utils.rs": {
+      "branch": "res-4715-round-to-boundary",
+      "claimed_at": "2026-09-20T21:33:31Z"
+    },
+    "resilient/tests/round_to_resource_boundary.rs": {
+      "branch": "res-4715-round-to-boundary",
+      "claimed_at": "2026-09-20T21:33:31Z"
     }
   }
 }
