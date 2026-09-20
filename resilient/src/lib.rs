@@ -1933,11 +1933,12 @@ impl Lexer {
                 Ok(n) => Token::IntLiteral(n),
                 Err(_) => {
                     eprintln!(
-                        "<input>:{}:{}: error: integer literal `{}` overflows i64 (max {})",
-                        self.last_token_line,
-                        self.last_token_column,
-                        number_str,
-                        i64::MAX
+                        "{}",
+                        format_integer_literal_overflow_error(
+                            self.last_token_line,
+                            self.last_token_column,
+                            &number_str,
+                        )
                     );
                     Token::IntLiteral(0)
                 }
@@ -1967,13 +1968,14 @@ impl Lexer {
         match i64::from_str_radix(&cleaned, radix) {
             Ok(n) => Token::IntLiteral(n),
             Err(_) => {
+                let literal = format!("{prefix}{cleaned}");
                 eprintln!(
-                    "<input>:{}:{}: error: integer literal `{}{}` overflows i64 (max {})",
-                    self.last_token_line,
-                    self.last_token_column,
-                    prefix,
-                    cleaned,
-                    i64::MAX
+                    "{}",
+                    format_integer_literal_overflow_error(
+                        self.last_token_line,
+                        self.last_token_column,
+                        &literal,
+                    )
                 );
                 Token::IntLiteral(0)
             }
@@ -12564,6 +12566,21 @@ fn set_nested_field(root: Value, path: &[String], new_val: Value) -> RResult<Val
             other
         )),
     }
+}
+
+/// Format the lexer diagnostic for an integer literal outside `i64`'s range.
+/// The optional rich mode adds the stable registry code while keeping the
+/// existing plain text unchanged for default builds.
+pub(crate) fn format_integer_literal_overflow_error(
+    line: usize,
+    column: usize,
+    literal: &str,
+) -> String {
+    let prefix = if rich_diag_enabled() { "[E0023] " } else { "" };
+    format!(
+        "<input>:{line}:{column}: error: {prefix}integer literal `{literal}` overflows i64 (max {})",
+        i64::MAX
+    )
 }
 
 /// RES-4115: gate for attaching the `E0010` registry code to runtime
