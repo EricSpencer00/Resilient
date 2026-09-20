@@ -243,6 +243,10 @@
     "resilient/src/bandwidth_budget.rs": {
       "branch": "res-4739-bandwidth-budget-overflow",
       "claimed_at": "2026-09-20T22:12:36Z"
+    },
+    "resilient/src/refinement_types.rs": {
+      "branch": "res-4663-refinement-constant-proof-v2",
+      "claimed_at": "2026-09-20T22:18:21Z"
     }
   }
 }
