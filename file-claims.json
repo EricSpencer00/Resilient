@@ -160,9 +160,13 @@
       "branch": "res-4663-refinement-constant-proof",
       "claimed_at": "2026-09-20T18:24:20Z"
     },
-    "resilient/src/loop_bound.rs": {
-      "branch": "res-4664-loop-bound-structured",
-      "claimed_at": "2026-09-20T18:30:20Z"
+    "resilient/src/row_polymorphism.rs": {
+      "branch": "res-4665-row-match",
+      "claimed_at": "2026-09-20T18:31:39Z"
+    },
+    "resilient/tests/row_polymorphism_match.rs": {
+      "branch": "res-4665-row-match",
+      "claimed_at": "2026-09-20T18:31:39Z"
     }
   }
 }
