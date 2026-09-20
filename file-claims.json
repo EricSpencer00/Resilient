@@ -311,6 +311,14 @@
     "resilient/src/array_stats.rs": {
       "branch": "res-4783-int-variance",
       "claimed_at": "2026-09-20T23:33:17Z"
+    },
+    "resilient/src/ranges.rs": {
+      "branch": "res-4788-range-max-inclusive",
+      "claimed_at": "2026-09-20T23:40:52Z"
+    },
+    "resilient/tests/range_max_inclusive.rs": {
+      "branch": "res-4788-range-max-inclusive",
+      "claimed_at": "2026-09-20T23:40:52Z"
     }
   }
 }
