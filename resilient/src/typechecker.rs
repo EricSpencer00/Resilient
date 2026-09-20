@@ -12002,8 +12002,9 @@ impl TypeChecker {
                             }
 
                             // RES-2701: substitute generic type params recursively
-                            // so that composite types like `fn(T) -> T` become
-                            // `fn(Any) -> Any` when T is a declared type param.
+                            // so composite types like `fn(T) -> T` use a concrete
+                            // binding when one is available; unbound parameters
+                            // still fall back to Any.
                             // RES-4067: once an earlier argument has bound T to
                             // a concrete struct, retain a proven `T::Assoc`
                             // parameter projection instead of erasing it to Any.
@@ -12021,7 +12022,7 @@ impl TypeChecker {
                                     callee_name,
                                     type_params,
                                     &tp_bindings,
-                                    false,
+                                    true,
                                 );
                                 &substituted
                             } else if let Some(tp) = &callee_type_params {
@@ -12102,7 +12103,7 @@ impl TypeChecker {
                                     callee_name,
                                     type_params,
                                     &tp_bindings,
-                                    false,
+                                    true,
                                 );
                                 let arg_type = &checked_arg_types[i];
                                 if !self.type_satisfies(arg_type, &effective_param)
