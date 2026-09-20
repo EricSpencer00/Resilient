@@ -107,6 +107,10 @@
     "resilient/src/behavioral_fingerprint.rs": {
       "branch": "res-4611-stable-fingerprints",
       "claimed_at": "2026-09-20T16:00:32Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4617-pure-defer",
+      "claimed_at": "2026-09-20T16:14:00Z"
     }
   }
 }
