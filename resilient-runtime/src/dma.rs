@@ -134,6 +134,12 @@ pub enum DmaError {
     /// `length` is not a whole number of transfer beats for the selected
     /// width. DMA hardware cannot complete a partial halfword or word beat.
     LengthMisaligned { length: usize, required: usize },
+    /// The source range `[addr, addr + length)` cannot be represented in
+    /// the target address space because its exclusive end wraps `usize`.
+    SourceRangeOverflow { addr: usize, length: usize },
+    /// The destination range `[addr, addr + length)` cannot be represented
+    /// in the target address space because its exclusive end wraps `usize`.
+    DestRangeOverflow { addr: usize, length: usize },
     /// The chain is already at capacity. Pick a larger `N` when
     /// constructing the [`DmaChain`].
     ChainFull { capacity: usize },
@@ -208,6 +214,8 @@ impl DmaDescriptor {
     /// - [`DmaError::LengthTooLarge`] if `length > DMA_MAX_LENGTH`.
     /// - [`DmaError::LengthMisaligned`] if `length` is not a whole number
     ///   of beats for `width`.
+    /// - [`DmaError::SourceRangeOverflow`] / [`DmaError::DestRangeOverflow`]
+    ///   if either exclusive address range wraps `usize`.
     pub fn new(
         source: usize,
         dest: usize,
@@ -241,6 +249,18 @@ impl DmaDescriptor {
             return Err(DmaError::LengthMisaligned {
                 length,
                 required: bytes_per_beat,
+            });
+        }
+        if source.checked_add(length).is_none() {
+            return Err(DmaError::SourceRangeOverflow {
+                addr: source,
+                length,
+            });
+        }
+        if dest.checked_add(length).is_none() {
+            return Err(DmaError::DestRangeOverflow {
+                addr: dest,
+                length,
             });
         }
         Ok(Self {
@@ -629,6 +649,41 @@ mod tests {
             DmaError::LengthTooLarge { max, .. } => assert_eq!(max, DMA_MAX_LENGTH),
             other => panic!("expected LengthTooLarge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn descriptor_new_rejects_source_range_wrap() {
+        let addr = usize::MAX - 3;
+        let err = DmaDescriptor::new(addr, 0, 4, DmaWidth::Byte).unwrap_err();
+        assert_eq!(
+            err,
+            DmaError::SourceRangeOverflow {
+                addr,
+                length: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn descriptor_new_rejects_destination_range_wrap() {
+        let addr = usize::MAX - 3;
+        let err = DmaDescriptor::new(0, addr, 4, DmaWidth::Byte).unwrap_err();
+        assert_eq!(
+            err,
+            DmaError::DestRangeOverflow {
+                addr,
+                length: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn descriptor_new_accepts_non_wrapping_address_boundary() {
+        let addr = usize::MAX - 3;
+        let descriptor = DmaDescriptor::new(addr, addr, 3, DmaWidth::Byte).unwrap();
+        assert_eq!(descriptor.source, addr);
+        assert_eq!(descriptor.dest, addr);
+        assert_eq!(descriptor.length, 3);
     }
 
     #[test]
