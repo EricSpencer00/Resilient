@@ -164,6 +164,18 @@ pub enum DecodeError {
     /// RES-4083 (D-E1 tail): a try-handler entry declares more catch
     /// arms than [`super::MAX_CATCH_ARMS`].
     TooManyCatchArms,
+    /// A branch in the program-format stream targets an instruction
+    /// outside its main or function chunk.
+    InvalidJumpTarget { target: u32, code_len: usize },
+    /// A call, tail call, closure constant, closure constructor, or
+    /// postcheck metadata entry refers to a function outside the decoded
+    /// function table.
+    InvalidFunctionReference(u16),
+    /// An `EnterTry` instruction refers to a try-handler entry outside
+    /// the decoded try-handler table.
+    InvalidTryHandlerReference(u16),
+    /// A catch arm used by a code chunk points outside that chunk.
+    InvalidHandlerTarget { target: u32, code_len: usize },
 }
 
 struct Writer<'a> {
@@ -414,6 +426,48 @@ fn read_instr(r: &mut Reader<'_>) -> Result<Instr, DecodeError> {
         TAG_CALL_CLOSURE => Instr::CallClosure,
         other => return Err(DecodeError::BadTag(other)),
     })
+}
+
+fn validate_code_references(
+    code: &[Instr],
+    function_count: usize,
+    try_handlers: &[super::TryHandlerEntry],
+) -> Result<(), DecodeError> {
+    for instr in code {
+        match *instr {
+            Instr::Jump(target) | Instr::JumpIfFalse(target) | Instr::JumpIfTrue(target) => {
+                if target as usize >= code.len() {
+                    return Err(DecodeError::InvalidJumpTarget {
+                        target,
+                        code_len: code.len(),
+                    });
+                }
+            }
+            Instr::Call(func_idx)
+            | Instr::TailCall(func_idx)
+            | Instr::MakeClosure { func_idx, .. }
+            | Instr::PushConst(Value::Closure { func_idx, .. }) => {
+                if func_idx as usize >= function_count {
+                    return Err(DecodeError::InvalidFunctionReference(func_idx));
+                }
+            }
+            Instr::EnterTry(handler_idx) => {
+                let entry = try_handlers
+                    .get(handler_idx as usize)
+                    .ok_or(DecodeError::InvalidTryHandlerReference(handler_idx))?;
+                for arm in entry.arms.iter().flatten() {
+                    if arm.handler_pc as usize >= code.len() {
+                        return Err(DecodeError::InvalidHandlerTarget {
+                            target: arm.handler_pc,
+                            code_len: code.len(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Encode `program` into `out`, returning the number of bytes
@@ -768,6 +822,30 @@ pub fn decode_program(
         *entry_slot = super::TryHandlerEntry { arms };
     }
 
+    for meta in out_func_meta.iter().take(func_count) {
+        if let Some(postcheck) = meta.postcheck
+            && postcheck as usize >= func_count
+        {
+            return Err(DecodeError::InvalidFunctionReference(postcheck));
+        }
+    }
+
+    validate_code_references(
+        &out_main[..main_count],
+        func_count,
+        &out_try_handlers[..try_count],
+    )?;
+    for meta in out_func_meta.iter().take(func_count) {
+        let start = meta.offset as usize;
+        let end = start
+            .checked_add(meta.len as usize)
+            .ok_or(DecodeError::TooManyFuncInstrs)?;
+        let code = out_func_code
+            .get(start..end)
+            .ok_or(DecodeError::TooManyFuncInstrs)?;
+        validate_code_references(code, func_count, &out_try_handlers[..try_count])?;
+    }
+
     Ok(ProgramCounts {
         main_len: main_count,
         func_count,
@@ -787,6 +865,35 @@ mod tests {
         let mut out = [Instr::Return; 32];
         let count = decode(&buf[..len], &mut out).expect("decode should succeed");
         (out, count)
+    }
+
+    fn decode_program_for_test(
+        main: &[Instr],
+        functions: &[EncodeFunctionDef<'_>],
+        try_handlers: &[crate::vm::TryHandlerEntry],
+    ) -> Result<ProgramCounts, DecodeError> {
+        let mut buf = [0u8; 512];
+        let len = encode_program(main, functions, try_handlers, &mut buf)
+            .expect("test program should fit in 512 bytes");
+        let mut out_main = [Instr::Return; 32];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }; 8];
+        let mut out_func_code = [Instr::Return; 64];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 8];
+        decode_program(
+            &buf[..len],
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+            &mut out_try_handlers,
+        )
     }
 
     // ---------- round-trip ----------
@@ -1357,6 +1464,198 @@ mod tests {
         assert_eq!(
             vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
             Ok(Value::Int(15))
+        );
+    }
+
+    #[test]
+    fn program_decode_accepts_valid_control_flow_references() {
+        let mut handler = crate::vm::TryHandlerEntry::EMPTY;
+        handler.arms[0] = Some(crate::vm::CatchArm {
+            variant: 7,
+            handler_pc: 1,
+        });
+        let main = [
+            Instr::PushConst(Value::Closure {
+                func_idx: 0,
+                slab_idx: 0,
+            }),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 0,
+            },
+            Instr::Call(0),
+            Instr::TailCall(0),
+            Instr::EnterTry(0),
+            Instr::Jump(1),
+            Instr::Return,
+        ];
+        let function = [Instr::Jump(0), Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }];
+
+        let counts = decode_program_for_test(&main, &functions, &[handler])
+            .expect("valid program references should decode");
+        assert_eq!(counts.main_len, main.len());
+        assert_eq!(counts.func_count, 1);
+        assert_eq!(counts.try_count, 1);
+    }
+
+    #[test]
+    fn program_decode_rejects_out_of_range_main_jump() {
+        let result = decode_program_for_test(&[Instr::Jump(2), Instr::Return], &[], &[]);
+        assert_eq!(
+            result,
+            Err(DecodeError::InvalidJumpTarget {
+                target: 2,
+                code_len: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_out_of_range_function_jump() {
+        let function = [Instr::Jump(1)];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let result = decode_program_for_test(&[], &functions, &[]);
+        assert_eq!(
+            result,
+            Err(DecodeError::InvalidJumpTarget {
+                target: 1,
+                code_len: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_invalid_function_references() {
+        let call_result = decode_program_for_test(&[Instr::Call(0)], &[], &[]);
+        assert_eq!(call_result, Err(DecodeError::InvalidFunctionReference(0)));
+
+        let closure_result = decode_program_for_test(
+            &[Instr::PushConst(Value::Closure {
+                func_idx: 0,
+                slab_idx: 0,
+            })],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            closure_result,
+            Err(DecodeError::InvalidFunctionReference(0))
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_all_invalid_function_references() {
+        let tail_call_result = decode_program_for_test(&[Instr::TailCall(0)], &[], &[]);
+        assert_eq!(
+            tail_call_result,
+            Err(DecodeError::InvalidFunctionReference(0))
+        );
+
+        let make_closure_result = decode_program_for_test(
+            &[Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 0,
+            }],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            make_closure_result,
+            Err(DecodeError::InvalidFunctionReference(0))
+        );
+
+        let function = [Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: Some(1),
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let postcheck_result = decode_program_for_test(&[], &functions, &[]);
+        assert_eq!(
+            postcheck_result,
+            Err(DecodeError::InvalidFunctionReference(1))
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_all_invalid_branch_targets() {
+        for instruction in [Instr::Jump(2), Instr::JumpIfFalse(2), Instr::JumpIfTrue(2)] {
+            let result = decode_program_for_test(&[instruction, Instr::Return], &[], &[]);
+            assert_eq!(
+                result,
+                Err(DecodeError::InvalidJumpTarget {
+                    target: 2,
+                    code_len: 2,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn program_decode_rejects_invalid_try_handler_references() {
+        let result = decode_program_for_test(&[Instr::EnterTry(0), Instr::Return], &[], &[]);
+        assert_eq!(result, Err(DecodeError::InvalidTryHandlerReference(0)));
+    }
+
+    #[test]
+    fn program_decode_rejects_out_of_range_handler_pc() {
+        let mut handler = crate::vm::TryHandlerEntry::EMPTY;
+        handler.arms[0] = Some(crate::vm::CatchArm {
+            variant: 7,
+            handler_pc: 2,
+        });
+        let result = decode_program_for_test(&[Instr::EnterTry(0), Instr::Return], &[], &[handler]);
+        assert_eq!(
+            result,
+            Err(DecodeError::InvalidHandlerTarget {
+                target: 2,
+                code_len: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_out_of_range_function_handler_pc() {
+        let function = [Instr::EnterTry(0), Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let mut handler = crate::vm::TryHandlerEntry::EMPTY;
+        handler.arms[0] = Some(crate::vm::CatchArm {
+            variant: 7,
+            handler_pc: 2,
+        });
+
+        let result = decode_program_for_test(&[], &functions, &[handler]);
+        assert_eq!(
+            result,
+            Err(DecodeError::InvalidHandlerTarget {
+                target: 2,
+                code_len: 2,
+            })
         );
     }
 
