@@ -131,6 +131,10 @@
     "resilient/src/where_clauses.rs": {
       "branch": "res-4644-where-unknown-param",
       "claimed_at": "2026-09-20T17:15:38Z"
+    },
+    "resilient/src/dyn_trait.rs": {
+      "branch": "res-4646-dyn-trait-arity",
+      "claimed_at": "2026-09-20T17:21:54Z"
     }
   }
 }
