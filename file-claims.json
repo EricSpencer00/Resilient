@@ -35,6 +35,10 @@
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
+    },
+    "resilient/src/rzbc_emit.rs": {
+      "branch": "res-4510-rzbc-return-safety",
+      "claimed_at": "2026-09-20T07:54:41Z"
     }
   }
 }
