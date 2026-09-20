@@ -131,8 +131,7 @@ const STATIC_FLAG: u16 = 0x2000;
 /// Only the remaining 13 bits can identify a frame-relative local, so the
 /// highest representable raw slot is 8191 and the first unrepresentable slot
 /// is 8192.
-const MAX_RAW_LOCAL_SLOTS: usize =
-    (u16::MAX & !(GLOBAL_FLAG | BOXED_FLAG | STATIC_FLAG)) as usize + 1;
+const MAX_RAW_LOCAL_SLOTS: usize = (!(GLOBAL_FLAG | BOXED_FLAG | STATIC_FLAG)) as usize + 1;
 
 /// RES-3914 / RES-4046: mask off `GLOBAL_FLAG`, `BOXED_FLAG`, and
 /// `STATIC_FLAG`, leaving the raw frame-relative (or main-frame, or
