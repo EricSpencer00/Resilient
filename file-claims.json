@@ -11,6 +11,10 @@
     "resilient-runtime/src/heap.rs": {
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4481-direct-static-persistence",
+      "claimed_at": "2026-09-20T04:17:42Z"
     }
   }
 }
