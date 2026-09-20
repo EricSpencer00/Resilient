@@ -120,7 +120,10 @@ fn walk(node: &Node, inside_unsafe: bool, errs: &mut Vec<String>) {
             walk(iterable, inside_unsafe, errs);
             walk(body, inside_unsafe, errs);
         }
-        Node::Function { body, .. } => walk(body, inside_unsafe, errs),
+        // A function body is a new lexical capability scope. An outer
+        // `unsafe` block protects expressions evaluated in that block, not
+        // code that will execute later when a nested function is called.
+        Node::Function { body, .. } | Node::FunctionLiteral { body, .. } => walk(body, false, errs),
         Node::PrefixExpression { right, .. } => walk(right, inside_unsafe, errs),
         Node::InfixExpression { left, right, .. } => {
             walk(left, inside_unsafe, errs);
@@ -258,5 +261,41 @@ mod tests {
          }",
         );
         assert!(e.is_empty(), "nested calls in unsafe should be protected");
+    }
+
+    #[test]
+    fn unsafe_capability_does_not_leak_into_nested_named_function() {
+        let e = errs(
+            "fn outer() {\n\
+             unsafe {\n\
+                 fn inner() { volatile_read_u8(0); }\n\
+             }\n\
+         }",
+        );
+        assert_eq!(e.len(), 1, "nested function must have its own unsafe scope");
+        assert!(e[0].contains("volatile_read_u8"));
+    }
+
+    #[test]
+    fn volatile_call_in_function_literal_is_gated() {
+        let e = errs(
+            "fn outer() {\n\
+             unsafe {\n\
+                 let inner = fn() { volatile_read_u8(0); };\n\
+             }\n\
+         }",
+        );
+        assert_eq!(e.len(), 1, "function literal body must be checked");
+        assert!(e[0].contains("volatile_read_u8"));
+    }
+
+    #[test]
+    fn function_literal_can_open_its_own_unsafe_scope() {
+        let e = errs(
+            "fn outer() {\n\
+             let inner = fn() { unsafe { volatile_read_u8(0); } };\n\
+         }",
+        );
+        assert!(e.is_empty(), "inner unsafe block should protect its call");
     }
 }
