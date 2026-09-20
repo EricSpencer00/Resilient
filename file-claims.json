@@ -39,6 +39,14 @@
     "resilient/src/inline.rs": {
       "branch": "res-4540-inline-safety",
       "claimed_at": "2026-09-20T12:07:03Z"
+    },
+    "resilient-runtime/src/vm/loader.rs": {
+      "branch": "res-4551-flat-loader-boundary",
+      "claimed_at": "2026-09-20T13:05:03Z"
+    },
+    "resilient-runtime/tests/flat_loader_boundary.rs": {
+      "branch": "res-4551-flat-loader-boundary",
+      "claimed_at": "2026-09-20T13:05:03Z"
     }
   }
 }
