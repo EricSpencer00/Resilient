@@ -240,7 +240,7 @@ fn collect_signatures(node: &Node, sigs: &mut HashMap<String, FnSignature>) {
 /// their named args lowered before the outer call inspects them.
 /// Errors short-circuit at the first failure with a `line:col`
 /// prefix when the named arg carries a span.
-fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, Vec<String>>) -> Result<(), String> {
+fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, FnSignature>) -> Result<(), String> {
     match node {
         Node::Program(stmts) => {
             for s in stmts.iter_mut() {
