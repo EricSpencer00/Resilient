@@ -3367,6 +3367,8 @@ enum Node {
         type_params: Vec<String>,
         variants: Vec<EnumVariant>,
         span: span::Span,
+        /// Whether the enum is visible to module import/export filtering.
+        is_pub: bool,
     },
     /// RES-395 D6: a region type parameter declared in `fn foo<R>(...)`.
     ///
@@ -3821,7 +3823,7 @@ impl Parser {
             Token::Try => Some(crate::try_catch::parse(self)),
             Token::Supervisor => Some(crate::supervisor::parse(self)),
             Token::Trait => Some(crate::traits::parse(self)),
-            Token::Enum => Some(crate::sum_types::parse_enum_decl(self)),
+            Token::Enum => Some(crate::sum_types::parse_enum_decl(self, false)),
             Token::Unsafe => Some(self.parse_unsafe_block()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
@@ -4216,6 +4218,7 @@ impl Parser {
                 }
                 node
             }
+            Token::Enum => crate::sum_types::parse_enum_decl(self, true),
             Token::Use => self
                 .parse_use_statement_with_visibility(true)
                 .unwrap_or_else(|| Node::Block {
@@ -4223,7 +4226,9 @@ impl Parser {
                     span: self.span_at_current(),
                 }),
             _ => {
-                self.record_error("`pub` must be followed by `fn`, `struct`, or `use`".to_string());
+                self.record_error(
+                    "`pub` must be followed by `fn`, `struct`, `enum`, or `use`".to_string(),
+                );
                 Node::Block {
                     stmts: Vec::new(),
                     span: self.span_at_current(),

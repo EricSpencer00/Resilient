@@ -53,6 +53,73 @@ main();
 }
 
 #[test]
+fn imports_public_inline_module_enums() {
+    let path = scratch_file(
+        "public_enum",
+        r#"
+mod colors {
+    pub enum Color { Red, Blue }
+}
+use colors::*;
+fn label(Color color) -> string {
+    return match color {
+        Color::Red => "red",
+        Color::Blue => "blue",
+    };
+}
+println(label(Color::Red));
+"#,
+    );
+    let output = Command::new(bin())
+        .arg(&path)
+        .output()
+        .expect("run enum glob import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "public enum glob import failed: {stderr}"
+    );
+    assert!(
+        stdout.contains("red"),
+        "expected enum match result, got: {stdout}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn private_inline_module_enums_are_not_imported() {
+    let path = scratch_file(
+        "private_enum",
+        r#"
+mod secret {
+    enum Hidden { Only }
+}
+use secret::*;
+fn main() { let value = Hidden::Only; }
+main();
+"#,
+    );
+    let output = Command::new(bin())
+        .arg("--typecheck")
+        .arg(&path)
+        .output()
+        .expect("typecheck private enum glob import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "private enum was imported: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hidden"),
+        "diagnostic should name Hidden: {stderr}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn private_inline_module_items_are_not_imported() {
     let path = scratch_file(
         "private",

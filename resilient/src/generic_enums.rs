@@ -368,6 +368,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             type_params,
             variants,
             span,
+            ..
         } = &stmt.node
         {
             if type_params.is_empty() {

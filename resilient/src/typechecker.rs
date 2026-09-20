@@ -12047,6 +12047,7 @@ impl TypeChecker {
                 variants,
                 type_params,
                 span,
+                ..
             } => {
                 // RES-406: reject duplicate variant names inside the same enum.
                 let mut seen_variants: std::collections::HashSet<&str> =
