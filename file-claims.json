@@ -15,6 +15,18 @@
     "resilient/src/vm.rs": {
       "branch": "res-4481-direct-static-persistence",
       "claimed_at": "2026-09-20T04:17:42Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4483-random-int-range-safety",
+      "claimed_at": "2026-09-20T04:18:26Z"
+    },
+    "resilient/src/stdlib.rs": {
+      "branch": "res-4483-random-int-range-safety",
+      "claimed_at": "2026-09-20T04:18:26Z"
+    },
+    "resilient/tests/it/random_int_range_safety.rs": {
+      "branch": "res-4483-random-int-range-safety",
+      "claimed_at": "2026-09-20T04:18:26Z"
     }
   }
 }
