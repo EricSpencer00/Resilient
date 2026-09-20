@@ -92,13 +92,9 @@
       "branch": "res-4593-ghost-call-boundaries",
       "claimed_at": "2026-09-20T15:12:03Z"
     },
-    "resilient/src/stack_contracts.rs": {
-      "branch": "res-4597-stack-callgraph-nesting",
-      "claimed_at": "2026-09-20T15:29:17Z"
-    },
-    "resilient/tests/stack_contracts_regression.rs": {
-      "branch": "res-4597-stack-callgraph-nesting",
-      "claimed_at": "2026-09-20T15:29:17Z"
+    "resilient/src/combinatorics.rs": {
+      "branch": "res-4598-combinatoric-budget",
+      "claimed_at": "2026-09-20T15:30:10Z"
     }
   }
 }
