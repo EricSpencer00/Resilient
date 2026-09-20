@@ -51,6 +51,30 @@ fn collect_strings(name: &str, items: &[Value]) -> RResult<Vec<String>> {
     Ok(out)
 }
 
+fn validate_float_items(name: &str, items: &[Value]) -> RResult<()> {
+    for value in items {
+        if !matches!(value, Value::Float(_)) {
+            return Err(format!(
+                "{}: expected all float elements, got {}",
+                name, value
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_items(name: &str, items: &[Value]) -> RResult<()> {
+    for value in items {
+        if !matches!(value, Value::String(_)) {
+            return Err(format!(
+                "{}: expected all string elements, got {}",
+                name, value
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
     let mut out: Vec<i64> = Vec::with_capacity(items.len());
     for v in items {
@@ -74,9 +98,13 @@ fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
 pub(crate) fn builtin_array_sort_float(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let mut nums = collect_floats("array_sort_float", items)?;
-            nums.sort_by(|a, b| a.total_cmp(b));
-            Ok(Value::Array(nums.into_iter().map(Value::Float).collect()))
+            validate_float_items("array_sort_float", items)?;
+            let mut sorted = items.to_vec();
+            sorted.sort_by(|left, right| match (left, right) {
+                (Value::Float(left), Value::Float(right)) => left.total_cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            });
+            Ok(Value::Array(sorted))
         }
         [other] => Err(format!("array_sort_float: expected array, got {}", other)),
         _ => Err(format!(
@@ -92,11 +120,13 @@ pub(crate) fn builtin_array_sort_float(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_sort_string(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let mut strings = collect_strings("array_sort_string", items)?;
-            strings.sort();
-            Ok(Value::Array(
-                strings.into_iter().map(Value::String).collect(),
-            ))
+            validate_string_items("array_sort_string", items)?;
+            let mut sorted = items.to_vec();
+            sorted.sort_by(|left, right| match (left, right) {
+                (Value::String(left), Value::String(right)) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            });
+            Ok(Value::Array(sorted))
         }
         [other] => Err(format!("array_sort_string: expected array, got {}", other)),
         _ => Err(format!(
@@ -289,6 +319,23 @@ mod tests {
     fn sort_string_stable_on_duplicates() {
         let r = builtin_array_sort_string(&[strings(&["x", "a", "x", "a"])]).unwrap();
         assert_eq!(as_string_vec(r), vec!["a", "a", "x", "x"]);
+    }
+
+    #[test]
+    fn sort_returns_an_independent_array() {
+        let mut float_args = [floats(&[2.0, 1.0])];
+        let sorted_floats = builtin_array_sort_float(&float_args).unwrap();
+        if let Value::Array(items) = &mut float_args[0] {
+            items[0] = Value::Float(99.0);
+        }
+        assert_eq!(as_float_vec(sorted_floats), vec![1.0, 2.0]);
+
+        let mut string_args = [strings(&["b", "a"])];
+        let sorted_strings = builtin_array_sort_string(&string_args).unwrap();
+        if let Value::Array(items) = &mut string_args[0] {
+            items[0] = Value::String("z".to_string());
+        }
+        assert_eq!(as_string_vec(sorted_strings), vec!["a", "b"]);
     }
 
     #[test]
