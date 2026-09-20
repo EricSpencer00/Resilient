@@ -191,6 +191,10 @@
     "resilient/tests/mat_identity_resource_boundary.rs": {
       "branch": "res-4683-mat-identity-bound",
       "claimed_at": "2026-09-20T19:46:07Z"
+    },
+    "resilient/src/tcp_udp.rs": {
+      "branch": "res-4686-bound-socket-receives",
+      "claimed_at": "2026-09-20T19:56:56Z"
     }
   }
 }
