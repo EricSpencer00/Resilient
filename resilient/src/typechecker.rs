@@ -6135,6 +6135,40 @@ impl TypeChecker {
         }
     }
 
+    /// RES-4505: repeated occurrences of one enum type parameter must agree
+    /// on their inferred payload type. Any remains an unconstrained
+    /// wildcard, while compatible numeric literal/pinned types retain the
+    /// existing constructor ergonomics.
+    fn bind_generic_enum_type_parameter(
+        &self,
+        enum_name: &str,
+        variant_name: &str,
+        parameter: &str,
+        actual: &Type,
+        bindings: &mut HashMap<String, Type>,
+    ) -> Result<(), String> {
+        if matches!(actual, Type::Any) {
+            return Ok(());
+        }
+
+        if let Some(existing) = bindings.get(parameter).cloned() {
+            if matches!(existing, Type::Any) {
+                bindings.insert(parameter.to_string(), actual.clone());
+                return Ok(());
+            }
+            if self.type_satisfies(actual, &existing) && self.type_satisfies(&existing, actual) {
+                return Ok(());
+            }
+            return Err(format!(
+                "Constructor {}::{}: type parameter {} is inferred from incompatible payload types {} and {}; payload arguments must agree",
+                enum_name, variant_name, parameter, existing, actual
+            ));
+        }
+
+        bindings.insert(parameter.to_string(), actual.clone());
+        Ok(())
+    }
+
     fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
         if sub == sup
             || matches!(sub, Type::Any)
@@ -10088,6 +10122,26 @@ impl TypeChecker {
                     .generic_struct_info
                     .get(&effective_struct_name)
                     .cloned();
+                // RES-4505: enum payload fields are not represented in
+                // `struct_fields`, so retain the variant metadata for the
+                // repeated-generic binding pass below.
+                let generic_enum_info =
+                    name.rsplit_once("::")
+                        .and_then(|(type_name, variant_name)| {
+                            let params = self.enum_type_params.get(type_name)?.clone();
+                            let variants = self.enum_decls.get(type_name)?;
+                            let payload = variants
+                                .iter()
+                                .find(|variant| variant.name == variant_name)?
+                                .payload
+                                .clone();
+                            Some((
+                                type_name.to_string(),
+                                variant_name.to_string(),
+                                params,
+                                payload,
+                            ))
+                        });
                 let mut field_value_types: Vec<(String, Type)> = Vec::new();
                 for (field_name, e) in fields {
                     let val_ty = self.check_node(e)?;
@@ -10132,8 +10186,35 @@ impl TypeChecker {
                             })?;
                         }
                     }
-                    if generic_info.is_some() || name == crate::ANONYMOUS_STRUCT_NAME {
+                    if generic_info.is_some()
+                        || generic_enum_info.is_some()
+                        || name == crate::ANONYMOUS_STRUCT_NAME
+                    {
                         field_value_types.push((field_name.clone(), val_ty));
+                    }
+                }
+                if let Some((
+                    type_name,
+                    variant_name,
+                    params,
+                    crate::EnumPayload::Named(declared),
+                )) = &generic_enum_info
+                {
+                    let mut bindings = HashMap::new();
+                    for (field_name, val_ty) in &field_value_types {
+                        let Some(field) = declared.iter().find(|field| field.name == *field_name)
+                        else {
+                            continue;
+                        };
+                        if params.iter().any(|param| param == &field.ty) {
+                            self.bind_generic_enum_type_parameter(
+                                type_name,
+                                variant_name,
+                                &field.ty,
+                                val_ty,
+                                &mut bindings,
+                            )?;
+                        }
                     }
                 }
                 // RES-2801: for generic structs, infer type-parameter
@@ -11384,14 +11465,23 @@ impl TypeChecker {
                         // RES-2814: look up generic type params so we
                         // can treat them as wildcards during validation.
                         let tp = self.enum_type_params.get(type_name).cloned();
+                        let mut bindings = HashMap::new();
                         for (arg, type_str) in arguments.iter().zip(declared.iter()) {
                             // RES-2814: if the declared type is a
                             // generic type parameter (e.g. `L` in
-                            // `Either<L, R>`), accept any concrete arg.
+                            // `Either<L, R>`), infer the binding and
+                            // require repeated occurrences to agree.
                             if let Some(ref params) = tp
                                 && params.iter().any(|p| p == type_str)
                             {
-                                self.check_node(arg)?;
+                                let arg_ty = self.check_node(arg)?;
+                                self.bind_generic_enum_type_parameter(
+                                    type_name,
+                                    variant_name,
+                                    type_str,
+                                    &arg_ty,
+                                    &mut bindings,
+                                )?;
                                 continue;
                             }
                             let arg_ty = self.check_node(arg)?;
@@ -19644,6 +19734,64 @@ mod res2814_generic_enum_constructors {
         assert!(
             err.contains("expected 1 arg(s), got 2"),
             "unexpected error: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod res4505_generic_enum_type_consistency {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error")
+    }
+
+    #[test]
+    fn tuple_constructor_rejects_repeated_parameter_mismatch() {
+        let err = check_err(
+            "enum Pair<T> { Both(T, T) }\nlet left = 1\nlet right = \"mixed\"\nlet pair = Pair::Both(left, right)\n",
+        );
+        assert!(
+            err.contains("Pair::Both") && err.contains("payload arguments must agree"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn named_constructor_rejects_repeated_parameter_mismatch() {
+        let err = check_err(
+            "enum Pair<T> { Both { left: T, right: T } }\nlet left = 1\nlet right = \"mixed\"\nlet pair = new Pair::Both { left: left, right: right }\n",
+        );
+        assert!(
+            err.contains("Pair::Both") && err.contains("payload arguments must agree"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn repeated_parameter_accepts_matching_named_values() {
+        check_ok(
+            "enum Pair<T> { Both { left: T, right: T } }\nlet left = 1\nlet right = 2\nlet pair = new Pair::Both { left: left, right: right }\n",
+        );
+    }
+
+    #[test]
+    fn distinct_parameters_remain_independently_inferable() {
+        check_ok(
+            "enum Pair<L, R> { Both(L, R) }\nlet left = 1\nlet right = \"independent\"\nlet pair = Pair::Both(left, right)\n",
         );
     }
 }
