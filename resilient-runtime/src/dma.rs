@@ -887,18 +887,10 @@ mod tests {
         let first = transfer.descriptor(0).unwrap();
         let second = transfer.descriptor(1).unwrap();
         let third = transfer.descriptor(2).unwrap();
+        assert_eq!(transfer.head_ptr(), first as *const _);
         assert_eq!(first.next, second as *const _);
         assert_eq!(second.next, third as *const _);
         assert!(third.next.is_null());
-
-        let mut current = transfer.head_ptr();
-        for expected in [first, second, third] {
-            assert_eq!(current, expected as *const _);
-            // SAFETY: each link was created by DmaChain::append and
-            // the transfer's borrow keeps the arena alive and fixed.
-            current = unsafe { (*current).next };
-        }
-        assert!(current.is_null());
     }
 
     #[test]
