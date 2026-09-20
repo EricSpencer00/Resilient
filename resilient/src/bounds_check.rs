@@ -47,9 +47,6 @@ pub fn set_deny_unproven_bounds(on: bool) {
     DENY_UNPROVEN_BOUNDS.store(on, Ordering::Relaxed);
 }
 
-#[cfg(test)]
-pub(crate) static BOUNDS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// True if the strict-deny flag is active for this process.
 fn deny_unproven_bounds() -> bool {
     DENY_UNPROVEN_BOUNDS.load(Ordering::Relaxed)
@@ -791,12 +788,14 @@ fn format_error(source_path: &str, span: Span, msg: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::BOUNDS_TEST_LOCK as TEST_LOCK;
     use super::*;
+    use std::sync::Mutex;
 
     /// Tests share the `DENY_UNPROVEN_BOUNDS` atomic and the
     /// thread-local stats, so serialize them under a mutex to keep
     /// cargo's parallel runner from producing flakes.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn parse(src: &str) -> Node {
         let lexer = crate::Lexer::new(src);
         let mut parser = crate::Parser::new(lexer);
