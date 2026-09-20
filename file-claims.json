@@ -139,6 +139,18 @@
     "resilient/src/generics.rs": {
       "branch": "res-4650-generic-body-paths",
       "claimed_at": "2026-09-20T17:27:41Z"
+    },
+    "resilient/src/type_builtins.rs": {
+      "branch": "res-4657-hof-array-budget",
+      "claimed_at": "2026-09-20T18:02:00Z"
+    },
+    "resilient/src/collection_extras.rs": {
+      "branch": "res-4657-hof-array-budget",
+      "claimed_at": "2026-09-20T18:02:00Z"
+    },
+    "resilient/src/collection_budget.rs": {
+      "branch": "res-4657-hof-array-budget",
+      "claimed_at": "2026-09-20T18:02:00Z"
     }
   }
 }
