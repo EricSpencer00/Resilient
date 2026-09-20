@@ -103,6 +103,10 @@
     "resilient/src/semver_behavior.rs": {
       "branch": "res-4604-fails-semantic-diff",
       "claimed_at": "2026-09-20T15:51:43Z"
+    },
+    "resilient/src/behavioral_fingerprint.rs": {
+      "branch": "res-4611-stable-fingerprints",
+      "claimed_at": "2026-09-20T16:00:32Z"
     }
   }
 }
