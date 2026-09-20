@@ -292,13 +292,13 @@
       "branch": "res-4774-cert-schema",
       "claimed_at": "2026-09-20T23:15:24Z"
     },
-    "resilient/src/generic_inference.rs": {
-      "branch": "res-4776-generic-structured-traversal",
-      "claimed_at": "2026-09-20T23:19:28Z"
+    "resilient/src/datetime_builtins.rs": {
+      "branch": "res-4777-datetime-overflow",
+      "claimed_at": "2026-09-20T23:21:05Z"
     },
-    "resilient/tests/generic_inference_structured.rs": {
-      "branch": "res-4776-generic-structured-traversal",
-      "claimed_at": "2026-09-20T23:19:28Z"
+    "resilient/tests/datetime_overflow_boundary.rs": {
+      "branch": "res-4777-datetime-overflow",
+      "claimed_at": "2026-09-20T23:21:05Z"
     }
   }
 }
