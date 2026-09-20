@@ -180,6 +180,15 @@ pub struct DmaDescriptor {
     pub next: *const DmaDescriptor,
 }
 
+impl DmaDescriptor {
+    const EMPTY: Self = Self {
+        source: 0,
+        dest: 0,
+        length: 0,
+        next: ptr::null(),
+    };
+}
+
 // SAFETY: `DmaDescriptor` is plain old data (four usize/u32 fields).
 // `next` is a raw pointer, which doesn't implement Send/Sync by
 // default. But the descriptor is only "live" while the owning
@@ -276,13 +285,14 @@ pub fn dma_descriptor_new(
 /// On embedded targets you size your DMA workload at firmware-build
 /// time. A growing `Vec` would need an allocator and introduces
 /// realloc-induced pointer invalidation that would silently corrupt
-/// `next` links mid-transfer. Pinning the storage to the type makes
-/// the layout deterministic.
+/// `next` links mid-transfer. The chain relinks its raw pointers at
+/// the handoff boundary, so ordinary moves before a transfer do not
+/// leave the hardware following the old storage location.
 pub struct DmaChain<const N: usize> {
-    /// Descriptor storage. The arena writes through `MaybeUninit` —
-    /// uninitialised entries are never observed.
-    descriptors: [core::mem::MaybeUninit<DmaDescriptor>; N],
-    /// Number of initialised descriptors at the head of `descriptors`.
+    /// Descriptor storage. Unused entries carry a null `next` pointer
+    /// and are excluded by `len`.
+    descriptors: [DmaDescriptor; N],
+    /// Number of active descriptors at the head of `descriptors`.
     len: usize,
 }
 
@@ -302,7 +312,7 @@ impl<const N: usize> DmaChain<N> {
     /// invalid capacity is paired with the first append.
     pub const fn new() -> Self {
         Self {
-            descriptors: [const { core::mem::MaybeUninit::uninit() }; N],
+            descriptors: [DmaDescriptor::EMPTY; N],
             len: 0,
         }
     }
@@ -352,7 +362,7 @@ impl<const N: usize> DmaChain<N> {
         // could smuggle a pointer into someone else's chain.
         let mut desc = desc;
         desc.next = ptr::null();
-        self.descriptors[self.len].write(desc);
+        self.descriptors[self.len] = desc;
         let new_index = self.len;
         self.len += 1;
         // Patch the previous tail to point at the new entry. The
@@ -360,15 +370,8 @@ impl<const N: usize> DmaChain<N> {
         // transfer API enforces that invariant with an exclusive
         // borrow for the transfer's lifetime.
         if new_index > 0 {
-            // SAFETY: index 0..new_index-1 is initialised (the loop
-            // invariant of `len`) and the slot at new_index is the
-            // one we just wrote. Read+write through MaybeUninit is
-            // legal for initialised entries.
-            unsafe {
-                let new_ptr = self.descriptors[new_index].assume_init_ref() as *const DmaDescriptor;
-                let prev = self.descriptors[new_index - 1].assume_init_mut();
-                prev.next = new_ptr;
-            }
+            let new_ptr = &self.descriptors[new_index] as *const DmaDescriptor;
+            self.descriptors[new_index - 1].next = new_ptr;
         }
         Ok(())
     }
@@ -380,9 +383,7 @@ impl<const N: usize> DmaChain<N> {
         if index >= self.len {
             return None;
         }
-        // SAFETY: index < self.len, and the invariant on `len` is
-        // that the first `len` slots are initialised.
-        Some(unsafe { self.descriptors[index].assume_init_ref() })
+        Some(&self.descriptors[index])
     }
 
     /// Head pointer — what you'd hand a DMA controller's `PADR`
@@ -390,14 +391,34 @@ impl<const N: usize> DmaChain<N> {
     /// chain is empty.
     ///
     /// Returned as `*const DmaDescriptor` (the engine reads it, never
-    /// writes it). The pointer is valid for as long as `self` is
-    /// alive and unmoved.
-    pub fn head_ptr(&self) -> *const DmaDescriptor {
+    /// writes it). The chain is relinked before the pointer is
+    /// returned, and it remains valid for as long as `self` is alive
+    /// and unmoved after this call.
+    pub fn head_ptr(&mut self) -> *const DmaDescriptor {
+        self.relink();
+        self.current_head_ptr()
+    }
+
+    /// Rebuild every internal link from the arena's current address.
+    ///
+    /// `DmaChain` is movable until a transfer borrows it. Relinking at
+    /// the handoff boundary prevents an earlier move from leaving raw
+    /// `next` pointers aimed at the chain's former storage location.
+    fn relink(&mut self) {
+        for index in 0..self.len {
+            self.descriptors[index].next = if index + 1 < self.len {
+                &self.descriptors[index + 1] as *const DmaDescriptor
+            } else {
+                ptr::null()
+            };
+        }
+    }
+
+    fn current_head_ptr(&self) -> *const DmaDescriptor {
         if self.len == 0 {
             ptr::null()
         } else {
-            // SAFETY: len >= 1, so index 0 is initialised.
-            unsafe { self.descriptors[0].assume_init_ref() as *const DmaDescriptor }
+            &self.descriptors[0] as *const DmaDescriptor
         }
     }
 
@@ -406,6 +427,7 @@ impl<const N: usize> DmaChain<N> {
     /// at a stable address and prevents mutation, movement, or drop
     /// until the transfer is released.
     pub fn start(&mut self) -> DmaTransfer<'_, N> {
+        self.relink();
         DmaTransfer { chain: self }
     }
 }
@@ -444,7 +466,7 @@ impl<const N: usize> DmaTransfer<'_, N> {
     /// Head pointer — hand this to the DMA controller's address
     /// register. Stays valid for the lifetime of `self`.
     pub fn head_ptr(&self) -> *const DmaDescriptor {
-        self.chain.head_ptr()
+        self.chain.current_head_ptr()
     }
 
     /// Total bytes the entire chain will transfer. Useful for
