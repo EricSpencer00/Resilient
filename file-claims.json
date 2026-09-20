@@ -4,10 +4,6 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "resilient-runtime/src/vm/serde.rs": {
-      "branch": "res-4463-bytecode-control-flow",
-      "claimed_at": "2026-09-20T00:29:17Z"
-    },
     "resilient-runtime/src/heap.rs": {
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
