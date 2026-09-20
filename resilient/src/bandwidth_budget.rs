@@ -86,7 +86,12 @@ fn estimate_io_bytes(body: &Node) -> usize {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if IO_FNS.contains(&name.as_str()) {
                     for a in arguments {
-                        total += literal_size(a);
+                        // A source literal can exceed the target's usize
+                        // width, and many individually valid literals can
+                        // exceed the accumulator together. Saturation keeps
+                        // the static check conservative instead of allowing
+                        // an over-budget estimate to wrap around.
+                        total = total.saturating_add(literal_size(a));
                     }
                 }
             }
@@ -97,7 +102,14 @@ fn estimate_io_bytes(body: &Node) -> usize {
 
 fn literal_size(node: &Node) -> usize {
     match node {
-        Node::IntegerLiteral { value, .. } if *value >= 0 => *value as usize,
+        Node::IntegerLiteral { value, .. } if *value >= 0 => {
+            // Do not truncate an integer literal on a 32-bit target. An
+            // unrepresentable byte count must remain visibly over budget.
+            match usize::try_from(*value) {
+                Ok(size) => size,
+                Err(_) => usize::MAX,
+            }
+        }
         Node::StringLiteral { value, .. } => value.len(),
         _ => 0,
     }
@@ -173,5 +185,51 @@ mod tests {
         "#;
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn extreme_integer_literal_stays_over_budget() {
+        let body = Node::Block {
+            stmts: vec![Node::CallExpression {
+                function: Box::new(Node::Identifier {
+                    name: "net_send".to_string(),
+                    span: crate::span::Span::default(),
+                }),
+                arguments: vec![Node::IntegerLiteral {
+                    value: i64::MAX,
+                    span: crate::span::Span::default(),
+                }],
+                span: crate::span::Span::default(),
+            }],
+            span: crate::span::Span::default(),
+        };
+
+        assert!(estimate_io_bytes(&body) > 1024);
+    }
+
+    #[test]
+    fn aggregate_literal_estimate_saturates() {
+        let body = Node::Block {
+            stmts: vec![Node::CallExpression {
+                function: Box::new(Node::Identifier {
+                    name: "net_send".to_string(),
+                    span: crate::span::Span::default(),
+                }),
+                arguments: vec![
+                    Node::IntegerLiteral {
+                        value: i64::MAX,
+                        span: crate::span::Span::default(),
+                    },
+                    Node::IntegerLiteral {
+                        value: i64::MAX,
+                        span: crate::span::Span::default(),
+                    },
+                ],
+                span: crate::span::Span::default(),
+            }],
+            span: crate::span::Span::default(),
+        };
+
+        assert_eq!(estimate_io_bytes(&body), usize::MAX);
     }
 }
