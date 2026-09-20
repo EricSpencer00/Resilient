@@ -22,6 +22,20 @@
 
 use crate::{RResult, Value};
 
+const MAX_BYTES_FILL: i64 = 1_000_000_000;
+
+fn checked_fill_len(n: i64) -> Result<usize, String> {
+    if n < 0 {
+        return Err(format!("bytes_fill: length must be non-negative, got {n}"));
+    }
+    if n > MAX_BYTES_FILL {
+        return Err(format!(
+            "bytes_fill: length {n} too large (max {MAX_BYTES_FILL})"
+        ));
+    }
+    usize::try_from(n).map_err(|_| format!("bytes_fill: length {n} does not fit usize"))
+}
+
 /// `bytes_xor(a, b) -> Bytes` — element-wise XOR of two equal-length
 /// `Bytes`. Errors on length mismatch — XOR of differing-length buffers
 /// is almost always a bug (truncating one side hides the surprise).
@@ -135,16 +149,11 @@ pub(crate) fn builtin_bytes_not(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_bytes_fill(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(n), Value::Int(byte)] => {
-            if *n < 0 {
-                return Err(format!(
-                    "bytes_fill: length must be non-negative, got {}",
-                    n
-                ));
-            }
+            let len = checked_fill_len(*n)?;
             if *byte < 0 || *byte > 255 {
                 return Err(format!("bytes_fill: byte must be in 0..=255, got {}", byte));
             }
-            Ok(Value::Bytes(vec![*byte as u8; *n as usize]))
+            Ok(Value::Bytes(vec![*byte as u8; len]))
         }
         [a, b] => Err(format!(
             "bytes_fill: expected (Int, Int), got ({:?}, {:?})",
@@ -324,6 +333,17 @@ mod tests {
     fn fill_rejects_negative_length() {
         let err = builtin_bytes_fill(&[Value::Int(-1), Value::Int(0)]).unwrap_err();
         assert!(err.contains("non-negative"));
+    }
+
+    #[test]
+    fn fill_rejects_over_cap_before_allocation() {
+        let err = builtin_bytes_fill(&[Value::Int(i64::MAX), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("too large"), "got {err}");
+    }
+
+    #[test]
+    fn fill_cap_boundary_fits_target_length_type() {
+        assert_eq!(checked_fill_len(MAX_BYTES_FILL).unwrap(), 1_000_000_000);
     }
 
     #[test]
