@@ -27,6 +27,10 @@
     "resilient/src/vm.rs": {
       "branch": "res-4494-host-vm-frame-layout",
       "claimed_at": "2026-09-20T04:49:58Z"
+    },
+    "resilient-runtime/src/timer.rs": {
+      "branch": "res-4496-timer-bounded",
+      "claimed_at": "2026-09-20T05:12:12Z"
     }
   }
 }
