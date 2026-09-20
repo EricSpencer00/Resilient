@@ -29,8 +29,52 @@ use crate::bytecode::{Chunk, Op};
 
 /// Remove dead code from a compiled chunk in-place.
 pub fn eliminate(chunk: &mut Chunk) {
+    if !has_valid_metadata(chunk) {
+        return;
+    }
     remove_unreachable(chunk);
     fold_constant_branches(chunk);
+}
+
+/// DCE is an in-place best-effort optimization. A malformed intermediate
+/// representation must therefore be left untouched instead of being allowed
+/// to reach a remap index that assumes compiler-produced metadata.
+fn has_valid_metadata(chunk: &Chunk) -> bool {
+    let n = chunk.code.len();
+    if chunk.line_info.len() != n {
+        return false;
+    }
+
+    for (pc, &op) in chunk.code.iter().enumerate() {
+        if is_jump_op(op) && jump_target_pc(op, pc).is_none_or(|target| target > n) {
+            return false;
+        }
+        match op {
+            Op::EnterTry(index) if index as usize >= chunk.try_handlers.len() => return false,
+            Op::EnterLive(index) if index as usize >= chunk.live_handlers.len() => return false,
+            _ => {}
+        }
+    }
+
+    if chunk
+        .try_handlers
+        .iter()
+        .flat_map(|entry| entry.arms.iter())
+        .any(|arm| arm.handler_pc > n)
+    {
+        return false;
+    }
+    if chunk
+        .live_handlers
+        .iter()
+        .any(|entry| entry.body_start_pc > n)
+    {
+        return false;
+    }
+    if chunk.call_cols.keys().any(|&pc| pc >= n) {
+        return false;
+    }
+    true
 }
 
 // --------------------------------------------------------------------------
@@ -176,8 +220,20 @@ fn remove_unreachable(chunk: &mut Chunk) {
         entry.body_start_pc = old_to_new[entry.body_start_pc];
     }
 
+    let old_call_cols = std::mem::take(&mut chunk.call_cols);
+    let mut new_call_cols = std::collections::HashMap::with_capacity(old_call_cols.len());
+    for (old_pc, column) in old_call_cols {
+        if let Some(&new_pc) = old_to_new.get(old_pc)
+            && new_pc != usize::MAX
+            && new_pc < new_code.len()
+        {
+            new_call_cols.insert(new_pc, column);
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
+    chunk.call_cols = new_call_cols;
 }
 
 // --------------------------------------------------------------------------
@@ -360,8 +416,20 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         }
     }
 
+    let old_call_cols = std::mem::take(&mut chunk.call_cols);
+    let mut new_call_cols = std::collections::HashMap::with_capacity(old_call_cols.len());
+    for (old_pc, column) in old_call_cols {
+        if let Some(&new_pc) = old_to_new.get(old_pc)
+            && new_pc != usize::MAX
+            && new_pc < new_code.len()
+        {
+            new_call_cols.insert(new_pc, column);
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
+    chunk.call_cols = new_call_cols;
 }
 
 /// Update the offset of a jump op at `new_pc` so it targets
@@ -517,6 +585,56 @@ mod tests {
         assert_eq!(chunk.code.len(), 1);
         assert_eq!(chunk.line_info.len(), 1);
         assert_eq!(chunk.line_info[0], 10);
+    }
+
+    #[test]
+    fn malformed_jump_target_leaves_chunk_unchanged() {
+        let mut chunk = Chunk::new();
+        chunk.emit(Op::Jump(i16::MAX), 1);
+        chunk.emit(Op::Return, 2);
+        let original_code = chunk.code.clone();
+        let original_lines = chunk.line_info.clone();
+
+        eliminate(&mut chunk);
+
+        assert_eq!(chunk.code, original_code);
+        assert_eq!(chunk.line_info, original_lines);
+    }
+
+    #[test]
+    fn malformed_handler_pc_leaves_chunk_unchanged() {
+        let mut chunk = chunk_from_ops(vec![Op::Return, Op::Add]);
+        chunk.try_handlers.push(crate::bytecode::TryHandlerEntry {
+            arms: vec![crate::bytecode::CatchArm {
+                variant: "Failure".to_string(),
+                handler_pc: usize::MAX,
+            }],
+        });
+        let original_code = chunk.code.clone();
+        let original_lines = chunk.line_info.clone();
+
+        eliminate(&mut chunk);
+
+        assert_eq!(chunk.code, original_code);
+        assert_eq!(chunk.line_info, original_lines);
+        assert_eq!(chunk.try_handlers[0].arms[0].handler_pc, usize::MAX);
+    }
+
+    #[test]
+    fn call_columns_follow_instruction_compaction() {
+        let mut chunk = Chunk::new();
+        chunk.emit(Op::JumpIfFalse(2), 1);
+        chunk.emit(Op::Return, 2);
+        chunk.emit(Op::Add, 3);
+        let call_pc = chunk.emit(Op::Call(0), 4);
+        chunk.emit(Op::Return, 5);
+        chunk.record_call_col(call_pc, 17);
+
+        eliminate(&mut chunk);
+
+        assert_eq!(chunk.code[2], Op::Call(0));
+        assert_eq!(chunk.call_cols.get(&2), Some(&17));
+        assert!(!chunk.call_cols.contains_key(&call_pc));
     }
 
     #[test]
