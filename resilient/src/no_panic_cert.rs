@@ -117,7 +117,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         })
         .collect();
     for s in stmts {
-        if let Node::Function { name, body, .. } = &s.node {
+        if let Node::Function { name, .. } = &s.node {
             if no_panic.contains(name) {
                 if let Some((offending, reason)) = reachable_panic(name, &functions) {
                     let location = if offending == *name {
