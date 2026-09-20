@@ -85,10 +85,10 @@ fn recover(int x) {
 fn recursive_call_in_match_is_reported_as_unbounded() {
     let output = stack_usage(
         r#"
-fn loop(int x) {
+fn recur(int x) {
     return match x {
         0 => 0,
-        _ => loop(x - 1),
+        _ => recur(x - 1),
     };
 }
 "#,
@@ -97,7 +97,7 @@ fn loop(int x) {
 
     assert!(
         output.lines().any(|line| {
-            line.contains("loop") && line.contains("unbounded") && line.contains("recursive")
+            line.contains("recur") && line.contains("unbounded") && line.contains("recursive")
         }),
         "recursive match call should be reported as unbounded, got:\n{output}"
     );
