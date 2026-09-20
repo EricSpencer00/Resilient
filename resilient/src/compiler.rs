@@ -5679,7 +5679,11 @@ fn compile_expr(
         // Compiles the body as a new Function entry, collects free variables
         // (capture-by-value), and emits MakeClosure.
         Node::FunctionLiteral {
-            parameters, body, ..
+            parameters,
+            body,
+            ensures,
+            recovers_to,
+            ..
         } => {
             if parameters.len() > u8::MAX as usize {
                 return Err(CompileError::Unsupported("fn literal with >255 params"));
@@ -5751,6 +5755,22 @@ fn compile_expr(
             // `rewrite_store_upvalues`'s doc comment.
             rewrite_store_upvalues(&mut fn_chunk, upvalue_base, upvalue_count);
 
+            // RES-4554: anonymous function literals carry the same
+            // postconditions as named functions. Reuse the existing
+            // isolated postcheck function so the VM cannot silently
+            // accept a violated closure contract.
+            let postcheck = build_postcheck_function(
+                "<anon>",
+                parameters,
+                ensures,
+                recovers_to,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+
             let local_count = fn_next_local;
             // Insert at fn_idx (pre-allocated index). fns may have grown via
             // nested FunctionLiterals; we need to push a placeholder then
@@ -5785,7 +5805,7 @@ fn compile_expr(
                 local_count,
                 upvalue_source_slots: source_slots,
                 fails: Box::default(),
-                postcheck: None,
+                postcheck,
             };
 
             // RES-4063: capture-load emission now lives in
