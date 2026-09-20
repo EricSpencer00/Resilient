@@ -207,7 +207,7 @@ fn find_return_literal_mismatch(node: &Node, want: usize) -> Option<(usize, Span
         }
         Node::Match { arms, .. } => arms
             .iter()
-            .find_map(|(_, _, body)| find_return_literal_mismatch(body.as_ref(), want)),
+            .find_map(|(_, _, body)| find_return_literal_mismatch(body, want)),
         Node::TryCatch { body, handlers, .. } => body
             .iter()
             .find_map(|stmt| find_return_literal_mismatch(stmt, want))
