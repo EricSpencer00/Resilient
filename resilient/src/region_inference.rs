@@ -886,6 +886,83 @@ struct TaggedEnumReturnAliasSummary {
     paths: Vec<(String, usize)>,
 }
 
+/// Evaluate the small constant-expression subset needed to classify an
+/// alias-analysis branch. Returning `None` for unsupported expressions keeps
+/// the dataflow conservative: only a condition whose value is proven without
+/// overflow or division by zero may discard the other branch.
+fn alias_const_int(node: &crate::Node) -> Option<i64> {
+    match node {
+        crate::Node::IntegerLiteral { value, .. } => Some(*value),
+        crate::Node::PrefixExpression {
+            operator, right, ..
+        } if *operator == "-" => alias_const_int(right).and_then(i64::checked_neg),
+        crate::Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => {
+            let left = alias_const_int(left)?;
+            let right = alias_const_int(right)?;
+            match *operator {
+                "+" => left.checked_add(right),
+                "-" => left.checked_sub(right),
+                "*" => left.checked_mul(right),
+                "/" if right != 0 => left.checked_div(right),
+                "%" if right != 0 => left.checked_rem(right),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn alias_const_bool(node: &crate::Node) -> Option<bool> {
+    match node {
+        crate::Node::BooleanLiteral { value, .. } => Some(*value),
+        crate::Node::PrefixExpression {
+            operator, right, ..
+        } if *operator == "!" => alias_const_bool(right).map(|value| !value),
+        crate::Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => match *operator {
+            "==" => match (alias_const_int(left), alias_const_int(right)) {
+                (Some(left), Some(right)) => Some(left == right),
+                _ => match (alias_const_bool(left), alias_const_bool(right)) {
+                    (Some(left), Some(right)) => Some(left == right),
+                    _ => None,
+                },
+            },
+            "!=" => match (alias_const_int(left), alias_const_int(right)) {
+                (Some(left), Some(right)) => Some(left != right),
+                _ => match (alias_const_bool(left), alias_const_bool(right)) {
+                    (Some(left), Some(right)) => Some(left != right),
+                    _ => None,
+                },
+            },
+            "<" => Some(alias_const_int(left)? < alias_const_int(right)?),
+            "<=" => Some(alias_const_int(left)? <= alias_const_int(right)?),
+            ">" => Some(alias_const_int(left)? > alias_const_int(right)?),
+            ">=" => Some(alias_const_int(left)? >= alias_const_int(right)?),
+            "&&" => match (alias_const_bool(left), alias_const_bool(right)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            "||" => match (alias_const_bool(left), alias_const_bool(right)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 struct AliasSummaries<'a> {
     return_aliases: &'a HashMap<&'a str, usize>,
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
@@ -1182,12 +1259,10 @@ impl<'a> AliasWalker<'a> {
                 ..
             } => {
                 self.walk_expr(condition, state);
-                let literal_condition = match condition.as_ref() {
-                    crate::Node::BooleanLiteral { value, .. } => Some(*value),
-                    _ => None,
-                };
-                if let Some(value) = literal_condition {
-                    // A literal condition makes one arm unreachable. Walk
+                let constant_condition = alias_const_bool(condition);
+                if let Some(value) = constant_condition {
+                    // A proven constant condition makes one arm
+                    // unreachable. Walk
                     // the selected arm for diagnostics, but only propagate
                     // conservative rebinding kills to the surrounding
                     // scope. Branch-local `let` bindings are not copied into
@@ -7136,6 +7211,39 @@ mod tests {
         assert!(
             errors.is_empty(),
             "unreachable branch must stay outside alias checking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn constant_comparison_selected_path_preserves_alias() {
+        // Constant arithmetic and comparison make the else arm unreachable,
+        // so its rebinding cannot erase the alias that reaches the call.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 if ((1 + 1) == 2) { println(\"keep\"); } else { y = 0; } \
+                 set_both(x, y); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn constant_comparison_unreachable_alias_call_stays_accepted() {
+        // The aliasing call is inside a branch proven false by a constant
+        // comparison, so it must not be reported.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 if (2 < 1 || false) { set_both(x, y); } else { println(\"reachable\"); } \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unreachable comparison branch must stay outside alias checking: {:?}",
             errors
         );
     }
