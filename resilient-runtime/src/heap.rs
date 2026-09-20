@@ -201,7 +201,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingHeap<A> {
     }
 }
 
-/// Bump CURRENT and bubble PEAK if needed. Gated on
+/// Saturating-bump CURRENT and bubble PEAK if needed. Gated on
 /// `target_has_atomic = "ptr"` because the CAS bubble requires
 /// pointer-width atomic compare-exchange (unavailable on
 /// Cortex-M0 / thumbv6m). Targets without it skip both
@@ -210,7 +210,22 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingHeap<A> {
 /// load/store and report 0.
 #[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 fn record_alloc(size: usize) {
-    let new_current = CURRENT_BYTES.fetch_add(size, Ordering::Relaxed) + size;
+    // `fetch_add` would wrap when a corrupted or adversarially large
+    // allocation pushes the accounting counter past its representable
+    // range. Saturating keeps telemetry monotonic and bounded.
+    let mut current = CURRENT_BYTES.load(Ordering::Relaxed);
+    let new_current = loop {
+        let new_value = current.saturating_add(size);
+        match CURRENT_BYTES.compare_exchange_weak(
+            current,
+            new_value,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break new_value,
+            Err(observed) => current = observed,
+        }
+    };
     // CAS-loop bubble: if PEAK < new_current, update it. We don't
     // care which contender wins — they're racing on a monotonically
     // non-decreasing watermark.
@@ -398,6 +413,21 @@ mod tests {
         let l2 = Layout::from_size_align(256, 8).unwrap();
         // SAFETY: layout describes the current allocation size.
         unsafe { alloc.dealloc(p2, l2) };
+    }
+
+    #[test]
+    fn allocation_counters_saturate_on_overflow() {
+        let _g = lock();
+        reset_all();
+
+        record_alloc(usize::MAX - 7);
+        record_alloc(16);
+
+        assert_eq!(current_bytes(), usize::MAX);
+        assert_eq!(peak_bytes(), usize::MAX);
+
+        record_dealloc(usize::MAX);
+        assert_eq!(current_bytes(), 0);
     }
 }
 
