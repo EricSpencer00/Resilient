@@ -307,6 +307,10 @@
     "resilient/src/array_struct_sort_order_tests.rs": {
       "branch": "res-4780-struct-sort-order",
       "claimed_at": "2026-09-20T23:31:25Z"
+    },
+    "resilient/src/complex_numbers.rs": {
+      "branch": "res-4782-complex-stability",
+      "claimed_at": "2026-09-20T23:31:26Z"
     }
   }
 }
