@@ -66,16 +66,16 @@ pub fn collect_no_panic_fns() -> HashSet<String> {
         .collect()
 }
 
-fn called_functions(node: &Node) -> HashSet<String> {
-    let mut calls = HashSet::new();
-    crate::uniqueness_walk::visit(node, &mut |n| {
-        if let Node::CallExpression { function, .. } = n {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                calls.insert(name.clone());
-            }
-        }
-    });
-    calls
+fn called_functions(node: &Node, functions: &HashMap<String, &Node>) -> HashSet<String> {
+    // A callable can be referenced without appearing in the callee slot:
+    // `let callback = helper; callback()` and a closure that captures
+    // `helper` are both valid first-class calls.  `free_vars` preserves the
+    // lexical bindings while finding those references, so parameters and
+    // locals with the same name do not create spurious edges.
+    crate::free_vars::free_vars(node)
+        .into_iter()
+        .filter(|name| functions.contains_key(name))
+        .collect()
 }
 
 fn reachable_panic(root: &str, functions: &HashMap<String, &Node>) -> Option<(String, String)> {
@@ -86,13 +86,16 @@ fn reachable_panic(root: &str, functions: &HashMap<String, &Node>) -> Option<(St
         if !visited.insert(name.clone()) {
             continue;
         }
-        let Some(body) = functions.get(&name) else {
+        let Some(function) = functions.get(&name) else {
+            continue;
+        };
+        let Node::Function { body, .. } = function else {
             continue;
         };
         if let Some(reason) = body_panics(body) {
             return Some((name, reason));
         }
-        for callee in called_functions(body) {
+        for callee in called_functions(function, functions) {
             if functions.contains_key(&callee) {
                 pending.push(callee);
             }
@@ -112,7 +115,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let functions: HashMap<_, _> = stmts
         .iter()
         .filter_map(|s| match &s.node {
-            Node::Function { name, body, .. } => Some((name.clone(), body.as_ref())),
+            Node::Function { name, .. } => Some((name.clone(), &s.node)),
             _ => None,
         })
         .collect();

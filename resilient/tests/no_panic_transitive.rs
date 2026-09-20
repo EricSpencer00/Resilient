@@ -14,10 +14,10 @@ fn typecheck(source: &str) -> (bool, String) {
     ));
     std::fs::write(&path, source).expect("write no-panic fixture");
     let output = Command::new(env!("CARGO_BIN_EXE_rz"))
-        .args(["--typecheck-strict"])
+        .arg("check")
         .arg(&path)
         .output()
-        .expect("spawn rz --typecheck-strict");
+        .expect("spawn rz check");
     let _ = std::fs::remove_file(path);
     let diagnostics = format!(
         "{}{}",
@@ -71,5 +71,68 @@ certified();
             && diagnostics.contains("helper")
             && diagnostics.contains("unwrap"),
         "diagnostic should identify the path to the trigger: {diagnostics}"
+    );
+}
+
+#[test]
+fn no_panic_rejects_a_panic_through_a_named_function_value() {
+    let (success, diagnostics) = typecheck(
+        r#"
+#[no_panic]
+fn certified() -> int {
+    let callback = helper;
+    return callback();
+}
+
+fn helper() -> int {
+    return unwrap(Err(1));
+}
+
+certified();
+"#,
+    );
+    assert!(
+        !success,
+        "first-class function call unexpectedly passed: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("certified")
+            && diagnostics.contains("helper")
+            && diagnostics.contains("unwrap"),
+        "diagnostic should identify the first-class callee and trigger: {diagnostics}"
+    );
+}
+
+#[test]
+fn no_panic_rejects_a_panic_through_a_closure_returning_function_value() {
+    let (success, diagnostics) = typecheck(
+        r#"
+fn make_callback() -> fn() -> int {
+    let callback = helper;
+    return fn() -> int { return callback(); };
+}
+
+#[no_panic]
+fn certified() -> int {
+    let callback = make_callback();
+    return callback();
+}
+
+fn helper() -> int {
+    return unwrap(Err(1));
+}
+
+certified();
+"#,
+    );
+    assert!(
+        !success,
+        "closure function-value call unexpectedly passed: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("certified")
+            && diagnostics.contains("helper")
+            && diagnostics.contains("unwrap"),
+        "diagnostic should identify the closure's captured callee and trigger: {diagnostics}"
     );
 }
