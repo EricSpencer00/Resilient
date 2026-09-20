@@ -31,6 +31,10 @@
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
+    },
+    "resilient-runtime/src/vm/serde.rs": {
+      "branch": "res-4517-trailing-bytecode",
+      "claimed_at": "2026-09-20T08:56:44Z"
     }
   }
 }
