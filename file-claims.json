@@ -244,9 +244,9 @@
       "branch": "res-4732-bytecode-patch-guard",
       "claimed_at": "2026-09-20T22:00:45Z"
     },
-    "resilient/src/bandwidth_budget.rs": {
-      "branch": "res-4739-bandwidth-overflow",
-      "claimed_at": "2026-09-20T22:10:22Z"
+    "resilient/src/actor_runtime.rs": {
+      "branch": "res-4738-actor-pid-boundary",
+      "claimed_at": "2026-09-20T22:11:02Z"
     }
   }
 }
