@@ -51,6 +51,10 @@
     "resilient-runtime/src/vm/serde.rs": {
       "branch": "res-4550-embedded-local-refs",
       "claimed_at": "2026-09-20T13:17:34Z"
+    },
+    "resilient/src/enum_exhaustiveness.rs": {
+      "branch": "res-4562-guarded-nested-enum",
+      "claimed_at": "2026-09-20T13:52:14Z"
     }
   }
 }
