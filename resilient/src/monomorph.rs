@@ -462,7 +462,7 @@ fn rewrite_calls_in_place(
                 _ => None,
             };
             if let Some(replacement) = replacement {
-                *function = Box::new(replacement);
+                **function = replacement;
             }
         }
         Node::OptionalChain { object, access, .. } => {
