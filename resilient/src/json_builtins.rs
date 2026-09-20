@@ -21,6 +21,12 @@ use std::collections::HashMap;
 
 type RResult<T> = Result<T, String>;
 
+const MAX_JSON_NESTING_DEPTH: usize = 256;
+
+fn json_depth_error(operation: &str) -> String {
+    format!("{operation}: maximum JSON nesting depth of {MAX_JSON_NESTING_DEPTH} exceeded")
+}
+
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 /// `to_json(value) -> string`
@@ -73,7 +79,7 @@ pub(crate) fn builtin_json_decode(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            match parser.parse_value() {
+            match parser.parse_value(1) {
                 Err(e) => Ok(Value::Result {
                     ok: false,
                     payload: Box::new(Value::String(e)),
@@ -110,7 +116,7 @@ pub(crate) fn builtin_json_valid(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            let ok = parser.parse_value().is_ok() && {
+            let ok = parser.parse_value(1).is_ok() && {
                 parser.skip_ws();
                 parser.pos >= parser.src.len()
             };
@@ -125,6 +131,13 @@ pub(crate) fn builtin_json_valid(args: &[Value]) -> RResult<Value> {
 }
 
 fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
+    serialize_value_pretty_at_depth(v, indent, 1)
+}
+
+fn serialize_value_pretty_at_depth(v: &Value, indent: usize, depth: usize) -> RResult<String> {
+    if depth > MAX_JSON_NESTING_DEPTH {
+        return Err(json_depth_error("to_json"));
+    }
     let pad = "  ".repeat(indent);
     let inner_pad = "  ".repeat(indent + 1);
     match v {
@@ -134,7 +147,7 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
             }
             let mut out = String::from("[\n");
             for (i, item) in arr.iter().enumerate() {
-                let s = serialize_value_pretty(item, indent + 1)?;
+                let s = serialize_value_pretty_at_depth(item, indent + 1, depth + 1)?;
                 out.push_str(&inner_pad);
                 out.push_str(&s);
                 if i + 1 < arr.len() {
@@ -163,7 +176,7 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
                     MapKey::Int(n) => format!("\"{}\"", n),
                     MapKey::Bool(b) => format!("\"{}\"", b),
                 };
-                let val_str = serialize_value_pretty(val, indent + 1)?;
+                let val_str = serialize_value_pretty_at_depth(val, indent + 1, depth + 1)?;
                 out.push_str(&inner_pad);
                 out.push_str(&key_str);
                 out.push_str(": ");
@@ -178,11 +191,18 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
             Ok(out)
         }
         // Primitives are the same as compact form.
-        other => serialize_value(other),
+        other => serialize_value_at_depth(other, depth),
     }
 }
 
 fn serialize_value(v: &Value) -> RResult<String> {
+    serialize_value_at_depth(v, 1)
+}
+
+fn serialize_value_at_depth(v: &Value, depth: usize) -> RResult<String> {
+    if depth > MAX_JSON_NESTING_DEPTH {
+        return Err(json_depth_error("to_json"));
+    }
     match v {
         Value::Int(n) => Ok(n.to_string()),
         Value::Float(f) => {
@@ -199,7 +219,10 @@ fn serialize_value(v: &Value) -> RResult<String> {
         Value::Bool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
         Value::String(s) => Ok(json_escape_string(s)),
         Value::Array(arr) => {
-            let items: RResult<Vec<String>> = arr.iter().map(serialize_value).collect();
+            let items: RResult<Vec<String>> = arr
+                .iter()
+                .map(|item| serialize_value_at_depth(item, depth + 1))
+                .collect();
             Ok(format!("[{}]", items?.join(", ")))
         }
         Value::Map(m) => {
@@ -218,16 +241,16 @@ fn serialize_value(v: &Value) -> RResult<String> {
                         MapKey::Int(n) => format!("\"{}\"", n),
                         MapKey::Bool(b) => format!("\"{}\"", b),
                     };
-                    serialize_value(v).map(|vs| format!("{}: {}", key_str, vs))
+                    serialize_value_at_depth(v, depth + 1).map(|vs| format!("{}: {}", key_str, vs))
                 })
                 .collect();
             Ok(format!("{{{}}}", pairs?.join(", ")))
         }
         Value::Void => Ok("null".to_string()),
         Value::Option(None) => Ok("null".to_string()),
-        Value::Option(Some(inner)) => serialize_value(inner),
+        Value::Option(Some(inner)) => serialize_value_at_depth(inner, depth + 1),
         Value::Result { ok, payload } => {
-            let payload_json = serialize_value(payload)?;
+            let payload_json = serialize_value_at_depth(payload, depth + 1)?;
             if *ok {
                 Ok(format!("{{\"ok\": true, \"value\": {}}}", payload_json))
             } else {
@@ -235,7 +258,10 @@ fn serialize_value(v: &Value) -> RResult<String> {
             }
         }
         Value::Tuple(items) => {
-            let parts: RResult<Vec<String>> = items.iter().map(serialize_value).collect();
+            let parts: RResult<Vec<String>> = items
+                .iter()
+                .map(|item| serialize_value_at_depth(item, depth + 1))
+                .collect();
             Ok(format!("[{}]", parts?.join(", ")))
         }
         other => Err(format!(
@@ -313,7 +339,7 @@ pub(crate) fn builtin_from_json(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            let v = parser.parse_value()?;
+            let v = parser.parse_value(1)?;
             parser.skip_ws();
             if parser.pos < parser.src.len() {
                 return Err(format!(
@@ -385,7 +411,10 @@ impl<'a> JsonParser<'a> {
         Ok(())
     }
 
-    fn parse_value(&mut self) -> RResult<Value> {
+    fn parse_value(&mut self, depth: usize) -> RResult<Value> {
+        if depth > MAX_JSON_NESTING_DEPTH {
+            return Err(json_depth_error("from_json"));
+        }
         self.skip_ws();
         match self.peek() {
             Some(b'n') => {
@@ -401,8 +430,8 @@ impl<'a> JsonParser<'a> {
                 Ok(Value::Bool(false))
             }
             Some(b'"') => self.parse_string().map(Value::String),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(depth),
+            Some(b'{') => self.parse_object(depth),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
             Some(b) => Err(format!(
                 "from_json: unexpected character '{}' at position {}",
@@ -559,7 +588,7 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn parse_array(&mut self) -> RResult<Value> {
+    fn parse_array(&mut self, depth: usize) -> RResult<Value> {
         self.expect_byte(b'[')?;
         // RES-1946: typical JSON arrays hold 1-10 items; pre-size to
         // 4 to skip the default 0→4 first grow. Empty arrays
@@ -571,7 +600,7 @@ impl<'a> JsonParser<'a> {
             return Ok(Value::Array(items));
         }
         loop {
-            items.push(self.parse_value()?);
+            items.push(self.parse_value(depth + 1)?);
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -592,7 +621,7 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn parse_object(&mut self) -> RResult<Value> {
+    fn parse_object(&mut self, depth: usize) -> RResult<Value> {
         self.expect_byte(b'{')?;
         // RES-1946: typical JSON objects hold 2-10 entries; pre-size
         // to 4 to skip the default 0-bucket → 4-bucket rehash. Empty
@@ -608,7 +637,7 @@ impl<'a> JsonParser<'a> {
             let key = self.parse_string()?;
             self.skip_ws();
             self.expect_byte(b':')?;
-            let val = self.parse_value()?;
+            let val = self.parse_value(depth + 1)?;
             map.insert(MapKey::Str(key), val);
             self.skip_ws();
             match self.peek() {
