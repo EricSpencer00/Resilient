@@ -49,26 +49,9 @@ pub fn collect() -> HashMap<String, LoopBoundSpec> {
 
 /// Walk the AST recursively to check if a node contains any while-loops.
 fn has_while_loop(node: &Node) -> bool {
-    match node {
-        Node::WhileStatement { .. } => true,
-        Node::Block { stmts, .. } => stmts.iter().any(has_while_loop),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            has_while_loop(consequence) || alternative.as_ref().is_some_and(|ab| has_while_loop(ab))
-        }
-        Node::ForInStatement { body, .. } => has_while_loop(body),
-        Node::ReturnStatement { value: Some(v), .. } => has_while_loop(v),
-        Node::LetStatement { value, .. } => has_while_loop(value),
-        Node::ExpressionStatement { expr, .. } => has_while_loop(expr),
-        Node::CallExpression { arguments, .. } => arguments.iter().any(has_while_loop),
-        Node::InfixExpression { left, right, .. } => has_while_loop(left) || has_while_loop(right),
-        Node::PrefixExpression { right, .. } => has_while_loop(right),
-        Node::ArrayLiteral { items, .. } => items.iter().any(has_while_loop),
-        _ => false,
-    }
+    crate::uniqueness_walk::any_node(node, |candidate| {
+        matches!(candidate, Node::WhileStatement { .. })
+    })
 }
 
 fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> String {
@@ -163,48 +146,34 @@ fn verify_while_loops_in_node(
     fn_name: &str,
     requires: &[Node],
 ) -> Result<(), String> {
-    match node {
-        Node::WhileStatement {
+    let mut first_error = None;
+    crate::uniqueness_walk::visit(node, &mut |candidate| {
+        if first_error.is_some() {
+            return;
+        }
+        if let Node::WhileStatement {
             condition,
             body,
             span,
             ..
-        } => verify_one_while_loop(
-            condition,
-            body,
-            declared_bound,
-            source_path,
-            fn_name,
-            *span,
-            requires,
-        ),
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                verify_while_loops_in_node(s, declared_bound, source_path, fn_name, requires)?;
-            }
-            Ok(())
-        }
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            verify_while_loops_in_node(
-                consequence,
+        } = candidate
+        {
+            if let Err(err) = verify_one_while_loop(
+                condition,
+                body,
                 declared_bound,
                 source_path,
                 fn_name,
+                *span,
                 requires,
-            )?;
-            if let Some(ab) = alternative {
-                verify_while_loops_in_node(ab, declared_bound, source_path, fn_name, requires)?;
+            ) {
+                first_error = Some(err);
             }
-            Ok(())
         }
-        Node::ForInStatement { body, .. } => {
-            verify_while_loops_in_node(body, declared_bound, source_path, fn_name, requires)
-        }
-        _ => Ok(()),
+    });
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
 }
 
@@ -635,6 +604,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn has_while_loop_nested_in_match_arm() {
+        let src = "fn f(int x) { match x { 0 => { while true { break; } }, _ => {} } }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        if let Node::Program(stmts) = &prog {
+            if let Some(stmt) = stmts.first() {
+                if let Node::Function { body, .. } = &stmt.node {
+                    assert!(has_while_loop(body));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn require_contracts_rejects_loop_in_try_handler() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: String::new(),
+                line: 1,
+            },
+        );
+        let src = "fn f() { try { println(1); } catch Timeout { while true { break; } } }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("try-handler loop must need a bound");
+        assert!(
+            err.contains("`f`") && err.contains("requires #[loop_bound(N)]"),
+            "expected missing loop_bound error, got: {err}"
+        );
+        crate::feature_attrs::reset();
     }
 
     #[test]
