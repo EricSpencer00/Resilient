@@ -985,7 +985,13 @@ fn inline_consts(node: &Node, resolved: &HashMap<String, Value>) -> Node {
         } => Node::Function {
             name: name.clone(),
             parameters: parameters.clone(),
-            defaults: defaults.clone(),
+            defaults: defaults
+                .iter()
+                .map(|d| {
+                    d.as_ref()
+                        .map(|value| Box::new(inline_consts(value, resolved)))
+                })
+                .collect(),
             body: Box::new(inline_consts(body, resolved)),
             requires: requires
                 .iter()
@@ -1182,6 +1188,286 @@ fn inline_consts(node: &Node, resolved: &HashMap<String, Value>) -> Node {
                     )
                 })
                 .collect(),
+            span: *span,
+        },
+        Node::LiveBlock {
+            body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            span,
+        } => Node::LiveBlock {
+            body: Box::new(inline_consts(body, resolved)),
+            invariants: invariants
+                .iter()
+                .map(|i| inline_consts(i, resolved))
+                .collect(),
+            backoff: *backoff,
+            backoff_kind: *backoff_kind,
+            timeout: timeout
+                .as_ref()
+                .map(|t| Box::new(inline_consts(t, resolved))),
+            max_retries: *max_retries,
+            span: *span,
+        },
+        Node::Assert {
+            condition,
+            message,
+            span,
+        } => Node::Assert {
+            condition: Box::new(inline_consts(condition, resolved)),
+            message: message
+                .as_ref()
+                .map(|m| Box::new(inline_consts(m, resolved))),
+            span: *span,
+        },
+        Node::Assume {
+            condition,
+            message,
+            span,
+        } => Node::Assume {
+            condition: Box::new(inline_consts(condition, resolved)),
+            message: message
+                .as_ref()
+                .map(|m| Box::new(inline_consts(m, resolved))),
+            span: *span,
+        },
+        Node::StaticLet { name, value, span } => Node::StaticLet {
+            name: name.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::BreakWith { value, span } => Node::BreakWith {
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::DeferStatement { expr, span } => Node::DeferStatement {
+            expr: Box::new(inline_consts(expr, resolved)),
+            span: *span,
+        },
+        Node::TryExpression { expr, span } => Node::TryExpression {
+            expr: Box::new(inline_consts(expr, resolved)),
+            span: *span,
+        },
+        Node::OptionalChain {
+            object,
+            access,
+            span,
+        } => Node::OptionalChain {
+            object: Box::new(inline_consts(object, resolved)),
+            access: match access {
+                ChainAccess::Field(field) => ChainAccess::Field(field.clone()),
+                ChainAccess::Method(method, arguments) => ChainAccess::Method(
+                    method.clone(),
+                    arguments
+                        .iter()
+                        .map(|a| inline_consts(a, resolved))
+                        .collect(),
+                ),
+            },
+            span: *span,
+        },
+        Node::FunctionLiteral {
+            parameters,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            return_type,
+            span,
+            explicit_effect,
+        } => Node::FunctionLiteral {
+            parameters: parameters.clone(),
+            body: Box::new(inline_consts(body, resolved)),
+            requires: requires
+                .iter()
+                .map(|r| inline_consts(r, resolved))
+                .collect(),
+            ensures: ensures.iter().map(|e| inline_consts(e, resolved)).collect(),
+            recovers_to: recovers_to
+                .as_ref()
+                .map(|r| Box::new(inline_consts(r, resolved))),
+            return_type: return_type.clone(),
+            span: *span,
+            explicit_effect: *explicit_effect,
+        },
+        Node::LetDestructureStruct {
+            struct_name,
+            fields,
+            has_rest,
+            value,
+            span,
+        } => Node::LetDestructureStruct {
+            struct_name: struct_name.clone(),
+            fields: fields.clone(),
+            has_rest: *has_rest,
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            span,
+        } => Node::FieldAssignment {
+            target: Box::new(inline_consts(target, resolved)),
+            field: field.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            span,
+        } => Node::Slice {
+            target: Box::new(inline_consts(target, resolved)),
+            lo: lo.as_ref().map(|l| Box::new(inline_consts(l, resolved))),
+            hi: hi.as_ref().map(|h| Box::new(inline_consts(h, resolved))),
+            inclusive: *inclusive,
+            span: *span,
+        },
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            span,
+        } => Node::IndexAssignment {
+            target: Box::new(inline_consts(target, resolved)),
+            index: Box::new(inline_consts(index, resolved)),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::MapLiteral { entries, span } => Node::MapLiteral {
+            entries: entries
+                .iter()
+                .map(|(key, value)| (inline_consts(key, resolved), inline_consts(value, resolved)))
+                .collect(),
+            span: *span,
+        },
+        Node::SetLiteral { items, span } => Node::SetLiteral {
+            items: items.iter().map(|i| inline_consts(i, resolved)).collect(),
+            span: *span,
+        },
+        Node::TryCatch {
+            span,
+            body,
+            handlers,
+        } => Node::TryCatch {
+            span: *span,
+            body: body.iter().map(|s| inline_consts(s, resolved)).collect(),
+            handlers: handlers
+                .iter()
+                .map(|(variant, statements)| {
+                    (
+                        variant.clone(),
+                        statements
+                            .iter()
+                            .map(|s| inline_consts(s, resolved))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        },
+        Node::Quantifier {
+            kind,
+            var,
+            range,
+            body,
+            span,
+        } => Node::Quantifier {
+            kind: *kind,
+            var: var.clone(),
+            range: match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    crate::quantifiers::QuantRange::Range {
+                        lo: Box::new(inline_consts(lo, resolved)),
+                        hi: Box::new(inline_consts(hi, resolved)),
+                    }
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    crate::quantifiers::QuantRange::Iterable(Box::new(inline_consts(
+                        iterable, resolved,
+                    )))
+                }
+            },
+            body: Box::new(inline_consts(body, resolved)),
+            span: *span,
+        },
+        Node::InvariantStatement { expr, span } => Node::InvariantStatement {
+            expr: Box::new(inline_consts(expr, resolved)),
+            span: *span,
+        },
+        Node::Range {
+            lo,
+            hi,
+            inclusive,
+            span,
+        } => Node::Range {
+            lo: Box::new(inline_consts(lo, resolved)),
+            hi: Box::new(inline_consts(hi, resolved)),
+            inclusive: *inclusive,
+            span: *span,
+        },
+        Node::NamedArg { name, value, span } => Node::NamedArg {
+            name: name.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::InterpolatedString { parts, span } => Node::InterpolatedString {
+            parts: parts
+                .iter()
+                .map(|part| match part {
+                    crate::string_interp::StringPart::Literal(text) => {
+                        crate::string_interp::StringPart::Literal(text.clone())
+                    }
+                    crate::string_interp::StringPart::Expr(expr) => {
+                        crate::string_interp::StringPart::Expr(Box::new(inline_consts(
+                            expr, resolved,
+                        )))
+                    }
+                })
+                .collect(),
+            span: *span,
+        },
+        Node::NewtypeConstruct {
+            type_name,
+            value,
+            span,
+        } => Node::NewtypeConstruct {
+            type_name: type_name.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::TupleIndex { tuple, index, span } => Node::TupleIndex {
+            tuple: Box::new(inline_consts(tuple, resolved)),
+            index: *index,
+            span: *span,
+        },
+        Node::LetTupleDestructure { names, value, span } => Node::LetTupleDestructure {
+            names: names.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::UnsafeBlock { body, span } => Node::UnsafeBlock {
+            body: Box::new(inline_consts(body, resolved)),
+            span: *span,
+        },
+        Node::StaticAssert {
+            condition,
+            message,
+            span,
+        } => Node::StaticAssert {
+            condition: Box::new(inline_consts(condition, resolved)),
+            message: message.clone(),
+            span: *span,
+        },
+        Node::BenchBlock { name, body, span } => Node::BenchBlock {
+            name: name.clone(),
+            body: Box::new(inline_consts(body, resolved)),
             span: *span,
         },
         other => other.clone(),
