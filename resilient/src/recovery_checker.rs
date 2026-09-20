@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn opaque_call_inside_match_arm_is_reported() {
-        let src = "extern { fn malloc(int n) -> int; }\nfn f(int x) -> int {\n    live { return match x { 0 => malloc(x), _ => x, }; }\n}\nf(5);\n";
+        let src = "extern \"libc.so.6\" { fn malloc(n: int) -> int; }\nfn f(int x) -> int {\n    live { return match x { 0 => malloc(x), _ => x, }; }\n}\nf(5);\n";
         let diagnostics = recovery_diagnostics(src);
         assert!(
             diagnostics
