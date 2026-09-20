@@ -10623,7 +10623,19 @@ impl TypeChecker {
                         idx_ty
                     ));
                 }
-                let _ = self.check_node(value)?;
+                let value_ty = self.check_node(value)?;
+                // RES-4474: an element-tracked array carries an invariant
+                // that must hold for writes as well as reads. Untyped
+                // arrays and `array<any>` intentionally remain permissive.
+                if let Type::TypedArray(element_ty) = &tgt_ty
+                    && !matches!(element_ty.as_ref(), Type::Any)
+                    && !self.type_satisfies(&value_ty, element_ty)
+                {
+                    return Err(format!(
+                        "cannot assign {} to indexed element of {} — expected {}",
+                        value_ty, tgt_ty, element_ty
+                    ));
+                }
                 Ok(Type::Void)
             }
 
