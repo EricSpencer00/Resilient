@@ -35,6 +35,7 @@ use crate::Pattern;
 
 /// Canonical indent width, in spaces.
 const INDENT: &str = "    ";
+const INITIAL_OUTPUT_CAPACITY: usize = 1024;
 
 /// RES-4032: some parser desugarings (array comprehensions RES-156,
 /// tuple-destructuring for-loops) synthesize hygienic binder names
@@ -115,7 +116,7 @@ pub struct Formatter {
 impl Formatter {
     pub fn new() -> Self {
         Self {
-            out: String::new(),
+            out: String::with_capacity(INITIAL_OUTPUT_CAPACITY),
             depth: 0,
             at_line_start: true,
         }
@@ -352,7 +353,13 @@ impl Formatter {
             } => {
                 self.write_args(format_args!("impl<{}", type_param));
                 if !bounds.is_empty() {
-                    self.write_args(format_args!(": {}", bounds.join(" + ")));
+                    self.write(": ");
+                    for (i, bound) in bounds.iter().enumerate() {
+                        if i > 0 {
+                            self.write(" + ");
+                        }
+                        self.write(bound);
+                    }
                 }
                 self.write_args(format_args!("> {} for {} {{", trait_name, type_param));
                 self.newline();
@@ -372,26 +379,18 @@ impl Formatter {
                 self.newline();
                 self.indent();
                 for sig in methods {
-                    let self_token = if sig.takes_self {
-                        if sig.param_arity > 1 {
-                            "self, "
-                        } else {
-                            "self"
-                        }
-                    } else {
-                        ""
-                    };
+                    let self_token = if sig.takes_self { "self" } else { "" };
                     let extras = sig
                         .param_arity
                         .saturating_sub(if sig.takes_self { 1 } else { 0 });
-                    let placeholders = (0..extras)
-                        .map(|i| format!("_{}", i))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.write_args(format_args!(
-                        "fn {}({}{});",
-                        sig.name, self_token, placeholders
-                    ));
+                    self.write_args(format_args!("fn {}({}", sig.name, self_token));
+                    for i in 0..extras {
+                        if i > 0 || sig.takes_self {
+                            self.write(", ");
+                        }
+                        self.write_args(format_args!("_{i}"));
+                    }
+                    self.write(");");
                     self.newline();
                 }
                 self.dedent();
@@ -636,18 +635,22 @@ impl Formatter {
                 ..
             } => {
                 self.write_args(format_args!("let {} {{ ", struct_name));
-                let mut parts: Vec<String> = Vec::new();
-                for (field, local) in fields {
+                for (i, (field, local)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
                     if field == local {
-                        parts.push(field.clone());
+                        self.write(field);
                     } else {
-                        parts.push(format!("{}: {}", field, local));
+                        self.write_args(format_args!("{}: {}", field, local));
                     }
                 }
                 if *has_rest {
-                    parts.push("..".to_string());
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
                 }
-                self.write(&parts.join(", "));
                 self.write(" } = ");
                 self.fmt_expr(value);
                 self.write(";");
@@ -1075,8 +1078,10 @@ impl Formatter {
             ..
         } = node
         {
-            let prefix = format!("{}$", struct_name);
-            let display_name = name.strip_prefix(&prefix).unwrap_or(name);
+            let display_name = name
+                .strip_prefix(struct_name)
+                .and_then(|rest| rest.strip_prefix('$'))
+                .unwrap_or(name);
             self.fmt_function(
                 Some(display_name),
                 parameters,
@@ -1146,11 +1151,11 @@ impl Formatter {
                 }
             }
             Node::StringLiteral { value, .. } => {
-                self.write_args(format_args!("\"{}\"", escape_string(value)));
+                self.write_quoted_string(value);
             }
             // RES-2612: format interned strings the same way as regular strings
             Node::StringInternLiteral { content, .. } => {
-                self.write_args(format_args!("\"{}\"", escape_string(content)));
+                self.write_quoted_string(content);
             }
             Node::BooleanLiteral { value, .. } => {
                 self.write(if *value { "true" } else { "false" });
@@ -1491,7 +1496,7 @@ impl Formatter {
                 for part in parts {
                     match part {
                         crate::string_interp::StringPart::Literal(s) => {
-                            self.write(&escape_string(s));
+                            self.write_escaped_string(s);
                         }
                         crate::string_interp::StringPart::Expr(expr) => {
                             self.write("{");
@@ -1726,21 +1731,24 @@ impl Formatter {
             }
         }
     }
-}
+    fn write_quoted_string(&mut self, s: &str) {
+        self.write("\"");
+        self.write_escaped_string(s);
+        self.write("\"");
+    }
 
-fn escape_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c => out.push(c),
+    fn write_escaped_string(&mut self, s: &str) {
+        for c in s.chars() {
+            match c {
+                '\\' => self.out.push_str("\\\\"),
+                '"' => self.out.push_str("\\\""),
+                '\n' => self.out.push_str("\\n"),
+                '\t' => self.out.push_str("\\t"),
+                '\r' => self.out.push_str("\\r"),
+                c => self.out.push(c),
+            }
         }
     }
-    out
 }
 
 // RES-199: property-based roundtrip tests. Gated behind the `proptest`
