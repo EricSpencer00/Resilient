@@ -219,6 +219,10 @@
     "resilient/src/array_chunking.rs": {
       "branch": "res-4709-array-chunk-target-boundary",
       "claimed_at": "2026-09-20T21:09:27Z"
+    },
+    "resilient/src/number_theory.rs": {
+      "branch": "res-4711-number-theory-overflow",
+      "claimed_at": "2026-09-20T21:19:07Z"
     }
   }
 }
