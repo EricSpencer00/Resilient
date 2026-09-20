@@ -23,14 +23,6 @@
     "resilient-runtime/src/heap.rs": {
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
-    },
-    "resilient/src/ffi_signatures.rs": {
-      "branch": "res-4230-ffi-buffer-types",
-      "claimed_at": "2026-09-20T02:41:48Z"
-    },
-    "resilient/src/linear_algebra.rs": {
-      "branch": "res-4230-ffi-buffer-types",
-      "claimed_at": "2026-09-20T02:41:48Z"
     }
   }
 }
