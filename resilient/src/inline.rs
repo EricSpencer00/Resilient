@@ -284,7 +284,6 @@ fn is_inline_safe_op(op: Op) -> bool {
             | Op::AssumeFail
             | Op::AssertBool
             | Op::MakeTuple { .. }
-            | Op::TryUnwrap
             | Op::Coalesce
             | Op::OptChainUnwrap
             | Op::IterPrepare
@@ -945,6 +944,25 @@ mod tests {
     }
 
     #[test]
+    fn function_with_try_unwrap_is_not_inlineable() {
+        let function = Function {
+            name: "unwrap".to_string(),
+            arity: 0,
+            local_count: 0,
+            upvalue_source_slots: Box::default(),
+            fails: Box::default(),
+            postcheck: None,
+            chunk: mk_chunk(
+                vec![Op::Const(0), Op::TryUnwrap, Op::ReturnFromCall],
+                vec![Value::Option(None)],
+                vec![1, 1, 1],
+            ),
+        };
+
+        assert!(!is_inlineable(&[function], 0));
+    }
+
+    #[test]
     fn frame_owned_and_side_table_ops_are_not_inlineable() {
         let disallowed = [
             Op::DeferPush(0),
@@ -1292,5 +1310,24 @@ mod tests {
             "with-inline: Call should be inlined away: {:?}",
             p_on.main.code
         );
+    }
+
+    #[test]
+    fn none_try_unwrap_propagates_without_halting_the_caller() {
+        let src = r#"
+            fn none_value() { return None; }
+            fn caller() { return none_value()?; }
+            caller();
+            println("later");
+        "#;
+        let (ast, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        let mut program = crate::compiler::compile(&ast).expect("compiles");
+        optimize(&mut program).expect("inline pass succeeds");
+
+        let (result, output) =
+            crate::output_sink::with_captured_output(|| crate::vm::run(&program));
+        assert!(result.is_ok(), "VM should continue after None: {result:?}");
+        assert_eq!(output, "later\n");
     }
 }
