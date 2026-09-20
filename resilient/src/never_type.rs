@@ -132,6 +132,9 @@ fn reject_nested_returns(node: &Node, fn_name: &str, source_path: &str, errors: 
                 reject_nested_returns(alt, fn_name, source_path, errors);
             }
         }
+        Node::ExpressionStatement { expr, .. } => {
+            reject_nested_returns(expr, fn_name, source_path, errors);
+        }
         Node::WhileStatement { body, .. }
         | Node::ForInStatement { body, .. }
         | Node::LiveBlock { body, .. }
