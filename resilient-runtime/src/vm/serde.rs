@@ -148,6 +148,9 @@ pub enum DecodeError {
     /// value for its type (e.g. a `Value` tag byte outside 0..=2,
     /// or a bool byte outside 0..=1).
     BadOperand,
+    /// The declared payload decoded successfully, but bytes remained
+    /// after its final instruction or table entry.
+    TrailingBytes(usize),
     /// RES-4077 (D-E1 fn-support): [`decode_program`]'s header
     /// declares more functions than the caller-provided
     /// `out_func_meta` slice can hold.
@@ -320,6 +323,14 @@ impl<'a> Reader<'a> {
                 slab_idx: self.read_u16()?,
             }),
             _ => Err(DecodeError::BadOperand),
+        }
+    }
+
+    fn finish(&self) -> Result<(), DecodeError> {
+        if self.pos == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(DecodeError::TrailingBytes(self.bytes.len() - self.pos))
         }
     }
 }
@@ -519,6 +530,7 @@ pub fn decode(bytes: &[u8], out: &mut [Instr]) -> Result<usize, DecodeError> {
         *slot = read_instr(&mut r)?;
     }
 
+    r.finish()?;
     Ok(instr_count)
 }
 
@@ -846,6 +858,7 @@ pub fn decode_program(
         validate_code_references(code, func_count, &out_try_handlers[..try_count])?;
     }
 
+    r.finish()?;
     Ok(ProgramCounts {
         main_len: main_count,
         func_count,
@@ -1209,6 +1222,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decode_rejects_trailing_bytes_after_flat_program() {
+        let program = [Instr::Return];
+        let mut buf = [0u8; 64];
+        let len = encode(&program, &mut buf).unwrap();
+        buf[len] = 0xA5;
+        let mut out = [Instr::Return; 4];
+
+        assert_eq!(
+            decode(&buf[..=len], &mut out),
+            Err(DecodeError::TrailingBytes(1))
+        );
+    }
+
     // ---------- fuzz-style: never panic on arbitrary/mutated bytes ----------
 
     /// Deterministic xorshift32 PRNG — avoids pulling in a `rand`
@@ -1324,6 +1351,37 @@ mod tests {
         assert_eq!(counts.main_len, main.len());
         assert_eq!(counts.func_count, 0);
         assert_eq!(&out_main[..counts.main_len], &main[..]);
+    }
+
+    #[test]
+    fn program_decode_rejects_trailing_bytes_after_function_table() {
+        let mut buf = [0u8; 128];
+        let len = encode_program(&[], &[], &[], &mut buf).expect("encode_program should fit");
+        buf[len] = 0x5A;
+
+        let mut out_main = [Instr::Return; 4];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }; 2];
+        let mut out_func_code = [Instr::Return; 8];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
+
+        assert_eq!(
+            decode_program(
+                &buf[..=len],
+                &mut out_main,
+                &mut out_func_meta,
+                &mut out_func_code,
+                &mut out_try_handlers,
+            ),
+            Err(DecodeError::TrailingBytes(1))
+        );
     }
 
     #[test]
