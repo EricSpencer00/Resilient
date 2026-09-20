@@ -75,6 +75,14 @@
     "resilient/tests/rounding_i64_boundary.rs": {
       "branch": "res-4581-rounding-i64-boundary",
       "claimed_at": "2026-09-20T14:45:19Z"
+    },
+    "resilient/src/unsafe_check.rs": {
+      "branch": "res-4587-unsafe-capability-boundaries",
+      "claimed_at": "2026-09-20T14:55:48Z"
+    },
+    "resilient/tests/unsafe_capability_boundaries.rs": {
+      "branch": "res-4587-unsafe-capability-boundaries",
+      "claimed_at": "2026-09-20T14:55:48Z"
     }
   }
 }
