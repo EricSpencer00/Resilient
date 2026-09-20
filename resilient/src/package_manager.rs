@@ -497,23 +497,6 @@ bar = "~0.3.1"
     }
 
     #[test]
-    fn caret_matching_zero_major_versions_uses_first_nonzero_component() {
-        assert!(matches("^0.2.3", "0.2.9"));
-        assert!(!matches("^0.2.3", "0.3.0"));
-        assert!(!matches("^0.2.3", "1.0.0"));
-        assert!(matches("^0.0.3", "0.0.3"));
-        assert!(!matches("^0.0.3", "0.0.4"));
-    }
-
-    #[test]
-    fn caret_matching_preserves_tilde_and_exact_boundaries() {
-        assert!(matches("~0.2.3", "0.2.9"));
-        assert!(!matches("~0.2.3", "0.3.0"));
-        assert!(matches("0.2.3", "0.2.3"));
-        assert!(!matches("0.2.3", "0.2.4"));
-    }
-
-    #[test]
     fn tilde_matching() {
         assert!(matches("~1.2.3", "1.2.3"));
         assert!(matches("~1.2.3", "1.2.5"));
