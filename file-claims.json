@@ -283,6 +283,14 @@
     "resilient/src/diag.rs": {
       "branch": "res-4770-diagnostic-column-guard",
       "claimed_at": "2026-09-20T23:08:21Z"
+    },
+    "resilient/src/contract_certificate.rs": {
+      "branch": "res-4774-cert-schema",
+      "claimed_at": "2026-09-20T23:15:24Z"
+    },
+    "resilient/tests/contract_schema_identity.rs": {
+      "branch": "res-4774-cert-schema",
+      "claimed_at": "2026-09-20T23:15:24Z"
     }
   }
 }
