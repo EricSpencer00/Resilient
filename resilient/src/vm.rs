@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use crate::Value;
-use crate::bytecode::{Chunk, Op, Program};
+use crate::bytecode::{Chunk, LiveHandlerEntry, Op, Program, TryHandlerEntry};
 
 /// Errors the VM can surface at runtime. Like `CompileError`, the
 /// `&'static str` payloads describe the offending op without
@@ -27,6 +27,16 @@ pub enum VmError {
     ConstantOutOfBounds(u16),
     /// RES-081: `Op::Call(idx)` with `idx` outside `program.functions`.
     FunctionOutOfBounds(u16),
+    /// A saved VM frame referred to a function that no longer exists in the
+    /// program's function table. This is a malformed bytecode/program error,
+    /// not a recoverable user-level call failure.
+    FrameFunctionOutOfBounds(usize),
+    /// A try/live opcode or saved handler frame referred to a missing side
+    /// table entry.
+    HandlerTableOutOfBounds {
+        kind: &'static str,
+        index: u16,
+    },
     /// RES-081: `ReturnFromCall` with no caller — either the program
     /// emitted it at the top level, or a fn-body underflow.
     CallStackUnderflow,
@@ -125,6 +135,12 @@ impl std::fmt::Display for VmError {
             VmError::LocalOutOfBounds(i) => write!(f, "vm: local {} out of bounds", i),
             VmError::ConstantOutOfBounds(i) => write!(f, "vm: constant {} out of bounds", i),
             VmError::FunctionOutOfBounds(i) => write!(f, "vm: function {} out of bounds", i),
+            VmError::FrameFunctionOutOfBounds(i) => {
+                write!(f, "vm: frame function {} out of bounds", i)
+            }
+            VmError::HandlerTableOutOfBounds { kind, index } => {
+                write!(f, "vm: {} handler {} out of bounds", kind, index)
+            }
             VmError::CallStackUnderflow => write!(f, "vm: call stack underflow"),
             VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
             VmError::JumpOutOfBounds => write!(f, "vm: jump target out of bounds"),
@@ -842,6 +858,37 @@ fn run_inner(
 /// are shared by `&mut` reference with the caller so a retry can see
 /// (and roll back) whatever the failed attempt mutated.
 #[allow(clippy::too_many_arguments)]
+fn chunk_for_frame<'a>(program: &'a Program, chunk_idx: usize) -> Result<&'a Chunk, VmError> {
+    if chunk_idx == usize::MAX {
+        Ok(&program.main)
+    } else {
+        program
+            .functions
+            .get(chunk_idx)
+            .map(|function| &function.chunk)
+            .ok_or(VmError::FrameFunctionOutOfBounds(chunk_idx))
+    }
+}
+
+#[inline]
+fn try_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a TryHandlerEntry, VmError> {
+    chunk
+        .try_handlers
+        .get(index as usize)
+        .ok_or(VmError::HandlerTableOutOfBounds { kind: "try", index })
+}
+
+#[inline]
+fn live_handler_for<'a>(chunk: &'a Chunk, index: u16) -> Result<&'a LiveHandlerEntry, VmError> {
+    chunk
+        .live_handlers
+        .get(index as usize)
+        .ok_or(VmError::HandlerTableOutOfBounds {
+            kind: "live",
+            index,
+        })
+}
+
 fn run_dispatch_loop(
     program: &Program,
     stack: &mut Vec<Value>,
@@ -868,11 +915,7 @@ fn run_dispatch_loop(
         let frame_idx = frames.len() - 1;
         let (chunk, pc) = {
             let f = &frames[frame_idx];
-            let chunk: &Chunk = if f.chunk_idx == usize::MAX {
-                &program.main
-            } else {
-                &program.functions[f.chunk_idx].chunk
-            };
+            let chunk = chunk_for_frame(program, f.chunk_idx)?;
             (chunk, f.pc)
         };
         // RES-091: snapshot which (chunk, pc) is about to be
@@ -1135,13 +1178,8 @@ fn run_dispatch_loop(
                     }
                     let mut dispatched = false;
                     while let Some(try_frame) = try_stack.pop() {
-                        let handler_chunk = if try_frame.chunk_idx == usize::MAX {
-                            &program.main
-                        } else {
-                            &program.functions[try_frame.chunk_idx].chunk
-                        };
-                        let entry =
-                            &handler_chunk.try_handlers[try_frame.handler_table_idx as usize];
+                        let handler_chunk = chunk_for_frame(program, try_frame.chunk_idx)?;
+                        let entry = try_handler_for(handler_chunk, try_frame.handler_table_idx)?;
                         if let Some(arm) = entry.arms.iter().find(|a| a.variant == *variant) {
                             while frames.len() > try_frame.call_depth {
                                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
@@ -1256,21 +1294,25 @@ fn run_dispatch_loop(
                 // before the call's environment is torn down. A
                 // violation aborts the whole VM run, exactly like the
                 // interpreter's `Contract violation in fn ...` error.
-                if popped.chunk_idx != usize::MAX
-                    && let Some(postcheck_idx) = program.functions[popped.chunk_idx].postcheck
-                {
-                    let arity = program.functions[popped.chunk_idx].arity as usize;
-                    let mut args = Vec::with_capacity(arity + 1);
-                    for i in 0..arity {
-                        args.push(
-                            locals
-                                .get(popped.locals_base + i)
-                                .cloned()
-                                .unwrap_or(Value::Void),
-                        );
+                if popped.chunk_idx != usize::MAX {
+                    let function = program
+                        .functions
+                        .get(popped.chunk_idx)
+                        .ok_or(VmError::FrameFunctionOutOfBounds(popped.chunk_idx))?;
+                    if let Some(postcheck_idx) = function.postcheck {
+                        let arity = function.arity as usize;
+                        let mut args = Vec::with_capacity(arity + 1);
+                        for i in 0..arity {
+                            args.push(
+                                locals
+                                    .get(popped.locals_base + i)
+                                    .cloned()
+                                    .unwrap_or(Value::Void),
+                            );
+                        }
+                        args.push(ret.clone());
+                        run_postcheck(program, postcheck_idx, args, overflow_mode)?;
                     }
-                    args.push(ret.clone());
-                    run_postcheck(program, postcheck_idx, args, overflow_mode)?;
                 }
                 if frames.is_empty() {
                     return Ok(LoopOutcome::Halted(ret));
@@ -1492,8 +1534,9 @@ fn run_dispatch_loop(
                 let src = program
                     .functions
                     .get(fn_idx as usize)
-                    .map(|f| f.upvalue_source_slots.clone())
-                    .unwrap_or_default();
+                    .ok_or(VmError::FunctionOutOfBounds(fn_idx))?
+                    .upvalue_source_slots
+                    .clone();
                 stack.push(Value::Closure {
                     fn_idx,
                     upvalues: captured,
@@ -1591,7 +1634,11 @@ fn run_dispatch_loop(
                 method_const,
                 arity,
             } => {
-                let method = match &chunk.constants[method_const as usize] {
+                let method = match chunk
+                    .constants
+                    .get(method_const as usize)
+                    .ok_or(VmError::ConstantOutOfBounds(method_const))?
+                {
                     Value::String(s) => s.clone(),
                     _ => {
                         return Err(VmError::TypeMismatch(
@@ -1801,7 +1848,7 @@ fn run_dispatch_loop(
                     // comment — reconstructs the call stack from
                     // `frames` itself rather than a dedicated tracking
                     // vec (the tree-walker's `Interpreter::call_stack`).
-                    Value::Array(vm_stacktrace_builtin(frames, program, source_path))
+                    Value::Array(vm_stacktrace_builtin(frames, program, source_path)?)
                 } else if let Some(func) = crate::lookup_builtin(name) {
                     func(&args).map_err(VmError::BuiltinCallFailed)?
                 } else if let Some(stdlib_result) =
@@ -2032,7 +2079,7 @@ fn run_dispatch_loop(
             // is caught with plain Rust `Result` semantics, exactly
             // like the tree-walker's `eval_live_block`.
             Op::EnterLive(idx) => {
-                let entry = chunk.live_handlers[idx as usize];
+                let entry = *live_handler_for(chunk, idx)?;
                 let locals_base = frames[frame_idx].locals_base;
                 let locals_snapshot: Vec<Value> = locals[locals_base..].to_vec();
                 let stack_depth = stack.len();
@@ -2569,20 +2616,25 @@ fn vm_operator_overload_fn_idx(
 /// (`chunk_idx == usize::MAX`) and is never itself listed (it has no
 /// call site), matching the tree-walker never emitting a frame for
 /// top-level code.
-fn vm_stacktrace_builtin(frames: &[CallFrame], program: &Program, source_path: &str) -> Vec<Value> {
+fn vm_stacktrace_builtin(
+    frames: &[CallFrame],
+    program: &Program,
+    source_path: &str,
+) -> Result<Vec<Value>, VmError> {
     let mut trace_frames = Vec::with_capacity(frames.len().saturating_sub(1));
     for i in 1..frames.len() {
         let chunk_idx = frames[i].chunk_idx;
         if chunk_idx == usize::MAX {
             continue;
         }
-        let fn_name = program.functions[chunk_idx].name.clone();
+        let fn_name = program
+            .functions
+            .get(chunk_idx)
+            .ok_or(VmError::FrameFunctionOutOfBounds(chunk_idx))?
+            .name
+            .clone();
         let caller = &frames[i - 1];
-        let caller_chunk: &Chunk = if caller.chunk_idx == usize::MAX {
-            &program.main
-        } else {
-            &program.functions[caller.chunk_idx].chunk
-        };
+        let caller_chunk = chunk_for_frame(program, caller.chunk_idx)?;
         let call_pc = caller.pc.saturating_sub(1);
         let line = caller_chunk.line_info.get(call_pc).copied().unwrap_or(0) as usize;
         let column = caller_chunk.call_cols.get(&call_pc).copied().unwrap_or(0) as usize;
@@ -2591,10 +2643,12 @@ fn vm_stacktrace_builtin(frames: &[CallFrame], program: &Program, source_path: &
             call_span: crate::span::Span::point(crate::span::Pos::new(line, column, 0)),
         });
     }
-    crate::error_stack_traces::builtin_stacktrace(&trace_frames, source_path)
-        .into_iter()
-        .map(Value::String)
-        .collect()
+    Ok(
+        crate::error_stack_traces::builtin_stacktrace(&trace_frames, source_path)
+            .into_iter()
+            .map(Value::String)
+            .collect(),
+    )
 }
 
 /// RES-3994: `to_string(x)` free-function dispatch to a struct's
@@ -3540,13 +3594,9 @@ impl<'p> VmState<'p> {
     /// Inlined into every handler that touches the constant pool or the
     /// instruction stream.
     #[inline(always)]
-    fn current_chunk(&self) -> &'p Chunk {
+    fn current_chunk(&self) -> Result<&'p Chunk, VmError> {
         let f = &self.frames[self.frames.len() - 1];
-        if f.chunk_idx == usize::MAX {
-            &self.program.main
-        } else {
-            &self.program.functions[f.chunk_idx].chunk
-        }
+        chunk_for_frame(self.program, f.chunk_idx)
     }
 
     #[inline(always)]
@@ -3788,7 +3838,14 @@ fn h_defer_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmErro
 /// would print correct output on the happy path but corrupt retry
 /// counters / skip the retry loop on the failure path).
 #[inline(never)]
-fn h_live_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+fn h_live_unsupported(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    if let Op::EnterLive(index) = op {
+        // Validate the side-table reference before reporting the direct
+        // engine feature gap. Malformed bytecode must not become an
+        // unchecked slice access on this dispatch path.
+        let chunk = state.current_chunk()?;
+        live_handler_for(chunk, index)?;
+    }
     Err(VmError::Unsupported(
         "live block (RESILIENT_DISPATCH=direct doesn't implement RES-3995 retry semantics yet)",
     ))
@@ -3928,7 +3985,7 @@ fn run_direct(
 
     loop {
         let frame_idx = state.frame_idx();
-        let chunk = state.current_chunk();
+        let chunk = state.current_chunk()?;
         let pc = state.frames[frame_idx].pc;
         *last_pc = (state.frames[frame_idx].chunk_idx, pc + 1);
 
@@ -3954,12 +4011,8 @@ fn run_direct(
             Step::CatchDispatch(variant) => {
                 let mut dispatched = false;
                 while let Some(try_frame) = state.try_stack.pop() {
-                    let handler_chunk = if try_frame.chunk_idx == usize::MAX {
-                        &state.program.main
-                    } else {
-                        &state.program.functions[try_frame.chunk_idx].chunk
-                    };
-                    let entry = &handler_chunk.try_handlers[try_frame.handler_table_idx as usize];
+                    let handler_chunk = chunk_for_frame(state.program, try_frame.chunk_idx)?;
+                    let entry = try_handler_for(handler_chunk, try_frame.handler_table_idx)?;
                     if let Some(arm) = entry.arms.iter().find(|a| a.variant == variant) {
                         while state.frames.len() > try_frame.call_depth {
                             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
@@ -4002,7 +4055,7 @@ fn h_unreachable(_state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_const(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::Const(idx) = op else { unreachable!() };
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     let v = chunk
         .constants
         .get(idx as usize)
@@ -4311,7 +4364,11 @@ fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError>
     // check. `--vm`'s default Match engine (`run_inner`) always runs
     // it; this only matters under `RESILIENT_DISPATCH=direct`.
     if popped.chunk_idx != usize::MAX
-        && state.program.functions[popped.chunk_idx]
+        && state
+            .program
+            .functions
+            .get(popped.chunk_idx)
+            .ok_or(VmError::FrameFunctionOutOfBounds(popped.chunk_idx))?
             .postcheck
             .is_some()
     {
@@ -4333,7 +4390,7 @@ fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError>
 fn h_jump(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::Jump(offset) = op else { unreachable!() };
     let frame_idx = state.frame_idx();
-    let chunk_len = state.current_chunk().code.len();
+    let chunk_len = state.current_chunk()?.code.len();
     let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
     if new_pc < 0 || (new_pc as usize) > chunk_len {
         return Err(VmError::JumpOutOfBounds);
@@ -4357,7 +4414,7 @@ fn h_jump_if_false(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     };
     if is_falsy {
         let frame_idx = state.frame_idx();
-        let chunk_len = state.current_chunk().code.len();
+        let chunk_len = state.current_chunk()?.code.len();
         let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
         if new_pc < 0 || (new_pc as usize) > chunk_len {
             return Err(VmError::JumpOutOfBounds);
@@ -4382,7 +4439,7 @@ fn h_jump_if_true(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     };
     if is_truthy {
         let frame_idx = state.frame_idx();
-        let chunk_len = state.current_chunk().code.len();
+        let chunk_len = state.current_chunk()?.code.len();
         let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
         if new_pc < 0 || (new_pc as usize) > chunk_len {
             return Err(VmError::JumpOutOfBounds);
@@ -4530,8 +4587,9 @@ fn h_make_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .program
         .functions
         .get(fn_idx as usize)
-        .map(|f| f.upvalue_source_slots.clone())
-        .unwrap_or_default();
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?
+        .upvalue_source_slots
+        .clone();
     state.stack.push(Value::Closure {
         fn_idx,
         upvalues: captured,
@@ -4836,7 +4894,7 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     // chunk's constant pool — same justification as the match-dispatch
     // arm in `run_inner`. Saves a `String::clone` per builtin
     // dispatch in the direct-threaded VM path.
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     let name_val = chunk
         .constants
         .get(name_const as usize)
@@ -4891,7 +4949,7 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             &state.frames,
             state.program,
             state.source_path,
-        ))
+        )?)
     } else if let Some(func) = crate::lookup_builtin(name) {
         func(&args).map_err(VmError::BuiltinCallFailed)?
     } else if let Some(stdlib_result) = crate::stdlib::call_by_qualified_name(name, &args) {
@@ -4912,7 +4970,7 @@ fn h_struct_literal(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     else {
         unreachable!()
     };
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     let name = constant_as_string(chunk, name_const, "StructLiteral (type name)")?;
     let n = field_count as usize;
     let needed = n.checked_mul(2).ok_or(VmError::EmptyStack)?;
@@ -4943,7 +5001,7 @@ fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     // RES-1433: borrow the field name from the constant pool. Same
     // justification as the match-dispatch GetField arm above —
     // owned String was only used in the (rare) UnknownField error.
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     let field = constant_as_str(chunk, name_const, "GetField (field name)")?;
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let val = vm_get_field_value(v, field)?;
@@ -5008,7 +5066,7 @@ fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     };
     // RES-1433: borrow the field name from the constant pool. Same
     // justification as the GetField handler above.
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     let field = constant_as_str(chunk, name_const, "SetField (field name)")?;
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let tgt = state.stack.pop().ok_or(VmError::EmptyStack)?;
@@ -5103,7 +5161,7 @@ fn h_contract_violation(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError
         unreachable!()
     };
     let result = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let chunk = state.current_chunk();
+    let chunk = state.current_chunk()?;
     Err(VmError::ContractViolation(format_contract_violation(
         chunk,
         name_const,
@@ -5398,8 +5456,12 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     else {
         unreachable!()
     };
-    let chunk = state.current_chunk();
-    let method = match &chunk.constants[method_const as usize] {
+    let chunk = state.current_chunk()?;
+    let method = match chunk
+        .constants
+        .get(method_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(method_const))?
+    {
         Value::String(s) => s.clone(),
         _ => {
             return Err(VmError::TypeMismatch(
@@ -5545,6 +5607,114 @@ mod tests {
             Value::Int(v) => assert_eq!(v, expected, "expected Int({}), got Int({})", expected, v),
             other => panic!("expected Int({}), got {:?}", expected, other),
         }
+    }
+
+    fn assert_both_dispatches_error(program: &Program, expected: &VmError) {
+        for dispatch in [Dispatch::Match, Dispatch::Direct] {
+            let err = run_with(program, OverflowMode::Wrap, dispatch).unwrap_err();
+            assert_eq!(err.kind(), expected, "dispatch {:?}", dispatch);
+        }
+    }
+
+    #[test]
+    fn res4482_rejects_invalid_call_method_constant_in_both_dispatchers() {
+        let p = const_program(
+            &[],
+            &[
+                Op::CallMethod {
+                    method_const: 7,
+                    arity: 0,
+                },
+                Op::Return,
+            ],
+        );
+        assert_both_dispatches_error(&p, &VmError::ConstantOutOfBounds(7));
+    }
+
+    #[test]
+    fn res4482_rejects_invalid_closure_function_in_both_dispatchers() {
+        let p = const_program(
+            &[],
+            &[
+                Op::MakeClosure {
+                    fn_idx: 7,
+                    upvalue_count: 0,
+                },
+                Op::Return,
+            ],
+        );
+        assert_both_dispatches_error(&p, &VmError::FunctionOutOfBounds(7));
+    }
+
+    #[test]
+    fn res4482_rejects_invalid_live_handler_in_both_dispatchers() {
+        let p = const_program(&[], &[Op::EnterLive(3), Op::Return]);
+        assert_both_dispatches_error(
+            &p,
+            &VmError::HandlerTableOutOfBounds {
+                kind: "live",
+                index: 3,
+            },
+        );
+    }
+
+    #[test]
+    fn res4482_rejects_invalid_try_handler_in_both_dispatchers() {
+        use crate::bytecode::Function;
+        let mut main = Chunk::new();
+        main.code.extend([Op::EnterTry(2), Op::Call(0), Op::Return]);
+        main.line_info.extend([1, 1, 1]);
+        let mut body = Chunk::new();
+        body.code.push(Op::ReturnFromCall);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "fails_now".into(),
+                arity: 0,
+                chunk: body,
+                local_count: 0,
+                upvalue_source_slots: Box::default(),
+                fails: vec!["boom".into()].into_boxed_slice(),
+                postcheck: None,
+            }],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        assert_both_dispatches_error(
+            &p,
+            &VmError::HandlerTableOutOfBounds {
+                kind: "try",
+                index: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn res4482_rejects_invalid_frame_function_in_stacktrace_metadata() {
+        let p = Program::default();
+        let frames = vec![
+            CallFrame {
+                chunk_idx: usize::MAX,
+                pc: 0,
+                locals_base: 0,
+                upvalues: Box::default(),
+                closure_home: None,
+                source_slots: Box::default(),
+                defers: Vec::new(),
+            },
+            CallFrame {
+                chunk_idx: 4,
+                pc: 0,
+                locals_base: 0,
+                upvalues: Box::default(),
+                closure_home: None,
+                source_slots: Box::default(),
+                defers: Vec::new(),
+            },
+        ];
+        let err = vm_stacktrace_builtin(&frames, &p, "").unwrap_err();
+        assert_eq!(err, VmError::FrameFunctionOutOfBounds(4));
     }
 
     #[test]
