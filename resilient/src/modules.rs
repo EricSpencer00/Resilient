@@ -93,13 +93,12 @@ pub(crate) fn expand_inline_globs(program: &mut Node) -> Result<(), String> {
         return Ok(());
     };
 
-    let inline_modules: HashMap<String, Vec<Node>> = stmts
-        .iter()
-        .filter_map(|stmt| match &stmt.node {
-            Node::ModuleDecl { name, body, .. } => Some((name.clone(), body.clone())),
-            _ => None,
-        })
-        .collect();
+    let mut inline_modules = HashMap::new();
+    for stmt in stmts.iter() {
+        if let Node::ModuleDecl { name, body, .. } = &stmt.node {
+            collect_inline_modules(name, body, &mut inline_modules);
+        }
+    }
 
     if !stmts
         .iter()
@@ -165,6 +164,25 @@ pub(crate) fn expand_inline_globs(program: &mut Node) -> Result<(), String> {
 
     *stmts = expanded;
     Ok(())
+}
+
+fn collect_inline_modules(
+    module_name: &str,
+    body: &[Node],
+    modules: &mut HashMap<String, Vec<Node>>,
+) {
+    modules.insert(module_name.to_string(), body.to_vec());
+    for item in body {
+        if let Node::ModuleDecl {
+            name: nested_name,
+            body: nested_body,
+            ..
+        } = item
+        {
+            let nested_path = format!("{module_name}::{nested_name}");
+            collect_inline_modules(&nested_path, nested_body, modules);
+        }
+    }
 }
 
 fn glob_export_name(node: &Node) -> Option<&str> {
@@ -263,6 +281,106 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use crate::parse;
+
+    #[test]
+    fn nested_inline_module_glob_expands_public_items() {
+        let src = r#"
+mod outer {
+    mod inner {
+        pub fn greet() -> int { return 7; }
+        fn hidden() -> int { return 9; }
+    }
+}
+use outer::inner::*;
+"#;
+        let (mut program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        super::expand_inline_globs(&mut program).expect("nested glob should resolve");
+
+        let crate::Node::Program(stmts) = program else {
+            panic!("expected Program");
+        };
+        assert!(stmts.iter().any(|stmt| {
+            matches!(&stmt.node, crate::Node::Function { name, .. } if name == "greet")
+        }));
+        assert!(!stmts.iter().any(|stmt| {
+            matches!(&stmt.node, crate::Node::Function { name, .. } if name == "hidden")
+        }));
+        assert!(
+            !stmts
+                .iter()
+                .any(|stmt| matches!(&stmt.node, crate::Node::Use { .. }))
+        );
+    }
+
+    #[test]
+    fn nested_inline_module_glob_is_callable_after_expansion() {
+        let src = r#"
+mod outer {
+    mod inner {
+        pub fn greet() -> int { return 7; }
+    }
+}
+use outer::inner::*;
+greet();
+"#;
+        let (mut program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        super::expand_inline_globs(&mut program).expect("nested glob should resolve");
+
+        let mut interp = crate::Interpreter::new();
+        let result = interp
+            .eval(&program)
+            .expect("expanded nested glob should execute");
+        assert!(matches!(result, crate::Value::Int(7)));
+    }
+
+    #[test]
+    fn deeply_nested_inline_module_glob_expands_public_items() {
+        let src = r#"
+mod outer {
+    mod middle {
+        mod inner {
+            pub fn value() -> int { return 11; }
+        }
+    }
+}
+use outer::middle::inner::*;
+"#;
+        let (mut program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        super::expand_inline_globs(&mut program).expect("deep nested glob should resolve");
+
+        let crate::Node::Program(stmts) = program else {
+            panic!("expected Program");
+        };
+        assert!(stmts.iter().any(|stmt| {
+            matches!(&stmt.node, crate::Node::Function { name, .. } if name == "value")
+        }));
+    }
+
+    #[test]
+    fn nested_inline_module_globs_reject_ambiguous_exports() {
+        let src = r#"
+mod outer {
+    mod left {
+        pub fn greet() -> int { return 1; }
+    }
+    mod right {
+        pub fn greet() -> int { return 2; }
+    }
+}
+use outer::left::*;
+use outer::right::*;
+"#;
+        let (mut program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let error = super::expand_inline_globs(&mut program)
+            .expect_err("nested glob name collisions must be rejected");
+        assert!(error.contains("ambiguous"), "unexpected error: {error}");
+        assert!(error.contains("greet"), "unexpected error: {error}");
+        assert!(error.contains("outer::right"), "unexpected error: {error}");
+    }
 
     #[test]
     fn check_always_returns_ok_no_modules() {
