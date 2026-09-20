@@ -19,6 +19,10 @@
     "resilient/src/generic_enums.rs": {
       "branch": "res-4451-generic-enum-bindings",
       "claimed_at": "2026-09-19T23:14:15Z"
+    },
+    "resilient/src/traits.rs": {
+      "branch": "res-4460-trait-method-signatures",
+      "claimed_at": "2026-09-20T00:10:31Z"
     }
   }
 }
