@@ -159,6 +159,10 @@
     "resilient/src/refinement_types.rs": {
       "branch": "res-4663-refinement-constant-proof",
       "claimed_at": "2026-09-20T18:24:20Z"
+    },
+    "resilient/src/loop_bound.rs": {
+      "branch": "res-4664-loop-bound-structured",
+      "claimed_at": "2026-09-20T18:30:20Z"
     }
   }
 }
