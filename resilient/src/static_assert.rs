@@ -400,4 +400,32 @@ mod tests {
             result.errors
         );
     }
+
+    #[test]
+    fn static_assert_interpreter_path_uses_overflow_mode() {
+        let src = r#"
+            static_assert(
+                9223372036854775807 + 1 ==
+                    (0 - 9223372036854775807 - 1),
+                "signed addition wraps to the minimum integer"
+            );
+        "#;
+        let (program, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+        let crate::Node::Program(statements) = program else {
+            panic!("expected a program");
+        };
+        let consts = std::rc::Rc::new(std::collections::HashMap::new());
+
+        assert!(
+            super::check_with_consts(&statements, &consts, crate::vm::OverflowMode::Wrap).is_ok(),
+            "wrap mode should satisfy the static assertion"
+        );
+        let err = super::check_with_consts(&statements, &consts, crate::vm::OverflowMode::Saturate)
+            .expect_err("saturate mode should reject the wrap-specific assertion");
+        assert!(
+            err.contains("static assertion failed"),
+            "unexpected error: {err}"
+        );
+    }
 }
