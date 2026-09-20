@@ -4,10 +4,6 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "resilient-runtime/src/heap.rs": {
-      "branch": "res-4466-heap-counters",
-      "claimed_at": "2026-09-20T00:49:40Z"
-    },
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
