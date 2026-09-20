@@ -4571,11 +4571,11 @@ fn lower_expr(
                         bcx.seal_block(else_bb);
                     }
                     _ => {
-                        let v = lower_expr(body, bcx, ctx, module)?;
-                        bcx.ins().jump(merge_block, &[v]);
-                        bcx.switch_to_block(merge_block);
-                        bcx.seal_block(merge_block);
-                        return Ok(bcx.block_params(merge_block)[0]);
+                        // A pattern that is not lowered above must never
+                        // become an unconditional arm. Returning a
+                        // pre-execution error activates the documented VM
+                        // fallback and preserves match semantics.
+                        return Err(JitError::Unsupported("match pattern unsupported by JIT"));
                     }
                 }
             }
@@ -5372,6 +5372,24 @@ mod tests {
             JitError::Unsupported(msg) => assert!(
                 msg.contains("arity"),
                 "expected arity descriptor, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn jit_match_or_pattern_fails_closed_for_vm_fallback() {
+        let p = parse_program(
+            "fn classify(int x) { \
+                return match x { 1 | 2 => 10, _ => 20, }; \
+            } \
+            return classify(3);",
+        );
+        match run(&p).unwrap_err() {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("match pattern"),
+                "expected match-pattern fallback, got: {}",
                 msg
             ),
             other => panic!("expected Unsupported, got {:?}", other),
