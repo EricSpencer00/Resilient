@@ -416,6 +416,22 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         }
     }
 
+    // RES-2544: remap try-handler PCs through the same map. Branch folding
+    // can remove instructions before a catch body just like reachability
+    // elimination can.
+    for entry in &mut chunk.try_handlers {
+        for arm in &mut entry.arms {
+            arm.handler_pc = old_to_new[arm.handler_pc];
+        }
+    }
+
+    // RES-4558: remap live-handler body PCs through the same map. Constant
+    // branch folding can remove instructions before a live block, so leaving
+    // this raw PC unchanged makes the next retry enter the wrong instruction.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
+    }
+
     let old_call_cols = std::mem::take(&mut chunk.call_cols);
     let mut new_call_cols = std::collections::HashMap::with_capacity(old_call_cols.len());
     for (old_pc, column) in old_call_cols {
