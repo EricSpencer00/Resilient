@@ -167,6 +167,14 @@
     "resilient/src/const_eval_ext.rs": {
       "branch": "res-4672-const-overflow",
       "claimed_at": "2026-09-20T18:50:46Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4672-const-overflow",
+      "claimed_at": "2026-09-20T18:51:13Z"
+    },
+    "resilient/src/static_assert.rs": {
+      "branch": "res-4672-const-overflow",
+      "claimed_at": "2026-09-20T18:51:13Z"
     }
   }
 }
