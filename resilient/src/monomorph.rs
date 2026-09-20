@@ -93,6 +93,7 @@ pub fn lower(program: &Node) -> Node {
                 let mangled = mangle_name(fn_name, type_args);
                 if seen.insert(mangled.clone()) {
                     let specialized = specialize_fn(fn_node, &mangled, type_args);
+                    let specialized = rewrite_node(&specialized, &generic_fns, &instantiations);
                     new_stmts.push(span::Spanned::new(specialized, span::Span::default()));
                 }
             }
@@ -140,88 +141,25 @@ fn collect_in_node(
     generic_fns: &HashMap<&str, &Node>,
     out: &mut HashMap<String, Vec<Vec<Type>>>,
 ) {
-    match node {
-        Node::Program(stmts) => {
-            for s in stmts {
-                collect_in_node(&s.node, generic_fns, out);
-            }
-        }
-        Node::Function {
-            body,
-            requires,
-            ensures,
-            recovers_to,
-            ..
-        } => {
-            collect_in_node(body, generic_fns, out);
-            for r in requires {
-                collect_in_node(r, generic_fns, out);
-            }
-            for e in ensures {
-                collect_in_node(e, generic_fns, out);
-            }
-            if let Some(r) = recovers_to {
-                collect_in_node(r, generic_fns, out);
-            }
-        }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                collect_in_node(s, generic_fns, out);
-            }
-        }
-        Node::CallExpression {
+    // Keep instantiation discovery on the shared exhaustive walker. The old
+    // hand-written match covered only statement-level expressions, so a
+    // literal generic call in a match arm, handler, closure, or container was
+    // silently omitted from the specialization set.
+    crate::uniqueness_walk::visit(node, &mut |node| {
+        let Node::CallExpression {
             function,
             arguments,
             ..
-        } => {
-            // Recurse into arguments first so nested generic calls are collected.
-            for arg in arguments {
-                collect_in_node(arg, generic_fns, out);
-            }
-            collect_in_node(function, generic_fns, out);
-            // Try to record this call site as an instantiation.
-            if let Node::Identifier { name, .. } = function.as_ref()
-                && let Some(type_args) = try_infer_call(name, arguments, generic_fns)
-            {
-                out.entry(name.clone()).or_default().push(type_args);
-            }
+        } = node
+        else {
+            return;
+        };
+        if let Node::Identifier { name, .. } = function.as_ref()
+            && let Some(type_args) = try_infer_call(name, arguments, generic_fns)
+        {
+            out.entry(name.clone()).or_default().push(type_args);
         }
-        Node::LetStatement { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::StaticLet { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::Const { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::Assignment { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::ReturnStatement { value: Some(v), .. } => collect_in_node(v, generic_fns, out),
-        Node::ReturnStatement { value: None, .. } => {}
-        Node::ExpressionStatement { expr, .. } => collect_in_node(expr, generic_fns, out),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            collect_in_node(condition, generic_fns, out);
-            collect_in_node(consequence, generic_fns, out);
-            if let Some(alt) = alternative {
-                collect_in_node(alt, generic_fns, out);
-            }
-        }
-        Node::WhileStatement {
-            condition, body, ..
-        } => {
-            collect_in_node(condition, generic_fns, out);
-            collect_in_node(body, generic_fns, out);
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            collect_in_node(iterable, generic_fns, out);
-            collect_in_node(body, generic_fns, out);
-        }
-        Node::InfixExpression { left, right, .. } => {
-            collect_in_node(left, generic_fns, out);
-            collect_in_node(right, generic_fns, out);
-        }
-        Node::PrefixExpression { right, .. } => collect_in_node(right, generic_fns, out),
-        _ => {}
-    }
+    });
 }
 
 /// Try to infer the concrete type arguments for a call to a generic function.
@@ -291,214 +229,392 @@ fn rewrite_node(
     generic_fns: &HashMap<&str, &Node>,
     instantiations: &HashMap<String, Vec<Vec<Type>>>,
 ) -> Node {
+    let mut rewritten = node.clone();
+    rewrite_calls_in_place(&mut rewritten, generic_fns, instantiations);
+    rewritten
+}
+
+/// Rewrite children in place so the traversal can cover the full AST without
+/// duplicating every field of every `Node` variant. This is deliberately kept
+/// separate from `uniqueness_walk`: that module owns read-only feature scans,
+/// while this pass must replace call-site identifiers.
+fn rewrite_calls_in_place(
+    node: &mut Node,
+    generic_fns: &HashMap<&str, &Node>,
+    instantiations: &HashMap<String, Vec<Vec<Type>>>,
+) {
     match node {
-        Node::Program(stmts) => Node::Program(
-            stmts
-                .iter()
-                .map(|s| {
-                    span::Spanned::new(rewrite_node(&s.node, generic_fns, instantiations), s.span)
-                })
-                .collect(),
-        ),
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                rewrite_calls_in_place(&mut stmt.node, generic_fns, instantiations);
+            }
+        }
+        Node::Extern { decls, .. } => {
+            for decl in decls {
+                for clause in &mut decl.requires {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+                for clause in &mut decl.ensures {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+            }
+        }
         Node::Function {
-            name,
-            parameters,
             defaults,
             body,
             requires,
             ensures,
-            return_type,
-            span,
-            pure,
-            effects,
-            type_params,
-            type_param_bounds,
-            fails,
             recovers_to,
-            is_pub,
-        } => Node::Function {
-            name: name.clone(),
-            parameters: parameters.clone(),
-            defaults: defaults.clone(),
-            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
-            requires: requires
-                .iter()
-                .map(|r| rewrite_node(r, generic_fns, instantiations))
-                .collect(),
-            ensures: ensures
-                .iter()
-                .map(|e| rewrite_node(e, generic_fns, instantiations))
-                .collect(),
-            return_type: return_type.clone(),
-            span: *span,
-            pure: *pure,
-            effects: *effects,
-            type_params: type_params.clone(),
-            type_param_bounds: type_param_bounds.clone(),
-            fails: fails.clone(),
-            recovers_to: recovers_to
-                .as_ref()
-                .map(|r| Box::new(rewrite_node(r, generic_fns, instantiations))),
-            is_pub: *is_pub,
-        },
-        Node::Block { stmts, span } => Node::Block {
-            stmts: stmts
-                .iter()
-                .map(|s| rewrite_node(s, generic_fns, instantiations))
-                .collect(),
-            span: *span,
-        },
-        Node::CallExpression {
-            function,
-            arguments,
-            span,
+            ..
         } => {
-            let rewritten_args: Vec<Node> = arguments
-                .iter()
-                .map(|a| rewrite_node(a, generic_fns, instantiations))
-                .collect();
-            // If this is a call to a known generic function with inferrable
-            // argument types, redirect to the specialized clone.
-            let new_fn = if let Node::Identifier {
-                name,
-                span: id_span,
-            } = function.as_ref()
-            {
-                if instantiations.contains_key(name.as_str()) {
-                    if let Some(type_args) = try_infer_call(name, arguments, generic_fns) {
-                        let mangled = mangle_name(name, &type_args);
-                        Box::new(Node::Identifier {
-                            name: mangled,
-                            span: *id_span,
-                        })
-                    } else {
-                        function.clone()
-                    }
-                } else {
-                    function.clone()
-                }
-            } else {
-                Box::new(rewrite_node(function, generic_fns, instantiations))
-            };
-            Node::CallExpression {
-                function: new_fn,
-                arguments: rewritten_args,
-                span: *span,
+            for default in defaults.iter_mut().flatten() {
+                rewrite_calls_in_place(default, generic_fns, instantiations);
+            }
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+            for clause in requires {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            for clause in ensures {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            if let Some(clause) = recovers_to {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
             }
         }
-        Node::LetStatement {
-            name,
-            value,
-            type_annot,
-            span,
-            is_const,
-        } => Node::LetStatement {
-            name: name.clone(),
-            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
-            type_annot: type_annot.clone(),
-            span: *span,
-            is_const: *is_const,
-        },
-        Node::StaticLet { name, value, span } => Node::StaticLet {
-            name: name.clone(),
-            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
-            span: *span,
-        },
-        Node::Const {
-            name,
-            value,
-            type_annot,
-            span,
-        } => Node::Const {
-            name: name.clone(),
-            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
-            type_annot: type_annot.clone(),
-            span: *span,
-        },
-        Node::Assignment { name, value, span } => Node::Assignment {
-            name: name.clone(),
-            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
-            span: *span,
-        },
-        Node::ReturnStatement { value, span } => Node::ReturnStatement {
-            value: value
-                .as_ref()
-                .map(|v| Box::new(rewrite_node(v, generic_fns, instantiations))),
-            span: *span,
-        },
-        Node::ExpressionStatement { expr, span } => Node::ExpressionStatement {
-            expr: Box::new(rewrite_node(expr, generic_fns, instantiations)),
-            span: *span,
-        },
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                rewrite_calls_in_place(method, generic_fns, instantiations);
+            }
+        }
+        Node::ModuleDecl { body, .. } => {
+            for item in body {
+                rewrite_calls_in_place(item, generic_fns, instantiations);
+            }
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            rewrite_calls_in_place(state_init, generic_fns, instantiations);
+            for clause in concurrent_ensures {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            for handler in handlers {
+                for clause in &mut handler.ensures {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+                rewrite_calls_in_place(&mut handler.body, generic_fns, instantiations);
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            for (_, _, initializer) in state_fields {
+                rewrite_calls_in_place(initializer, generic_fns, instantiations);
+            }
+            for clause in always_clauses {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            for clause in eventually_clauses {
+                rewrite_calls_in_place(&mut clause.post, generic_fns, instantiations);
+            }
+            for handler in receive_handlers {
+                for clause in &mut handler.requires {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+                for clause in &mut handler.ensures {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+                rewrite_calls_in_place(&mut handler.body, generic_fns, instantiations);
+            }
+            for handler in handlers {
+                for clause in &mut handler.ensures {
+                    rewrite_calls_in_place(clause, generic_fns, instantiations);
+                }
+                rewrite_calls_in_place(&mut handler.body, generic_fns, instantiations);
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => {
+            for invariant in invariants {
+                rewrite_calls_in_place(invariant, generic_fns, instantiations);
+            }
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+            for invariant in invariants {
+                rewrite_calls_in_place(invariant, generic_fns, instantiations);
+            }
+            if let Some(timeout) = timeout {
+                rewrite_calls_in_place(timeout, generic_fns, instantiations);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                rewrite_calls_in_place(stmt, generic_fns, instantiations);
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. }
+        | Node::LetDestructureStruct { value, .. }
+        | Node::LetTupleDestructure { value, .. }
+        | Node::NewtypeConstruct { value, .. }
+        | Node::NamedArg { value, .. } => {
+            rewrite_calls_in_place(value, generic_fns, instantiations);
+        }
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            rewrite_calls_in_place(value, generic_fns, instantiations);
+        }
+        Node::BreakWith { value, .. } => {
+            rewrite_calls_in_place(value, generic_fns, instantiations);
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            rewrite_calls_in_place(condition, generic_fns, instantiations);
+            if let Some(message) = message {
+                rewrite_calls_in_place(message, generic_fns, instantiations);
+            }
+        }
+        Node::StaticAssert { condition, .. }
+        | Node::InvariantStatement {
+            expr: condition, ..
+        } => {
+            rewrite_calls_in_place(condition, generic_fns, instantiations);
+        }
+        Node::DeferStatement { expr, .. } => {
+            rewrite_calls_in_place(expr, generic_fns, instantiations);
+        }
         Node::IfStatement {
             condition,
             consequence,
             alternative,
-            span,
-        } => Node::IfStatement {
-            condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
-            consequence: Box::new(rewrite_node(consequence, generic_fns, instantiations)),
-            alternative: alternative
-                .as_ref()
-                .map(|a| Box::new(rewrite_node(a, generic_fns, instantiations))),
-            span: *span,
-        },
+            ..
+        } => {
+            rewrite_calls_in_place(condition, generic_fns, instantiations);
+            rewrite_calls_in_place(consequence, generic_fns, instantiations);
+            if let Some(alternative) = alternative {
+                rewrite_calls_in_place(alternative, generic_fns, instantiations);
+            }
+        }
         Node::WhileStatement {
             condition,
             body,
             invariants,
-            span,
-            label,
-        } => Node::WhileStatement {
-            condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
-            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
-            invariants: invariants
-                .iter()
-                .map(|i| rewrite_node(i, generic_fns, instantiations))
-                .collect(),
-            span: *span,
-            label: label.clone(),
-        },
-        Node::ForInStatement {
-            name,
-            iterable,
+            ..
+        }
+        | Node::ForInStatement {
+            iterable: condition,
             body,
             invariants,
-            span,
-            label,
-        } => Node::ForInStatement {
-            name: name.clone(),
-            iterable: Box::new(rewrite_node(iterable, generic_fns, instantiations)),
-            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
-            invariants: invariants
-                .iter()
-                .map(|i| rewrite_node(i, generic_fns, instantiations))
-                .collect(),
-            span: *span,
-            label: label.clone(),
-        },
-        Node::InfixExpression {
-            left,
-            operator,
-            right,
-            span,
-        } => Node::InfixExpression {
-            left: Box::new(rewrite_node(left, generic_fns, instantiations)),
-            operator,
-            right: Box::new(rewrite_node(right, generic_fns, instantiations)),
-            span: *span,
-        },
-        Node::PrefixExpression {
-            operator,
-            right,
-            span,
-        } => Node::PrefixExpression {
-            operator,
-            right: Box::new(rewrite_node(right, generic_fns, instantiations)),
-            span: *span,
-        },
-        // Leaves and unsupported structural nodes: clone as-is.
-        other => other.clone(),
+            ..
+        } => {
+            rewrite_calls_in_place(condition, generic_fns, instantiations);
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+            for invariant in invariants {
+                rewrite_calls_in_place(invariant, generic_fns, instantiations);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } | Node::TryExpression { expr, .. } => {
+            rewrite_calls_in_place(expr, generic_fns, instantiations);
+        }
+        Node::PrefixExpression { right, .. } => {
+            rewrite_calls_in_place(right, generic_fns, instantiations);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            rewrite_calls_in_place(left, generic_fns, instantiations);
+            rewrite_calls_in_place(right, generic_fns, instantiations);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            rewrite_calls_in_place(function, generic_fns, instantiations);
+            for argument in arguments.iter_mut() {
+                rewrite_calls_in_place(argument, generic_fns, instantiations);
+            }
+            let replacement = match function.as_ref() {
+                Node::Identifier { name, span } if instantiations.contains_key(name.as_str()) => {
+                    try_infer_call(name, arguments, generic_fns).map(|type_args| Node::Identifier {
+                        name: mangle_name(name, &type_args),
+                        span: *span,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                *function = Box::new(replacement);
+            }
+        }
+        Node::OptionalChain { object, access, .. } => {
+            rewrite_calls_in_place(object, generic_fns, instantiations);
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                for argument in arguments {
+                    rewrite_calls_in_place(argument, generic_fns, instantiations);
+                }
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+            for clause in requires {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            for clause in ensures {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+            if let Some(clause) = recovers_to {
+                rewrite_calls_in_place(clause, generic_fns, instantiations);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            rewrite_calls_in_place(scrutinee, generic_fns, instantiations);
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    rewrite_calls_in_place(guard, generic_fns, instantiations);
+                }
+                rewrite_calls_in_place(body, generic_fns, instantiations);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                rewrite_calls_in_place(base, generic_fns, instantiations);
+            }
+            for (_, value) in fields {
+                rewrite_calls_in_place(value, generic_fns, instantiations);
+            }
+        }
+        Node::FieldAccess { target, .. } => {
+            rewrite_calls_in_place(target, generic_fns, instantiations);
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            rewrite_calls_in_place(target, generic_fns, instantiations);
+            rewrite_calls_in_place(value, generic_fns, instantiations);
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                rewrite_calls_in_place(item, generic_fns, instantiations);
+            }
+        }
+        Node::IndexExpression { target, index, .. } => {
+            rewrite_calls_in_place(target, generic_fns, instantiations);
+            rewrite_calls_in_place(index, generic_fns, instantiations);
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            rewrite_calls_in_place(target, generic_fns, instantiations);
+            if let Some(lo) = lo {
+                rewrite_calls_in_place(lo, generic_fns, instantiations);
+            }
+            if let Some(hi) = hi {
+                rewrite_calls_in_place(hi, generic_fns, instantiations);
+            }
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            rewrite_calls_in_place(target, generic_fns, instantiations);
+            rewrite_calls_in_place(index, generic_fns, instantiations);
+            rewrite_calls_in_place(value, generic_fns, instantiations);
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                rewrite_calls_in_place(key, generic_fns, instantiations);
+                rewrite_calls_in_place(value, generic_fns, instantiations);
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                rewrite_calls_in_place(stmt, generic_fns, instantiations);
+            }
+            for (_, handler_body) in handlers {
+                for stmt in handler_body {
+                    rewrite_calls_in_place(stmt, generic_fns, instantiations);
+                }
+            }
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    rewrite_calls_in_place(lo, generic_fns, instantiations);
+                    rewrite_calls_in_place(hi, generic_fns, instantiations);
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    rewrite_calls_in_place(iterable, generic_fns, instantiations);
+                }
+            }
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+        }
+        Node::Range { lo, hi, .. } => {
+            rewrite_calls_in_place(lo, generic_fns, instantiations);
+            rewrite_calls_in_place(hi, generic_fns, instantiations);
+        }
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    rewrite_calls_in_place(expr, generic_fns, instantiations);
+                }
+            }
+        }
+        Node::TupleIndex { tuple, .. } => {
+            rewrite_calls_in_place(tuple, generic_fns, instantiations);
+        }
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => {
+            rewrite_calls_in_place(body, generic_fns, instantiations);
+        }
+        Node::ReturnStatement { value: None, .. }
+        | Node::Break { .. }
+        | Node::Continue { .. }
+        | Node::BreakLabel { .. }
+        | Node::ContinueLabel { .. }
+        | Node::Use { .. }
+        | Node::DurationLiteral { .. }
+        | Node::Identifier { .. }
+        | Node::IntegerLiteral { .. }
+        | Node::FloatLiteral { .. }
+        | Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::BytesLiteral { .. }
+        | Node::CharLiteral { .. }
+        | Node::BooleanLiteral { .. }
+        | Node::StructDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::TypeAlias { .. }
+        | Node::RegionDecl { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::RegionParam { .. } => {}
     }
 }
 
@@ -637,6 +753,19 @@ mod tests {
         lower(&prog)
     }
 
+    fn lowered_call_targets(program: &Node) -> Vec<String> {
+        let mut targets = Vec::new();
+        crate::uniqueness_walk::visit(program, &mut |node| {
+            let Node::CallExpression { function, .. } = node else {
+                return;
+            };
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                targets.push(name.clone());
+            }
+        });
+        targets
+    }
+
     /// Count functions with a given name prefix in the lowered program.
     fn count_fns_with_prefix(program: &Node, prefix: &str) -> usize {
         let stmts = match program {
@@ -675,6 +804,67 @@ main();
         );
         assert_eq!(count_fns_with_prefix(&prog, "identity$Int"), 1);
         assert_eq!(count_fns_with_prefix(&prog, "identity$String"), 1);
+    }
+
+    #[test]
+    fn match_arm_generic_call_is_specialized_and_rewritten() {
+        let src = r#"
+fn identity<T>(T x) -> T { return x; }
+fn main() -> int {
+    return match 1 {
+        1 => identity(42),
+        _ => 0,
+    };
+}
+main();
+"#;
+        let lowered = lower_src(src);
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$Int"), 1);
+        assert!(lowered_call_targets(&lowered).contains(&"identity$Int".to_string()));
+    }
+
+    #[test]
+    fn try_handler_and_literal_container_calls_are_specialized() {
+        let src = r#"
+fn identity<T>(T x) -> T { return x; }
+fn main() {
+    try {
+        let values = [identity(42)];
+    } catch Timeout {
+        let values = [identity("recovered")];
+    }
+}
+main();
+"#;
+        let lowered = lower_src(src);
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$Int"), 1);
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$String"), 1);
+        let targets = lowered_call_targets(&lowered);
+        assert!(targets.contains(&"identity$Int".to_string()));
+        assert!(targets.contains(&"identity$String".to_string()));
+    }
+
+    #[test]
+    fn function_literal_and_defer_calls_are_specialized() {
+        let src = r#"
+fn identity<T>(T x) -> T { return x; }
+fn main() {
+    defer identity(7);
+    let f = fn() -> int { return identity(9); };
+    f();
+}
+main();
+"#;
+        let lowered = lower_src(src);
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$Int"), 1);
+        let targets = lowered_call_targets(&lowered);
+        assert!(
+            targets
+                .iter()
+                .filter(|name| *name == "identity$Int")
+                .count()
+                >= 2
+        );
     }
 
     #[test]
