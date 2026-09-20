@@ -215,6 +215,10 @@
     "resilient/src/stdlib.rs": {
       "branch": "res-4702-range-boundary-main",
       "claimed_at": "2026-09-20T21:00:51Z"
+    },
+    "resilient/src/array_chunking.rs": {
+      "branch": "res-4709-array-chunk-target-boundary",
+      "claimed_at": "2026-09-20T21:09:27Z"
     }
   }
 }
