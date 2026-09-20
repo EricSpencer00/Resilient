@@ -5755,6 +5755,24 @@ fn compile_expr(
             // `rewrite_store_upvalues`'s doc comment.
             rewrite_store_upvalues(&mut fn_chunk, upvalue_base, upvalue_count);
 
+            // Reserve the closure's function-table slot before synthesizing
+            // its postcheck. The postcheck is appended to the same table;
+            // without this placeholder, a top-level closure at index zero
+            // would have its own slot reused by the postcheck and recurse
+            // until the VM stack overflowed.
+            let source_slots: Box<[u16]> = build_upvalue_source_slots(&captured);
+            while fns.len() <= fn_idx as usize {
+                fns.push(Function {
+                    name: "<closure_placeholder>".into(),
+                    arity: 0,
+                    chunk: Chunk::with_capacity(0),
+                    local_count: 0,
+                    upvalue_source_slots: Box::default(),
+                    fails: Box::default(),
+                    postcheck: None,
+                });
+            }
+
             // RES-4554: anonymous function literals carry the same
             // postconditions as named functions. Reuse the existing
             // isolated postcheck function so the VM cannot silently
@@ -5772,32 +5790,6 @@ fn compile_expr(
             )?;
 
             let local_count = fn_next_local;
-            // Insert at fn_idx (pre-allocated index). fns may have grown via
-            // nested FunctionLiterals; we need to push a placeholder then
-            // overwrite it, OR we always push at end (and fn_idx == fns.len()
-            // at the time we called *next_fn_idx += 1). Since nested closures
-            // also increment next_fn_idx, fn_idx may not equal fns.len() by
-            // the time we reach here. Use a placeholder-then-overwrite strategy:
-            // extend fns to at least fn_idx+1 with placeholders.
-            // RES-4046: a captured static has no valid caller-frame
-            // slot to write back into on return (its backing storage
-            // is the per-function statics table, not `locals`) —
-            // `u16::MAX` is the existing "no write-back target"
-            // sentinel (see `CallFrame::source_slot`'s doc comment);
-            // `write_back_upvalues`'s bounds check already treats an
-            // out-of-range index as a no-op.
-            let source_slots: Box<[u16]> = build_upvalue_source_slots(&captured);
-            while fns.len() <= fn_idx as usize {
-                fns.push(Function {
-                    name: "<closure_placeholder>".into(),
-                    arity: 0,
-                    chunk: Chunk::with_capacity(0),
-                    local_count: 0,
-                    upvalue_source_slots: Box::default(),
-                    fails: Box::default(),
-                    postcheck: None,
-                });
-            }
             fns[fn_idx as usize] = Function {
                 name: "<closure>".into(),
                 arity,
