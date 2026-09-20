@@ -52,6 +52,58 @@ fn sanitize_ident(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Precedence values mirror the Pratt parser in `lib.rs`. Higher values bind
+/// more tightly. Keeping this table next to the formatter makes parentheses a
+/// property of the AST shape rather than an approximation based on text.
+fn infix_precedence(operator: &str) -> u8 {
+    match operator {
+        "??" | "||" | "|>" => 1,
+        "&&" => 2,
+        "|" => 3,
+        "^" => 4,
+        "&" => 5,
+        "==" | "!=" => 6,
+        "<" | ">" | "<=" | ">=" => 7,
+        "<<" | ">>" => 8,
+        "+" | "-" => 9,
+        "*" | "/" | "%" => 10,
+        _ => 1,
+    }
+}
+
+fn expression_precedence(node: &Node) -> u8 {
+    match node {
+        Node::InfixExpression { operator, .. } => infix_precedence(operator),
+        // Prefix parsing consumes postfix expressions but stops before an
+        // infix operator at precedence 10, so prefix expressions bind just
+        // more tightly than multiplication.
+        Node::PrefixExpression { .. } => 11,
+        // Calls, field/index access, and postfix `?`/`?.` bind tighter than
+        // every infix expression in the parser.
+        Node::CallExpression { .. }
+        | Node::TryExpression { .. }
+        | Node::OptionalChain { .. }
+        | Node::FieldAccess { .. }
+        | Node::IndexExpression { .. }
+        | Node::Slice { .. }
+        | Node::TupleIndex { .. } => 12,
+        Node::Range { .. } => 1,
+        // Everything else is a complete primary expression (or already owns
+        // delimiters such as `{...}` or `(...)`).
+        _ => 13,
+    }
+}
+
+/// Format an expression used as the receiver/function of postfix syntax.
+/// Binary and prefix expressions need grouping there because `f + g(x)` and
+/// `-f(x)` parse differently from `(f + g)(x)` and `(-f)(x)`.
+fn needs_postfix_parentheses(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::InfixExpression { .. } | Node::PrefixExpression { .. } | Node::Range { .. }
+    )
+}
+
 pub struct Formatter {
     out: String,
     depth: usize,
@@ -1037,6 +1089,43 @@ impl Formatter {
     // ------------------------------------------------------------------
 
     fn fmt_expr(&mut self, node: &Node) {
+        self.fmt_expr_with_precedence(node, 0, false);
+    }
+
+    /// Render `node` in a context where an expression with precedence equal to
+    /// `parent_precedence` may or may not need parentheses. Left children of
+    /// left-associative operators can omit equal-precedence parentheses; right
+    /// children cannot. The `??` operator is right-associative and supplies the
+    /// opposite policy for its children below.
+    fn fmt_expr_with_precedence(
+        &mut self,
+        node: &Node,
+        parent_precedence: u8,
+        parenthesize_equal: bool,
+    ) {
+        let precedence = expression_precedence(node);
+        let parenthesized = precedence < parent_precedence
+            || (parenthesize_equal && precedence == parent_precedence);
+        if parenthesized {
+            self.write("(");
+        }
+        self.fmt_expr_inner(node);
+        if parenthesized {
+            self.write(")");
+        }
+    }
+
+    fn fmt_postfix_base(&mut self, node: &Node) {
+        if needs_postfix_parentheses(node) {
+            self.write("(");
+            self.fmt_expr(node);
+            self.write(")");
+        } else {
+            self.fmt_expr(node);
+        }
+    }
+
+    fn fmt_expr_inner(&mut self, node: &Node) {
         match node {
             Node::Identifier { name, .. } => self.write(&sanitize_ident(name)),
             Node::IntegerLiteral { value, .. } => self.write_args(format_args!("{}", value)),
@@ -1092,7 +1181,7 @@ impl Formatter {
                 operator, right, ..
             } => {
                 self.write(operator);
-                self.fmt_expr(right);
+                self.fmt_expr_with_precedence(right, 11, false);
             }
             Node::InfixExpression {
                 left,
@@ -1100,16 +1189,21 @@ impl Formatter {
                 right,
                 ..
             } => {
-                self.fmt_expr(left);
+                let precedence = infix_precedence(operator);
+                if *operator == "??" {
+                    self.fmt_expr_with_precedence(left, precedence, true);
+                } else {
+                    self.fmt_expr_with_precedence(left, precedence, false);
+                }
                 self.write_args(format_args!(" {} ", operator));
-                self.fmt_expr(right);
+                self.fmt_expr_with_precedence(right, precedence, *operator != "??");
             }
             Node::CallExpression {
                 function,
                 arguments,
                 ..
             } => {
-                self.fmt_expr(function);
+                self.fmt_postfix_base(function);
                 self.write("(");
                 for (i, a) in arguments.iter().enumerate() {
                     if i > 0 {
@@ -1134,12 +1228,12 @@ impl Formatter {
                 self.write(")");
             }
             Node::TryExpression { expr, .. } => {
-                self.fmt_expr(expr);
+                self.fmt_expr_with_precedence(expr, 12, false);
                 self.write("?");
             }
             // RES-363: optional chaining.
             Node::OptionalChain { object, access, .. } => {
-                self.fmt_expr(object);
+                self.fmt_postfix_base(object);
                 match access {
                     crate::ChainAccess::Field(f) => {
                         self.write_args(format_args!("?.{}", f));
@@ -1157,7 +1251,7 @@ impl Formatter {
                 }
             }
             Node::FieldAccess { target, field, .. } => {
-                self.fmt_expr(target);
+                self.fmt_postfix_base(target);
                 self.write_args(format_args!(".{}", field));
             }
             Node::FieldAssignment {
@@ -1166,12 +1260,12 @@ impl Formatter {
                 value,
                 ..
             } => {
-                self.fmt_expr(target);
+                self.fmt_postfix_base(target);
                 self.write_args(format_args!(".{} = ", field));
                 self.fmt_expr(value);
             }
             Node::IndexExpression { target, index, .. } => {
-                self.fmt_expr(target);
+                self.fmt_postfix_base(target);
                 self.write("[");
                 self.fmt_expr(index);
                 self.write("]");
@@ -1185,7 +1279,7 @@ impl Formatter {
                 inclusive,
                 ..
             } => {
-                self.fmt_expr(target);
+                self.fmt_postfix_base(target);
                 self.write("[");
                 if let Some(lo) = lo {
                     self.fmt_expr(lo);
@@ -1202,7 +1296,7 @@ impl Formatter {
                 value,
                 ..
             } => {
-                self.fmt_expr(target);
+                self.fmt_postfix_base(target);
                 self.write("[");
                 self.fmt_expr(index);
                 self.write("] = ");
@@ -1468,7 +1562,7 @@ impl Formatter {
                 self.write(")");
             }
             Node::TupleIndex { tuple, index, .. } => {
-                self.fmt_expr(tuple);
+                self.fmt_postfix_base(tuple);
                 self.write_args(format_args!(".{}", index));
             }
             Node::LetTupleDestructure { names, value, .. } => {
