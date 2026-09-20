@@ -151,7 +151,7 @@ pub(crate) fn builtin_graph_dfs(args: &[Value]) -> RResult<Value> {
     }
 }
 
-fn dfs_visit(adj: &[Vec<usize>], node: usize, visited: &mut Vec<bool>, order: &mut Vec<Value>) {
+fn dfs_visit(adj: &[Vec<usize>], node: usize, visited: &mut [bool], order: &mut Vec<Value>) {
     // Keep the recursive traversal's preorder without letting user-controlled
     // graph depth consume the host call stack.
     let mut frames = Vec::with_capacity(adj.len());
