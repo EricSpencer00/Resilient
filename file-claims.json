@@ -31,6 +31,10 @@
     "resilient-runtime/src/timer.rs": {
       "branch": "res-4496-timer-bounded",
       "claimed_at": "2026-09-20T05:12:12Z"
+    },
+    "resilient/src/statistics.rs": {
+      "branch": "res-4500-percentile-total-order",
+      "claimed_at": "2026-09-20T05:24:20Z"
     }
   }
 }
