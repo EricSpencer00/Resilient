@@ -96,13 +96,13 @@
       "branch": "res-4599-semver-caret-bounds",
       "claimed_at": "2026-09-20T15:31:47Z"
     },
-    "resilient/src/power_contracts.rs": {
-      "branch": "res-4606-power-paths",
-      "claimed_at": "2026-09-20T15:49:52Z"
+    "resilient/src/semantic_regression.rs": {
+      "branch": "res-4604-fails-semantic-diff",
+      "claimed_at": "2026-09-20T15:51:43Z"
     },
-    "resilient/tests/power_contracts_regression.rs": {
-      "branch": "res-4606-power-paths",
-      "claimed_at": "2026-09-20T15:49:52Z"
+    "resilient/src/semver_behavior.rs": {
+      "branch": "res-4604-fails-semantic-diff",
+      "claimed_at": "2026-09-20T15:51:43Z"
     }
   }
 }
