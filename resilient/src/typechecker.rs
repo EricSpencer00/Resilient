@@ -12184,17 +12184,16 @@ impl TypeChecker {
                             {
                                 deferred_projection_checks.push(i);
                             }
-                            let argument_satisfies =
-                                if let Some(type_params) = callee_type_params.as_ref() {
-                                    self.generic_argument_satisfies(
-                                        &arg_type,
-                                        effective_param,
-                                        param_type,
-                                        &tp_set,
-                                    )
-                                } else {
-                                    self.type_satisfies(&arg_type, effective_param)
-                                };
+                            let argument_satisfies = if callee_type_params.is_some() {
+                                self.generic_argument_satisfies(
+                                    &arg_type,
+                                    effective_param,
+                                    param_type,
+                                    &tp_set,
+                                )
+                            } else {
+                                self.type_satisfies(&arg_type, effective_param)
+                            };
                             if !argument_satisfies
                                 && !self.satisfies_trait_param(&arg_type, effective_param)
                             {
@@ -12261,17 +12260,16 @@ impl TypeChecker {
                                     false,
                                 );
                                 let arg_type = &checked_arg_types[i];
-                                let argument_satisfies =
-                                    if let Some(type_params) = callee_type_params.as_ref() {
-                                        self.generic_argument_satisfies(
-                                            arg_type,
-                                            &effective_param,
-                                            param_type,
-                                            &tp_set,
-                                        )
-                                    } else {
-                                        self.type_satisfies(arg_type, &effective_param)
-                                    };
+                                let argument_satisfies = if callee_type_params.is_some() {
+                                    self.generic_argument_satisfies(
+                                        arg_type,
+                                        &effective_param,
+                                        param_type,
+                                        &tp_set,
+                                    )
+                                } else {
+                                    self.type_satisfies(arg_type, &effective_param)
+                                };
                                 if !argument_satisfies
                                     && !self.satisfies_trait_param(arg_type, &effective_param)
                                 {
