@@ -67,31 +67,48 @@ pub fn parse_constraint(s: &str) -> (SemverRange, String) {
     }
 }
 
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some((
+        parts[0].parse().ok()?,
+        parts[1].parse().ok()?,
+        parts[2].parse().ok()?,
+    ))
+}
+
+fn caret_upper_bound(version: (u64, u64, u64)) -> Option<(u64, u64, u64)> {
+    let (major, minor, patch) = version;
+    if major != 0 {
+        return major.checked_add(1).map(|next| (next, 0, 0));
+    }
+    if minor != 0 {
+        return minor.checked_add(1).map(|next| (0, next, 0));
+    }
+    patch.checked_add(1).map(|next| (0, 0, next))
+}
+
 pub fn matches(constraint: &str, version: &str) -> bool {
     let (kind, base) = parse_constraint(constraint);
-    let parse = |s: &str| -> Option<(u64, u64, u64)> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        Some((
-            parts[0].parse().ok()?,
-            parts[1].parse().ok()?,
-            parts[2].parse().ok()?,
-        ))
-    };
-    let (a_maj, a_min, a_pat) = match parse(&base) {
+    let requested = match parse_version(&base) {
         Some(v) => v,
         None => return false,
     };
-    let (b_maj, b_min, b_pat) = match parse(version) {
+    let candidate = match parse_version(version) {
         Some(v) => v,
         None => return false,
     };
     match kind {
-        SemverRange::Exact => (a_maj, a_min, a_pat) == (b_maj, b_min, b_pat),
-        SemverRange::Caret => b_maj == a_maj && (b_min, b_pat) >= (a_min, a_pat),
-        SemverRange::Tilde => b_maj == a_maj && b_min == a_min && b_pat >= a_pat,
+        SemverRange::Exact => candidate == requested,
+        SemverRange::Caret => {
+            candidate >= requested
+                && caret_upper_bound(requested).map_or(true, |upper| candidate < upper)
+        }
+        SemverRange::Tilde => {
+            candidate >= requested && candidate.0 == requested.0 && candidate.1 == requested.1
+        }
     }
 }
 
@@ -477,6 +494,23 @@ bar = "~0.3.1"
         assert!(matches("^1.2.3", "1.5.0"));
         assert!(!matches("^1.2.3", "2.0.0"));
         assert!(!matches("^1.2.3", "1.2.2"));
+    }
+
+    #[test]
+    fn caret_matching_zero_major_versions_uses_first_nonzero_component() {
+        assert!(matches("^0.2.3", "0.2.9"));
+        assert!(!matches("^0.2.3", "0.3.0"));
+        assert!(!matches("^0.2.3", "1.0.0"));
+        assert!(matches("^0.0.3", "0.0.3"));
+        assert!(!matches("^0.0.3", "0.0.4"));
+    }
+
+    #[test]
+    fn caret_matching_preserves_tilde_and_exact_boundaries() {
+        assert!(matches("~0.2.3", "0.2.9"));
+        assert!(!matches("~0.2.3", "0.3.0"));
+        assert!(matches("0.2.3", "0.2.3"));
+        assert!(!matches("0.2.3", "0.2.4"));
     }
 
     #[test]
