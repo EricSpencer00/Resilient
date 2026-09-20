@@ -444,15 +444,51 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 explicit + inherited
             }
             // RES-3993: `mod name { fn f() {..} }` — see the matching
-            // fn_index/pass-2 arms below. Only directly-nested `fn`s are
-            // counted; a `mod` containing an `ImplBlock` is rare enough
-            // (no example exercises it) that it's left for a follow-up
-            // rather than duplicating the trait-default machinery above
-            // inside module scope too.
+            // fn_index/pass-2 arms below. Impl methods use their existing
+            // `<Struct>$<method>` names so receiver dispatch remains
+            // independent of the containing module namespace.
             Node::ModuleDecl { body, .. } => body
                 .iter()
-                .filter(|m| matches!(m, Node::Function { .. }))
-                .count(),
+                .map(|m| match m {
+                    Node::Function { .. } => 1,
+                    Node::ImplBlock {
+                        methods,
+                        struct_name,
+                        trait_name,
+                        ..
+                    } => {
+                        let explicit = methods
+                            .iter()
+                            .filter(|method| matches!(method, Node::Function { .. }))
+                            .count();
+                        let inherited = trait_name
+                            .as_ref()
+                            .and_then(|trait_name| trait_defaults.get(trait_name))
+                            .map(|defaults| {
+                                let prefix = format!("{struct_name}$");
+                                let overridden: std::collections::HashSet<&str> = methods
+                                    .iter()
+                                    .filter_map(|method| {
+                                        if let Node::Function { name, .. } = method {
+                                            name.strip_prefix(&prefix)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                defaults
+                                    .iter()
+                                    .filter(|(method_name, ..)| {
+                                        !overridden.contains(method_name.as_str())
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        explicit + inherited
+                    }
+                    _ => 0,
+                })
+                .sum(),
             _ => 0,
         })
         .sum::<usize>();
@@ -537,18 +573,72 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 ..
             } => {
                 for m in body {
-                    if let Node::Function {
-                        name, parameters, ..
-                    } = m
-                    {
-                        if parameters.len() > u8::MAX as usize {
-                            return Err(CompileError::Unsupported("fn with >255 params"));
+                    match m {
+                        Node::Function {
+                            name, parameters, ..
+                        } => {
+                            if parameters.len() > u8::MAX as usize {
+                                return Err(CompileError::Unsupported("fn with >255 params"));
+                            }
+                            if next_fn_idx == u16::MAX {
+                                return Err(CompileError::Unsupported(
+                                    "program has > 65535 functions",
+                                ));
+                            }
+                            fn_index.insert(format!("{mod_name}::{name}"), next_fn_idx);
+                            next_fn_idx += 1;
                         }
-                        if next_fn_idx == u16::MAX {
-                            return Err(CompileError::Unsupported("program has > 65535 functions"));
+                        Node::ImplBlock {
+                            methods,
+                            struct_name,
+                            trait_name,
+                            ..
+                        } => {
+                            let prefix = format!("{struct_name}$");
+                            let mut overridden = std::collections::HashSet::new();
+                            for method in methods {
+                                if let Node::Function {
+                                    name, parameters, ..
+                                } = method
+                                {
+                                    if parameters.len() > u8::MAX as usize {
+                                        return Err(CompileError::Unsupported(
+                                            "fn with >255 params",
+                                        ));
+                                    }
+                                    if next_fn_idx == u16::MAX {
+                                        return Err(CompileError::Unsupported(
+                                            "program has > 65535 functions",
+                                        ));
+                                    }
+                                    if let Some(bare) = name.strip_prefix(&prefix) {
+                                        overridden.insert(bare);
+                                    }
+                                    fn_index.insert(name.clone(), next_fn_idx);
+                                    next_fn_idx += 1;
+                                }
+                            }
+                            if let Some(trait_nm) = trait_name
+                                && let Some(defaults) = trait_defaults.get(trait_nm)
+                            {
+                                for (method_name, _params, _body) in defaults {
+                                    if overridden.contains(method_name.as_str()) {
+                                        continue;
+                                    }
+                                    if next_fn_idx == u16::MAX {
+                                        return Err(CompileError::Unsupported(
+                                            "program has > 65535 functions",
+                                        ));
+                                    }
+                                    fn_index.insert(
+                                        format!("{struct_name}${method_name}"),
+                                        next_fn_idx,
+                                    );
+                                    next_fn_idx += 1;
+                                }
+                            }
                         }
-                        fn_index.insert(format!("{mod_name}::{name}"), next_fn_idx);
-                        next_fn_idx += 1;
+                        _ => {}
                     }
                 }
             }
@@ -791,28 +881,100 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 ..
             } => {
                 for m in body {
-                    if let Node::Function {
-                        name,
-                        parameters,
-                        body,
-                        ensures,
-                        recovers_to,
-                        ..
-                    } = m
-                    {
-                        let mangled = format!("{mod_name}::{name}");
-                        let line = node_line(m).unwrap_or(spanned.span.start.line as u32);
-                        compile_fn_body(
-                            &mangled,
+                    match m {
+                        Node::Function {
+                            name,
                             parameters,
                             body,
-                            line,
-                            Box::default(),
                             ensures,
                             recovers_to,
-                            &mut functions,
-                            &mut next_fn_idx,
-                        )?;
+                            ..
+                        } => {
+                            let mangled = format!("{mod_name}::{name}");
+                            let line = node_line(m).unwrap_or(spanned.span.start.line as u32);
+                            compile_fn_body(
+                                &mangled,
+                                parameters,
+                                body,
+                                line,
+                                Box::default(),
+                                ensures,
+                                recovers_to,
+                                &mut functions,
+                                &mut next_fn_idx,
+                            )?;
+                        }
+                        Node::ImplBlock {
+                            methods,
+                            struct_name,
+                            trait_name,
+                            ..
+                        } => {
+                            let prefix = format!("{struct_name}$");
+                            let overridden: std::collections::HashSet<&str> = methods
+                                .iter()
+                                .filter_map(|method| {
+                                    if let Node::Function { name, .. } = method {
+                                        name.strip_prefix(&prefix)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            for method in methods {
+                                if let Node::Function {
+                                    name,
+                                    parameters,
+                                    body,
+                                    ensures,
+                                    recovers_to,
+                                    ..
+                                } = method
+                                {
+                                    let line =
+                                        node_line(method).unwrap_or(spanned.span.start.line as u32);
+                                    compile_fn_body(
+                                        name,
+                                        parameters,
+                                        body,
+                                        line,
+                                        Box::default(),
+                                        ensures,
+                                        recovers_to,
+                                        &mut functions,
+                                        &mut next_fn_idx,
+                                    )?;
+                                }
+                            }
+                            if let Some(trait_nm) = trait_name
+                                && let Some(defaults) = trait_defaults.get(trait_nm)
+                            {
+                                for (method_name, params, body) in defaults {
+                                    if overridden.contains(method_name.as_str()) {
+                                        continue;
+                                    }
+                                    let mangled = format!("{struct_name}${method_name}");
+                                    let param_pairs: Vec<(String, String)> = params
+                                        .iter()
+                                        .map(|param| (String::new(), param.clone()))
+                                        .collect();
+                                    let line =
+                                        node_line(body).unwrap_or(spanned.span.start.line as u32);
+                                    compile_fn_body(
+                                        &mangled,
+                                        &param_pairs,
+                                        body,
+                                        line,
+                                        Box::default(),
+                                        &[],
+                                        &None,
+                                        &mut functions,
+                                        &mut next_fn_idx,
+                                    )?;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -10158,5 +10320,58 @@ maybe(5);"#,
             Value::Option(Some(inner)) => assert_int(*inner, 5),
             other => panic!("expected Some(5), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn inline_module_impl_method_has_vm_and_interpreter_parity() {
+        let src = r#"
+struct Counter { int n }
+mod grouped {
+    impl Counter {
+        fn bump(self) -> int { return self.n + 1; }
+    }
+}
+let c = new Counter { n: 41 };
+c.bump();
+"#;
+        let (program, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+
+        let mut interpreter = crate::Interpreter::new();
+        let interpreted = interpreter
+            .eval(&program)
+            .expect("interpreter should evaluate module impl method");
+        let compiled = compile(&program).expect("module impl method should compile");
+        let vm = crate::vm::run(&compiled).expect("VM should run module impl method");
+
+        assert_int(interpreted, 42);
+        assert_int(vm, 42);
+    }
+
+    #[test]
+    fn inline_module_impl_inherits_trait_default_for_vm_dispatch() {
+        let src = r#"
+trait Increment {
+    fn increment(self) -> int { return self.n + 1; }
+}
+struct Counter { int n }
+mod grouped {
+    impl Increment for Counter {}
+}
+let c = new Counter { n: 41 };
+c.increment();
+"#;
+        let (program, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+
+        let mut interpreter = crate::Interpreter::new();
+        let interpreted = interpreter
+            .eval(&program)
+            .expect("interpreter should evaluate inherited module impl method");
+        let compiled = compile(&program).expect("inherited module impl should compile");
+        let vm = crate::vm::run(&compiled).expect("VM should run inherited module impl method");
+
+        assert_int(interpreted, 42);
+        assert_int(vm, 42);
     }
 }
