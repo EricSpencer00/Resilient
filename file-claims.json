@@ -23,10 +23,6 @@
     "resilient/tests/it/random_int_range_safety.rs": {
       "branch": "res-4483-random-int-range-safety",
       "claimed_at": "2026-09-20T04:18:26Z"
-    },
-    "resilient-runtime/src/dma.rs": {
-      "branch": "res-4493-dma-beat-length",
-      "claimed_at": "2026-09-20T04:43:29Z"
     }
   }
 }
