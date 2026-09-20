@@ -228,9 +228,13 @@
       "branch": "res-4717-fixed-width-metadata",
       "claimed_at": "2026-09-20T21:33:46Z"
     },
-    "resilient/src/mcp_server.rs": {
-      "branch": "res-4721-bound-mcp-worker-pool",
-      "claimed_at": "2026-09-20T21:42:53Z"
+    "resilient/src/string_interp.rs": {
+      "branch": "res-4722-template-capacity",
+      "claimed_at": "2026-09-20T21:43:39Z"
+    },
+    "resilient/src/format_builtin.rs": {
+      "branch": "res-4722-template-capacity",
+      "claimed_at": "2026-09-20T21:43:39Z"
     }
   }
 }
