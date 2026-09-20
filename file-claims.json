@@ -92,9 +92,9 @@
       "branch": "res-4593-ghost-call-boundaries",
       "claimed_at": "2026-09-20T15:12:03Z"
     },
-    "resilient/src/combinatorics.rs": {
-      "branch": "res-4598-combinatoric-budget",
-      "claimed_at": "2026-09-20T15:30:10Z"
+    "resilient/src/package_manager.rs": {
+      "branch": "res-4599-semver-caret-bounds",
+      "claimed_at": "2026-09-20T15:31:47Z"
     }
   }
 }
