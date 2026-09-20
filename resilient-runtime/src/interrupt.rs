@@ -127,6 +127,33 @@ where
 /// NVIC Interrupt Priority Registers base address on Cortex-M.
 const NVIC_IPR_BASE: usize = 0xE000_E400;
 
+/// Highest IRQ number in the architecturally-defined NVIC priority table.
+pub const MAX_NVIC_IRQ: u8 = 239;
+
+/// Errors returned by checked NVIC priority helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptError {
+    /// The IRQ number is outside the NVIC priority register table.
+    InvalidIrq { irq: u8, max: u8 },
+}
+
+#[inline]
+fn nvic_priority_addr(irq: u8) -> Result<usize, InterruptError> {
+    if irq > MAX_NVIC_IRQ {
+        return Err(InterruptError::InvalidIrq {
+            irq,
+            max: MAX_NVIC_IRQ,
+        });
+    }
+    Ok(NVIC_IPR_BASE + irq as usize)
+}
+
+/// Validate an IRQ number before passing it to an unsafe NVIC helper.
+#[inline]
+pub fn validate_irq(irq: u8) -> Result<(), InterruptError> {
+    nvic_priority_addr(irq).map(|_| ())
+}
+
 /// Set the NVIC priority of IRQ number `irq` (0–239) to `priority`.
 ///
 /// # Safety
@@ -134,7 +161,10 @@ const NVIC_IPR_BASE: usize = 0xE000_E400;
 /// privileged mode (Handler or Thread with full privileges).
 #[inline]
 pub unsafe fn set_priority(irq: u8, priority: Priority) {
-    let addr = (NVIC_IPR_BASE + irq as usize) as *mut u8;
+    let Ok(addr) = nvic_priority_addr(irq) else {
+        return;
+    };
+    let addr = addr as *mut u8;
     // Safety: caller guarantees privileged mode; addr is a valid NVIC register.
     unsafe { addr.write_volatile(priority.to_nvic_byte()) }
 }
@@ -147,7 +177,10 @@ pub unsafe fn set_priority(irq: u8, priority: Priority) {
 /// Reads a volatile MMIO register; must be called from privileged mode.
 #[inline]
 pub unsafe fn get_priority(irq: u8) -> Priority {
-    let addr = (NVIC_IPR_BASE + irq as usize) as *const u8;
+    let Ok(addr) = nvic_priority_addr(irq) else {
+        return Priority(0);
+    };
+    let addr = addr as *const u8;
     // Safety: caller guarantees privileged mode.
     let raw = unsafe { addr.read_volatile() };
     // The bottom 4 bits are unimplemented (read as 0); top 4 are priority.
@@ -312,5 +345,41 @@ mod tests {
         assert_eq!(Priority::new(15).unwrap().level(), 15);
         assert!(Priority::new(16).is_none());
         assert!(Priority::new(254).is_none());
+    }
+
+    #[test]
+    fn nvic_irq_bounds_are_checked_before_mmio() {
+        assert_eq!(
+            nvic_priority_addr(0),
+            Ok(NVIC_IPR_BASE),
+            "IRQ zero uses the first priority register"
+        );
+        assert_eq!(
+            nvic_priority_addr(MAX_NVIC_IRQ),
+            Ok(NVIC_IPR_BASE + MAX_NVIC_IRQ as usize),
+            "the architectural upper bound remains addressable"
+        );
+        assert_eq!(
+            nvic_priority_addr(MAX_NVIC_IRQ + 1),
+            Err(InterruptError::InvalidIrq {
+                irq: MAX_NVIC_IRQ + 1,
+                max: MAX_NVIC_IRQ,
+            })
+        );
+        assert_eq!(
+            nvic_priority_addr(u8::MAX),
+            Err(InterruptError::InvalidIrq {
+                irq: u8::MAX,
+                max: MAX_NVIC_IRQ,
+            })
+        );
+        assert_eq!(validate_irq(239), Ok(()));
+        assert_eq!(
+            validate_irq(240),
+            Err(InterruptError::InvalidIrq {
+                irq: 240,
+                max: MAX_NVIC_IRQ,
+            })
+        );
     }
 }
