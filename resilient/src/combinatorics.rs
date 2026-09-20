@@ -20,8 +20,7 @@ const MAX_COMBINATORIC_RESULTS: usize = 1_000_000;
 fn enforce_result_budget(name: &str, count: usize) -> RResult<usize> {
     if count > MAX_COMBINATORIC_RESULTS {
         return Err(format!(
-            "{name}: result would contain {count} elements, exceeding the limit of "
-                "{MAX_COMBINATORIC_RESULTS}"
+            "{name}: result would contain {count} elements, exceeding the limit of {MAX_COMBINATORIC_RESULTS}"
         ));
     }
     Ok(count)
@@ -44,8 +43,7 @@ fn bounded_combination_count(n: usize, k: usize) -> RResult<usize> {
             / (i + 1) as u128;
         if count > MAX_COMBINATORIC_RESULTS as u128 {
             return Err(format!(
-                "array_combinations: result would contain more than {MAX_COMBINATORIC_RESULTS} "
-                    "elements"
+                "array_combinations: result would contain more than {MAX_COMBINATORIC_RESULTS} elements"
             ));
         }
     }
@@ -60,8 +58,7 @@ fn bounded_permutation_count(n: usize, k: usize) -> RResult<usize> {
             .ok_or_else(|| "array_permutations: result count overflows u128".to_string())?;
         if count > MAX_COMBINATORIC_RESULTS as u128 {
             return Err(format!(
-                "array_permutations: result would contain more than {MAX_COMBINATORIC_RESULTS} "
-                    "elements"
+                "array_permutations: result would contain more than {MAX_COMBINATORIC_RESULTS} elements"
             ));
         }
     }
