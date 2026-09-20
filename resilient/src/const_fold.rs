@@ -316,6 +316,14 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
         }
     }
 
+    // RES-3995: a live block retries by jumping to its raw body-start PC.
+    // Constant folding can remove instructions before that entry point, so
+    // leave retries targeting the original pre-fold stream and they resume
+    // in the wrong part of the body.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
     Ok(true)
