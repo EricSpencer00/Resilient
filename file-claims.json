@@ -251,6 +251,10 @@
     "resilient/src/source_map.rs": {
       "branch": "res-4748-source-map-count",
       "claimed_at": "2026-09-20T22:27:13Z"
+    },
+    "resilient/src/rzbc_emit.rs": {
+      "branch": "res-4752-bytecode-capacity",
+      "claimed_at": "2026-09-20T22:33:31Z"
     }
   }
 }
