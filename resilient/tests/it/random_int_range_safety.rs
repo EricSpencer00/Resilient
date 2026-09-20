@@ -27,9 +27,9 @@ fn flat_random_int_accepts_full_signed_range() {
 fn std_random_int_accepts_full_signed_range() {
     let result = resilient::run_program(
         r#"
-        use std::random as std_random;
+        use std::random;
         fn main() {
-            let value = std_random_int(-9223372036854775807, 9223372036854775807);
+            let value = random_int(-9223372036854775807, 9223372036854775807);
             if value >= -9223372036854775807 {
                 if value < 9223372036854775807 {
                     print("ok");
