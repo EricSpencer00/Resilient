@@ -7,8 +7,8 @@
 //! `result >= x && result >= y` is simply satisfiable for *some*
 //! `result`, and the free-variable query never rules that out.
 //!
-//! This module closes the hole for the straight-line and single
-//! branch subset of function bodies by *substituting the body's
+//! This module closes the hole for a conservative subset of function
+//! bodies by *substituting the body's
 //! return expression for `result`* before the clause is proven:
 //!
 //! * **Straight-line** `{ return E; }` → prove `ensures[result := E]`.
@@ -16,6 +16,10 @@
 //!   `if C { return T; } return F;` fall-through shape) → a case split:
 //!   prove `ensures[result := T]` under the path condition `C`, and
 //!   `ensures[result := F]` under `!C`. Both must hold.
+//! * **Match returns** with scalar literal / wildcard arms become a
+//!   first-match case split.
+//! * A single **try/catch** whose body and handlers each return a pure
+//!   scalar expression becomes one possible return path per block.
 //!
 //! Path conditions ride the existing free-axiom channel
 //! (`prove_with_axioms_and_timeout`): asserting `C` (or its negation)
@@ -28,7 +32,7 @@
 //! single `return` drops the body out of the subset and the caller
 //! falls back to the labeled free-variable path.
 
-use crate::Node;
+use crate::{Node, Pattern};
 
 /// How the return value of a function body relates to its inputs, for
 /// the subset of bodies this pass can model exactly.
@@ -44,6 +48,17 @@ pub(crate) enum ResultModel {
         then_ret: Box<Node>,
         else_ret: Box<Node>,
     },
+    /// A finite set of conservative return paths. `condition == None`
+    /// represents an unconditional path, as used for a modeled
+    /// `try` body or handler. Conditional paths account for first-match
+    /// semantics before they reach the prover.
+    Paths { paths: Vec<ResultPath> },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResultPath {
+    pub(crate) condition: Option<Box<Node>>,
+    pub(crate) ret: Box<Node>,
 }
 
 /// Model a function body's return value, or `None` when the body falls
@@ -80,12 +95,150 @@ pub(crate) fn model_body(body: &Node) -> Option<ResultModel> {
         // { return E; }
         [only] => {
             let ret = return_value(only)?;
-            is_pure(ret).then(|| ResultModel::Straight {
-                ret: Box::new(ret.clone()),
-            })
+            model_return_expression(ret)
+        }
+        // { try { return E; } catch Variant { return F; } ... }
+        [Node::TryCatch { body, handlers, .. }] => try_model(body, handlers),
+        _ => None,
+    }
+}
+
+fn model_return_expression(expr: &Node) -> Option<ResultModel> {
+    if is_pure(expr) {
+        return Some(ResultModel::Straight {
+            ret: Box::new(expr.clone()),
+        });
+    }
+    match expr {
+        Node::Match {
+            scrutinee, arms, ..
+        } => match_model(scrutinee, arms),
+        _ => None,
+    }
+}
+
+fn try_model(body: &[Node], handlers: &[(String, Vec<Node>)]) -> Option<ResultModel> {
+    if handlers.is_empty() {
+        return None;
+    }
+    let body_ret = return_from_statements(body)?;
+    if !is_pure(body_ret) {
+        return None;
+    }
+    let mut paths = vec![ResultPath {
+        condition: None,
+        ret: Box::new(body_ret.clone()),
+    }];
+    for (_, handler_body) in handlers {
+        let ret = return_from_statements(handler_body)?;
+        if !is_pure(ret) {
+            return None;
+        }
+        paths.push(ResultPath {
+            condition: None,
+            ret: Box::new(ret.clone()),
+        });
+    }
+    Some(ResultModel::Paths { paths })
+}
+
+fn return_from_statements(stmts: &[Node]) -> Option<&Node> {
+    match stmts {
+        [only] => return_value(only),
+        _ => None,
+    }
+}
+
+fn match_model(scrutinee: &Node, arms: &[(Pattern, Option<Node>, Node)]) -> Option<ResultModel> {
+    if !is_pure(scrutinee) || arms.is_empty() {
+        return None;
+    }
+
+    let mut covered = boolean_literal(false);
+    let mut paths = Vec::with_capacity(arms.len());
+    let mut has_unconditional_wildcard = false;
+
+    for (pattern, guard, body) in arms {
+        let ret = match_expression_value(body)?;
+        if !is_pure(ret) {
+            return None;
+        }
+        let arm_condition = pattern_condition(pattern, scrutinee)?;
+        let arm_condition = if let Some(guard) = guard {
+            if !is_pure(guard) {
+                return None;
+            }
+            and(arm_condition, guard.clone())
+        } else {
+            if matches!(pattern, Pattern::Wildcard) {
+                has_unconditional_wildcard = true;
+            }
+            arm_condition
+        };
+        let effective = and(arm_condition.clone(), negate(&covered));
+        paths.push(ResultPath {
+            condition: Some(Box::new(effective)),
+            ret: Box::new(ret.clone()),
+        });
+        covered = or(covered, arm_condition);
+    }
+
+    // Without an unconditional wildcard, an unmatched scalar value can
+    // produce Void. Refuse to model that partial result rather than
+    // certifying only the listed arms.
+    has_unconditional_wildcard.then_some(ResultModel::Paths { paths })
+}
+
+fn match_expression_value(node: &Node) -> Option<&Node> {
+    if is_pure(node) {
+        return Some(node);
+    }
+    let Node::Block { stmts, .. } = node else {
+        return None;
+    };
+    match stmts.as_slice() {
+        [Node::ExpressionStatement { expr, .. }] if is_pure(expr) => Some(expr),
+        _ => None,
+    }
+}
+
+fn pattern_condition(pattern: &Pattern, scrutinee: &Node) -> Option<Node> {
+    match pattern {
+        Pattern::Wildcard => Some(boolean_literal(true)),
+        Pattern::Literal(literal)
+            if matches!(
+                literal,
+                Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. }
+            ) =>
+        {
+            Some(infix(scrutinee.clone(), "==", literal.clone()))
         }
         _ => None,
     }
+}
+
+fn boolean_literal(value: bool) -> Node {
+    Node::BooleanLiteral {
+        value,
+        span: crate::span::Span::default(),
+    }
+}
+
+fn infix(left: Node, operator: &'static str, right: Node) -> Node {
+    Node::InfixExpression {
+        left: Box::new(left),
+        operator,
+        right: Box::new(right),
+        span: crate::span::Span::default(),
+    }
+}
+
+fn and(left: Node, right: Node) -> Node {
+    infix(left, "&&", right)
+}
+
+fn or(left: Node, right: Node) -> Node {
+    infix(left, "||", right)
 }
 
 fn branch_model(condition: &Node, consequence: &Node, alternative: &Node) -> Option<ResultModel> {
@@ -254,6 +407,26 @@ mod tests {
             model_body(&body),
             Some(ResultModel::Branch { .. })
         ));
+    }
+
+    #[test]
+    fn models_scalar_match_return() {
+        let body = body_of("fn m(int x) -> int { return match x { 0 => x, _ => x + 1 }; }");
+        let Some(ResultModel::Paths { paths }) = model_body(&body) else {
+            panic!("expected scalar match paths");
+        };
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path.condition.is_some()));
+    }
+
+    #[test]
+    fn models_scalar_try_catch_returns() {
+        let body = body_of("fn m(int x) -> int { try { return x; } catch Failure { return 0; } }");
+        let Some(ResultModel::Paths { paths }) = model_body(&body) else {
+            panic!("expected try/catch return paths");
+        };
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path.condition.is_none()));
     }
 
     #[test]
