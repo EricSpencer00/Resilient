@@ -23,6 +23,10 @@
     "resilient/tests/it/random_int_range_safety.rs": {
       "branch": "res-4483-random-int-range-safety",
       "claimed_at": "2026-09-20T04:18:26Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4494-host-vm-frame-layout",
+      "claimed_at": "2026-09-20T04:49:58Z"
     }
   }
 }
