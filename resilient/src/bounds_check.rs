@@ -791,8 +791,8 @@ fn format_error(source_path: &str, span: Span, msg: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::BOUNDS_TEST_LOCK as TEST_LOCK;
+    use super::*;
 
     /// Tests share the `DENY_UNPROVEN_BOUNDS` atomic and the
     /// thread-local stats, so serialize them under a mutex to keep
