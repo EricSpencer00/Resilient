@@ -281,6 +281,7 @@ pub(crate) fn builtin_array_scan(interp: &mut Interpreter, args: &[Value]) -> RR
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_GENERATED_ELEMENTS, check_flat_map_growth};
     use crate::run_program;
 
     fn run(src: &str) -> crate::RunResult {

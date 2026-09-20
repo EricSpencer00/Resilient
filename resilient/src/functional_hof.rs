@@ -11,7 +11,7 @@
 
 use crate::{
     Interpreter, Value,
-    array_functional::{MAX_GENERATED_ELEMENTS, check_flat_map_growth, extend_flat_map_output},
+    array_functional::{MAX_GENERATED_ELEMENTS, extend_flat_map_output},
 };
 
 type RResult<T> = Result<T, String>;
@@ -204,6 +204,7 @@ pub(crate) fn builtin_array_apply_n(interp: &mut Interpreter, args: &[Value]) ->
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_GENERATED_ELEMENTS;
     use crate::run_program;
 
     fn run(src: &str) -> crate::RunResult {
@@ -347,8 +348,12 @@ println(len(array_flat_map_fn([1,2,3], f)));"#);
 
     #[test]
     fn array_flat_map_fn_growth_rejects_budget_boundary() {
-        let error = check_flat_map_growth(MAX_GENERATED_ELEMENTS, 1, "array_flat_map_fn")
-            .expect_err("expected flat-map growth budget error");
+        let error = crate::array_functional::check_flat_map_growth(
+            MAX_GENERATED_ELEMENTS,
+            1,
+            "array_flat_map_fn",
+        )
+        .expect_err("expected flat-map growth budget error");
         assert!(error.contains("exceed the maximum"), "error: {error}");
     }
 
