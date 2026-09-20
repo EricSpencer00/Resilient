@@ -32,9 +32,9 @@
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
     },
-    "resilient-runtime/src/vm/serde.rs": {
-      "branch": "res-4517-trailing-bytecode",
-      "claimed_at": "2026-09-20T08:56:44Z"
+    "resilient/src/jit_backend.rs": {
+      "branch": "res-4518-jit-block-scope",
+      "claimed_at": "2026-09-20T08:56:56Z"
     }
   }
 }
