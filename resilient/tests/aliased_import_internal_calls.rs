@@ -52,7 +52,7 @@ fn assert_success(output: &std::process::Output, backend: &str) {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "7\n",
+        "7\nProgram executed successfully\n",
         "{backend} returned the wrong result"
     );
 }
