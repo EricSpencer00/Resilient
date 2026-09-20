@@ -465,8 +465,33 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         entry.body_start_pc = old_to_new[entry.body_start_pc];
     }
 
+    // RES-4568: call-site columns are keyed by the pre-rewrite PC.
+    // Keep only entries whose call opcode survived and translate them
+    // through the same map as the instruction stream. Leaving the
+    // old keys in place makes VM stacktrace() fall back to column 0
+    // after any fold before a call.
+    let mut new_call_cols = std::collections::HashMap::with_capacity(chunk.call_cols.len());
+    for (old_pc, column) in chunk.call_cols.drain() {
+        let Some(&new_pc) = old_to_new.get(old_pc) else {
+            continue;
+        };
+        if new_pc == usize::MAX {
+            continue;
+        }
+        let Some(op) = new_code.get(new_pc) else {
+            continue;
+        };
+        if matches!(
+            op,
+            Op::Call(_) | Op::CallClosure { .. } | Op::CallMethod { .. } | Op::CallForeign(_)
+        ) {
+            new_call_cols.insert(new_pc, column);
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
+    chunk.call_cols = new_call_cols;
     Ok(())
 }
 
