@@ -24,6 +24,14 @@ pub enum VmError {
     DivideByZero,
     TypeMismatch(&'static str),
     LocalOutOfBounds(u16),
+    /// The function table declares fewer local slots than a call site needs
+    /// for its arguments. This is malformed bytecode metadata, not a user
+    /// program error, and must be rejected before frame initialization.
+    InvalidFunctionLayout {
+        function: usize,
+        required_slots: usize,
+        local_count: usize,
+    },
     ConstantOutOfBounds(u16),
     /// RES-081: `Op::Call(idx)` with `idx` outside `program.functions`.
     FunctionOutOfBounds(u16),
@@ -133,6 +141,15 @@ impl std::fmt::Display for VmError {
             VmError::DivideByZero => write!(f, "vm: divide by zero"),
             VmError::TypeMismatch(what) => write!(f, "vm: type mismatch in {}", what),
             VmError::LocalOutOfBounds(i) => write!(f, "vm: local {} out of bounds", i),
+            VmError::InvalidFunctionLayout {
+                function,
+                required_slots,
+                local_count,
+            } => write!(
+                f,
+                "vm: function {} requires {} local slots but declares {}",
+                function, required_slots, local_count
+            ),
             VmError::ConstantOutOfBounds(i) => write!(f, "vm: constant {} out of bounds", i),
             VmError::FunctionOutOfBounds(i) => write!(f, "vm: function {} out of bounds", i),
             VmError::FrameFunctionOutOfBounds(i) => {
@@ -378,6 +395,26 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
 /// `VmError::CallStackOverflow`).
 const MAX_CALL_DEPTH: usize = 1024;
 const MAX_STRING_REPEAT: usize = 10_000_000;
+
+/// Validate the local window before a call path writes arguments into it.
+/// `Function` values are public and can come from cached or hand-built
+/// bytecode, so the compiler's normal arity invariant is not sufficient at
+/// the VM boundary.
+fn validate_function_layout(
+    function: usize,
+    local_count: u16,
+    required_slots: usize,
+) -> Result<(), VmError> {
+    let local_count = local_count as usize;
+    if required_slots > local_count {
+        return Err(VmError::InvalidFunctionLayout {
+            function,
+            required_slots,
+            local_count,
+        });
+    }
+    Ok(())
+}
 
 /// RES-141 / RES-3995: process-wide live-block telemetry counters for
 /// the VM backend, mirroring the tree-walker's `LIVE_TOTAL_RETRIES` /
@@ -735,6 +772,11 @@ fn run_postcheck(
         .functions
         .get(fn_idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    validate_function_layout(
+        fn_idx as usize,
+        func.local_count,
+        args.len().max(func.arity as usize),
+    )?;
     let mut locals: Vec<Value> = vec![Value::Void; func.local_count as usize];
     for (i, v) in args.into_iter().enumerate() {
         if let Some(slot) = locals.get_mut(i) {
@@ -1001,6 +1043,7 @@ fn run_dispatch_loop(
                                 return Err(VmError::CallStackOverflow);
                             }
                             let func = &program.functions[fn_idx];
+                            validate_function_layout(fn_idx, func.local_count, 2)?;
                             let base = locals.len();
                             locals.resize(base + func.local_count as usize, Value::Void);
                             locals[base] = a;
@@ -1037,6 +1080,7 @@ fn run_dispatch_loop(
                                 return Err(VmError::CallStackOverflow);
                             }
                             let func = &program.functions[fn_idx];
+                            validate_function_layout(fn_idx, func.local_count, 2)?;
                             let base = locals.len();
                             locals.resize(base + func.local_count as usize, Value::Void);
                             locals[base] = a;
@@ -1090,6 +1134,7 @@ fn run_dispatch_loop(
                                 return Err(VmError::CallStackOverflow);
                             }
                             let func = &program.functions[fn_idx];
+                            validate_function_layout(fn_idx, func.local_count, 2)?;
                             let base = locals.len();
                             locals.resize(base + func.local_count as usize, Value::Void);
                             locals[base] = a;
@@ -1170,6 +1215,7 @@ fn run_dispatch_loop(
                     .functions
                     .get(idx as usize)
                     .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
                 if !try_stack.is_empty() && !func.fails.is_empty() {
                     let variant = &func.fails[0];
                     let arity = func.arity as usize;
@@ -1362,6 +1408,7 @@ fn run_dispatch_loop(
                 if stack.len() < arity {
                     return Err(VmError::EmptyStack);
                 }
+                validate_function_layout(idx as usize, func.local_count, arity)?;
                 let base = frames[frame_idx].locals_base;
                 // Reserve the callee's locals slab (may differ in
                 // size from the caller's own when `idx` names a
@@ -1614,6 +1661,11 @@ fn run_dispatch_loop(
                     .functions
                     .get(fn_idx as usize)
                     .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+                validate_function_layout(
+                    fn_idx as usize,
+                    func.local_count,
+                    (arity as usize).max(func.arity as usize),
+                )?;
                 let base = locals.len();
                 locals.resize(base + func.local_count as usize, Value::Void);
                 for (i, v) in args.into_iter().enumerate() {
@@ -1708,6 +1760,11 @@ fn run_dispatch_loop(
                     continue;
                 };
                 let func = &program.functions[fn_idx];
+                validate_function_layout(
+                    fn_idx,
+                    func.local_count,
+                    (arity as usize).saturating_add(1).max(func.arity as usize),
+                )?;
                 let base = locals.len();
                 locals.resize(base + func.local_count as usize, Value::Void);
                 locals[base] = receiver;
@@ -1800,6 +1857,7 @@ fn run_dispatch_loop(
                         return Err(VmError::CallStackOverflow);
                     }
                     let func = &program.functions[fn_idx];
+                    validate_function_layout(fn_idx, func.local_count, 1)?;
                     let base = locals.len();
                     locals.resize(base + func.local_count as usize, Value::Void);
                     locals[base] = args.into_iter().next().expect("checked len == 1 above");
@@ -2737,6 +2795,11 @@ fn vm_call_closure_value(
         .functions
         .get(fn_idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    validate_function_layout(
+        fn_idx as usize,
+        func.local_count,
+        args.len().max(func.arity as usize),
+    )?;
     let mut locals: Vec<Value> = vec![Value::Void; func.local_count as usize];
     for (i, v) in args.into_iter().enumerate() {
         if let Some(slot) = locals.get_mut(i) {
@@ -4103,6 +4166,7 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     return Err(VmError::CallStackOverflow);
                 }
                 let func = &state.program.functions[fn_idx];
+                validate_function_layout(fn_idx, func.local_count, 2)?;
                 let base = state.locals.len();
                 state
                     .locals
@@ -4146,6 +4210,7 @@ fn h_sub(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     return Err(VmError::CallStackOverflow);
                 }
                 let func = &state.program.functions[fn_idx];
+                validate_function_layout(fn_idx, func.local_count, 2)?;
                 let base = state.locals.len();
                 state
                     .locals
@@ -4205,6 +4270,7 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     return Err(VmError::CallStackOverflow);
                 }
                 let func = &state.program.functions[fn_idx];
+                validate_function_layout(fn_idx, func.local_count, 2)?;
                 let base = state.locals.len();
                 state
                     .locals
@@ -4318,6 +4384,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .functions
         .get(idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(idx))?;
+    validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
     if !state.try_stack.is_empty() && !func.fails.is_empty() {
         let variant = func.fails[0].clone();
         let arity = func.arity as usize;
@@ -4663,6 +4730,11 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .functions
         .get(fn_idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    validate_function_layout(
+        fn_idx as usize,
+        func.local_count,
+        (arity as usize).max(func.arity as usize),
+    )?;
     let base = state.locals.len();
     state
         .locals
@@ -4699,6 +4771,7 @@ fn h_tail_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     if state.stack.len() < arity {
         return Err(VmError::EmptyStack);
     }
+    validate_function_layout(idx as usize, func.local_count, arity)?;
     let frame_idx = state.frame_idx();
     let base = state.frames[frame_idx].locals_base;
     state.locals.truncate(base);
@@ -4919,6 +4992,7 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             return Err(VmError::CallStackOverflow);
         }
         let func = &state.program.functions[fn_idx];
+        validate_function_layout(fn_idx, func.local_count, 1)?;
         let base = state.locals.len();
         state
             .locals
@@ -5532,6 +5606,11 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         return Ok(Step::Continue);
     };
     let func = &state.program.functions[fn_idx];
+    validate_function_layout(
+        fn_idx,
+        func.local_count,
+        arity.saturating_add(1).max(func.arity as usize),
+    )?;
     let base = state.locals.len();
     state
         .locals
@@ -5577,7 +5656,7 @@ fn h_exit_try(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 mod tests {
     use super::*;
     use crate::MapKey;
-    use crate::bytecode::{Op, Program};
+    use crate::bytecode::{Function, Op, Program};
 
     fn const_program(values: &[Value], code: &[Op]) -> Program {
         let mut main = Chunk::new();
@@ -5594,6 +5673,40 @@ mod tests {
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         }
+    }
+
+    fn function(name: &str, arity: u8, local_count: u16, code: &[Op]) -> Function {
+        let mut chunk = Chunk::new();
+        for op in code {
+            chunk.code.push(*op);
+            chunk.line_info.push(1);
+        }
+        Function {
+            name: name.to_string(),
+            arity,
+            chunk,
+            local_count,
+            upvalue_source_slots: Box::default(),
+            fails: Box::default(),
+            postcheck: None,
+        }
+    }
+
+    fn program_with_function(
+        values: &[Value],
+        code: &[Op],
+        function_name: &str,
+        arity: u8,
+        local_count: u16,
+    ) -> Program {
+        let mut program = const_program(values, code);
+        program.functions.push(function(
+            function_name,
+            arity,
+            local_count,
+            &[Op::ReturnFromCall],
+        ));
+        program
     }
 
     fn compile_run(src: &str) -> Result<Value, VmError> {
@@ -5614,6 +5727,148 @@ mod tests {
             let err = run_with(program, OverflowMode::Wrap, dispatch).unwrap_err();
             assert_eq!(err.kind(), expected, "dispatch {:?}", dispatch);
         }
+    }
+
+    #[test]
+    fn res4494_rejects_malformed_call_frames_in_both_dispatchers() {
+        let call = program_with_function(
+            &[Value::Int(7)],
+            &[Op::Const(0), Op::Call(0), Op::Return],
+            "takes_one",
+            1,
+            0,
+        );
+        let expected = VmError::InvalidFunctionLayout {
+            function: 0,
+            required_slots: 1,
+            local_count: 0,
+        };
+        assert_both_dispatches_error(&call, &expected);
+
+        let tail_call = program_with_function(
+            &[Value::Int(7)],
+            &[Op::Const(0), Op::TailCall(0)],
+            "takes_one",
+            1,
+            0,
+        );
+        assert_both_dispatches_error(&tail_call, &expected);
+    }
+
+    #[test]
+    fn res4494_rejects_malformed_specialized_frames_in_both_dispatchers() {
+        let closure = program_with_function(
+            &[Value::Int(7)],
+            &[
+                Op::MakeClosure {
+                    fn_idx: 0,
+                    upvalue_count: 0,
+                },
+                Op::Const(0),
+                Op::CallClosure {
+                    arity: 1,
+                    source_slot: u16::MAX,
+                },
+                Op::Return,
+            ],
+            "takes_one",
+            1,
+            0,
+        );
+        let expected = VmError::InvalidFunctionLayout {
+            function: 0,
+            required_slots: 1,
+            local_count: 0,
+        };
+        assert_both_dispatches_error(&closure, &expected);
+
+        let receiver = Value::Struct {
+            name: "Thing".to_string(),
+            fields: Vec::new(),
+        };
+        let mut method = program_with_function(
+            &[receiver],
+            &[
+                Op::Const(0),
+                Op::CallMethod {
+                    method_const: 1,
+                    arity: 0,
+                },
+                Op::Return,
+            ],
+            "Thing$run",
+            1,
+            0,
+        );
+        method.main.constants.push(Value::String("run".to_string()));
+        assert_both_dispatches_error(&method, &expected);
+
+        let left = Value::Struct {
+            name: "Thing".to_string(),
+            fields: Vec::new(),
+        };
+        let overload = program_with_function(
+            &[left.clone(), left],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+            "Thing$add",
+            2,
+            1,
+        );
+        let expected = VmError::InvalidFunctionLayout {
+            function: 0,
+            required_slots: 2,
+            local_count: 1,
+        };
+        assert_both_dispatches_error(&overload, &expected);
+
+        let value = Value::Struct {
+            name: "Thing".to_string(),
+            fields: Vec::new(),
+        };
+        let display = program_with_function(
+            &[value, Value::String("to_string".to_string())],
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            "Thing$fmt",
+            1,
+            0,
+        );
+        let expected = VmError::InvalidFunctionLayout {
+            function: 0,
+            required_slots: 1,
+            local_count: 0,
+        };
+        assert_both_dispatches_error(&display, &expected);
+    }
+
+    #[test]
+    fn res4494_rejects_malformed_isolated_frames() {
+        let program = program_with_function(&[], &[], "callback", 1, 0);
+        let expected = VmError::InvalidFunctionLayout {
+            function: 0,
+            required_slots: 1,
+            local_count: 0,
+        };
+        let closure = Value::Closure {
+            fn_idx: 0,
+            upvalues: Box::default(),
+            source_slots: Box::default(),
+        };
+        assert_eq!(
+            vm_call_closure_value(&program, closure, vec![Value::Int(1)], OverflowMode::Wrap,)
+                .unwrap_err(),
+            expected
+        );
+        assert_eq!(
+            run_postcheck(&program, 0, vec![Value::Int(1)], OverflowMode::Wrap).unwrap_err(),
+            expected
+        );
     }
 
     #[test]
@@ -5644,6 +5899,112 @@ mod tests {
             ],
         );
         assert_both_dispatches_error(&p, &VmError::FunctionOutOfBounds(7));
+    }
+
+    #[test]
+    fn res4494_rejects_call_frame_with_too_few_local_slots() {
+        let mut main = Chunk::new();
+        main.code.extend([Op::Const(0), Op::Call(0), Op::Return]);
+        main.constants.push(Value::Int(7));
+        main.line_info.extend([1, 1, 1]);
+        let mut body = Chunk::new();
+        body.code.push(Op::ReturnFromCall);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "malformed".into(),
+                arity: 1,
+                chunk: body,
+                local_count: 0,
+                upvalue_source_slots: Box::default(),
+                fails: Box::default(),
+                postcheck: None,
+            }],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        assert_both_dispatches_error(
+            &p,
+            &VmError::InvalidFunctionLayout {
+                function: 0,
+                required_slots: 1,
+                local_count: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn res4494_rejects_tail_call_with_too_few_local_slots() {
+        let mut main = Chunk::new();
+        main.code.extend([Op::Const(0), Op::TailCall(0)]);
+        main.constants.push(Value::Int(7));
+        main.line_info.extend([1, 1]);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "malformed_tail".into(),
+                arity: 1,
+                chunk: Chunk::new(),
+                local_count: 0,
+                upvalue_source_slots: Box::default(),
+                fails: Box::default(),
+                postcheck: None,
+            }],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        assert_both_dispatches_error(
+            &p,
+            &VmError::InvalidFunctionLayout {
+                function: 0,
+                required_slots: 1,
+                local_count: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn res4494_rejects_closure_frame_with_too_few_local_slots() {
+        let mut main = Chunk::new();
+        main.code.extend([
+            Op::MakeClosure {
+                fn_idx: 0,
+                upvalue_count: 0,
+            },
+            Op::Const(0),
+            Op::CallClosure {
+                arity: 1,
+                source_slot: u16::MAX,
+            },
+        ]);
+        main.constants.push(Value::Int(7));
+        main.line_info.extend([1, 1, 1]);
+        let mut body = Chunk::new();
+        body.code.push(Op::ReturnFromCall);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "malformed_closure".into(),
+                arity: 1,
+                chunk: body,
+                local_count: 0,
+                upvalue_source_slots: Box::default(),
+                fails: Box::default(),
+                postcheck: None,
+            }],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        assert_both_dispatches_error(
+            &p,
+            &VmError::InvalidFunctionLayout {
+                function: 0,
+                required_slots: 1,
+                local_count: 0,
+            },
+        );
     }
 
     #[test]
