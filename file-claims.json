@@ -35,14 +35,6 @@
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4505-generic-enum-type-consistency",
-      "claimed_at": "2026-09-20T07:00:29Z"
-    },
-    "resilient/tests/it/generic_enum_constructor_consistency.rs": {
-      "branch": "res-4505-generic-enum-type-consistency",
-      "claimed_at": "2026-09-20T07:00:29Z"
     }
   }
 }
