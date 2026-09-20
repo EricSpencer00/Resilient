@@ -187,7 +187,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingHeap<A> {
         let old_size = layout.size();
         // SAFETY: forwarding unchanged.
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
-        if !new_ptr.is_null() {
+        if new_size == 0 {
+            // A zero-size realloc releases the old allocation even when
+            // the allocator reports that state with a null pointer.
+            record_dealloc(old_size);
+        } else if !new_ptr.is_null() {
             // realloc semantics: the old allocation is freed
             // (whether or not the pointer moved), the new one is
             // live. Net delta = new_size - old_size.
@@ -281,6 +285,28 @@ mod tests {
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    /// Test allocator with the two realloc outcomes the wrapper must
+    /// distinguish: zero-size requests release the old block and return
+    /// null, while non-zero requests fail without releasing it.
+    struct ReallocBoundaryAlloc;
+
+    unsafe impl GlobalAlloc for ReallocBoundaryAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            if new_size == 0 {
+                unsafe { std::alloc::System.dealloc(ptr, layout) };
+            }
+            core::ptr::null_mut()
         }
     }
 
@@ -413,6 +439,39 @@ mod tests {
         let l2 = Layout::from_size_align(256, 8).unwrap();
         // SAFETY: layout describes the current allocation size.
         unsafe { alloc.dealloc(p2, l2) };
+    }
+
+    #[test]
+    fn zero_size_realloc_releases_accounted_bytes_when_allocator_returns_null() {
+        let _g = lock();
+        reset_all();
+        let alloc = TrackingHeap::new(ReallocBoundaryAlloc);
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let p = unsafe { alloc.alloc(layout) };
+        assert!(!p.is_null());
+        assert_eq!(current_bytes(), 64);
+
+        let new_ptr = unsafe { alloc.realloc(p, layout, 0) };
+        assert!(new_ptr.is_null());
+        assert_eq!(current_bytes(), 0);
+    }
+
+    #[test]
+    fn failed_nonzero_realloc_preserves_accounted_bytes() {
+        let _g = lock();
+        reset_all();
+        let alloc = TrackingHeap::new(ReallocBoundaryAlloc);
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let p = unsafe { alloc.alloc(layout) };
+        assert!(!p.is_null());
+        assert_eq!(current_bytes(), 64);
+
+        let new_ptr = unsafe { alloc.realloc(p, layout, 128) };
+        assert!(new_ptr.is_null());
+        assert_eq!(current_bytes(), 64);
+
+        unsafe { alloc.dealloc(p, layout) };
+        assert_eq!(current_bytes(), 0);
     }
 
     #[test]
