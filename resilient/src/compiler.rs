@@ -127,6 +127,12 @@ const BOXED_FLAG: u16 = 0x4000;
 /// already address one persistent slot directly.
 const STATIC_FLAG: u16 = 0x2000;
 
+/// The upper three bits of a local binding slot carry storage metadata.
+/// Only the remaining 13 bits can identify a frame-relative local, so the
+/// highest representable raw slot is 8191 and the first unrepresentable slot
+/// is 8192.
+const MAX_RAW_LOCAL_SLOTS: usize = (!(GLOBAL_FLAG | BOXED_FLAG | STATIC_FLAG)) as usize + 1;
+
 /// RES-3914 / RES-4046: mask off `GLOBAL_FLAG`, `BOXED_FLAG`, and
 /// `STATIC_FLAG`, leaving the raw frame-relative (or main-frame, or
 /// static-table) slot index.
@@ -889,7 +895,45 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // sequences that inlining would change).
     crate::inline::optimize_if_enabled(&mut prog)
         .map_err(|_| CompileError::InternalError("inliner failed"))?;
+    validate_local_slot_capacity(&prog)?;
     Ok(prog)
+}
+
+/// Reject bytecode that cannot represent its frame-relative local slots.
+///
+/// Local allocation is threaded through many lowering helpers, including
+/// hidden temporaries for loops, patterns, and contracts. Keeping this final
+/// invariant check next to the assembled `Program` prevents a future helper
+/// from accidentally reintroducing the old full-`u16` assumption and emitting
+/// a slot whose metadata bits would change its operation kind.
+fn validate_local_slot_capacity(program: &Program) -> Result<(), CompileError> {
+    let is_unrepresentable_local = |idx: u16| {
+        let raw = if idx & BOXED_FLAG != 0 {
+            raw_slot(idx)
+        } else {
+            idx
+        };
+        raw as usize >= MAX_RAW_LOCAL_SLOTS
+    };
+    let chunk_uses_unrepresentable_local = |chunk: &Chunk| {
+        chunk.code.iter().any(|op| match op {
+            Op::LoadLocal(idx) | Op::StoreLocal(idx) | Op::IncLocal(idx) => {
+                is_unrepresentable_local(*idx)
+            }
+            Op::StoreUpvalue { local_slot, .. } => is_unrepresentable_local(*local_slot),
+            _ => false,
+        })
+    };
+
+    if chunk_uses_unrepresentable_local(&program.main)
+        || program.functions.iter().any(|function| {
+            function.local_count as usize > MAX_RAW_LOCAL_SLOTS
+                || chunk_uses_unrepresentable_local(&function.chunk)
+        })
+    {
+        return Err(CompileError::TooManyLocals);
+    }
+    Ok(())
 }
 
 /// RES-3992: resolve every top-level `const NAME = expr;` declaration

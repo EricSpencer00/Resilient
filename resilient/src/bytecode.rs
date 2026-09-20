@@ -824,7 +824,7 @@ impl std::fmt::Display for CompileError {
                 write!(f, "bytecode compile: unsupported construct: {}", what)
             }
             CompileError::TooManyConstants => write!(f, "bytecode compile: > 65535 constants"),
-            CompileError::TooManyLocals => write!(f, "bytecode compile: > 65535 locals"),
+            CompileError::TooManyLocals => write!(f, "bytecode compile: > 8192 locals"),
             CompileError::UnknownIdentifier(n) => {
                 write!(f, "bytecode compile: unknown identifier: {}", n)
             }
