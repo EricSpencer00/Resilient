@@ -40,7 +40,7 @@ done
 
 if [ -z "$PR" ]; then
   BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
-  PR="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+  PR="$(github_rest_find_open_pr "$BRANCH" 2>/dev/null || true)"
 fi
 
 if [ -z "$PR" ] || [ "$PR" = "null" ]; then
@@ -49,10 +49,10 @@ if [ -z "$PR" ] || [ "$PR" = "null" ]; then
 fi
 
 if [ -z "$ISSUE" ]; then
-  ISSUE="$(gh pr view "$PR" --json body -q '.body' | sed -nE 's/.*[Cc]loses #([0-9]+).*/\1/p' | head -1 || true)"
+  ISSUE="$(github_rest_pr_body "$PR" | sed -nE 's/.*[Cc]loses #([0-9]+).*/\1/p' | head -1 || true)"
 fi
 
-BRANCH="${BRANCH:-$(gh pr view "$PR" --json headRefName -q .headRefName 2>/dev/null || true)}"
+BRANCH="${BRANCH:-$(github_rest_pr_head_ref "$PR" 2>/dev/null || true)}"
 NOW="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 FILES_MD="- (none recorded)"

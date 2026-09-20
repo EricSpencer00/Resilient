@@ -214,4 +214,8 @@ echo "case8c ok: unrelated gh pr ready failure remains fatal"
 
 PATH="$OLD_PATH"
 
+# RES-4509: keep the GraphQL/REST fallback regression suite inside the
+# existing CI-invoked self-test entry point without changing workflows.
+bash "$REPO_ROOT/agent-scripts/test-github-rest-fallback.sh"
+
 echo "PASS: test-ready-or-bail-closes.sh"

@@ -117,7 +117,7 @@ done
 
 if [ -z "$PR" ]; then
   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  PR="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+  PR="$(github_rest_find_open_pr "$BRANCH" 2>/dev/null || true)"
   if [ -z "$PR" ] || [ "$PR" = "null" ]; then
     echo "Could not infer open PR for branch $BRANCH. Pass --pr N." >&2
     exit 2
@@ -133,7 +133,7 @@ if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
   if (( DRY_RUN == 0 )); then
     if ! bash "$SCRIPT_DIR/sync-integration.sh" --pr "$PR"; then
       echo "sync-integration failed — leaving PR #$PR as draft."
-      gh pr comment "$PR" --body "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
+      github_comment_pr "$PR" "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
       exit 2
     fi
 
@@ -160,7 +160,7 @@ lines += ["", "Fix the items above, push new commits, and re-run `agent-scripts/
 print("\n".join(lines))
 PYEOF
 )"
-        gh pr comment "$PR" --body "$BODY" >/dev/null
+        github_comment_pr "$PR" "$BODY" >/dev/null
         "$SCRIPT_DIR/agent-handoff.sh" \
           --pr "$PR" \
           --phase guardrail-red \
@@ -175,7 +175,7 @@ PYEOF
     "ready-or-bail passed substantive local guardrails and integration sync" >/dev/null
 
   BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
-  gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"
+  github_rest_pr_body "$PR" > "$BODY_FILE"
   echo
   echo "=============================================================="
   if (( NO_CLOSE == 1 )); then
@@ -214,7 +214,7 @@ PYEOF
     else
       READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete."
     fi
-    gh pr comment "$PR" --body "$READY_BODY" >/dev/null
+    github_comment_pr "$PR" "$READY_BODY" >/dev/null
     "$SCRIPT_DIR/agent-handoff.sh" \
       --pr "$PR" \
       --phase guardrail-green \
@@ -242,7 +242,7 @@ lines += ["", "Fix the items above, push new commits, and re-run `agent-scripts/
 print("\n".join(lines))
 PYEOF
 )"
-    gh pr comment "$PR" --body "$BODY" >/dev/null
+    github_comment_pr "$PR" "$BODY" >/dev/null
     "$SCRIPT_DIR/agent-handoff.sh" \
       --pr "$PR" \
       --phase guardrail-red \

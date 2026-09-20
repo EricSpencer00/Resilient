@@ -58,7 +58,7 @@ if [[ "$branch" == "main" || "$branch" == "$INTEGRATION_REF" ]]; then
 fi
 
 if [[ -z "$PR" ]]; then
-    PR="$(gh pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+    PR="$(github_rest_find_open_pr "$branch" 2>/dev/null || true)"
 fi
 
 echo "Syncing $branch against origin/main (tracking via $INTEGRATION_REF)"
