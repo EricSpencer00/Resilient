@@ -10344,8 +10344,8 @@ c.bump();
         let compiled = compile(&program).expect("module impl method should compile");
         let vm = crate::vm::run(&compiled).expect("VM should run module impl method");
 
-        assert_eq!(interpreted, Value::Int(42));
-        assert_eq!(vm, interpreted);
+        assert_int(interpreted, 42);
+        assert_int(vm, 42);
     }
 
     #[test]
@@ -10371,7 +10371,7 @@ c.increment();
         let compiled = compile(&program).expect("inherited module impl should compile");
         let vm = crate::vm::run(&compiled).expect("VM should run inherited module impl method");
 
-        assert_eq!(interpreted, Value::Int(42));
-        assert_eq!(vm, interpreted);
+        assert_int(interpreted, 42);
+        assert_int(vm, 42);
     }
 }
