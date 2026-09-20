@@ -28,7 +28,7 @@
 //! is no VTable.
 //!
 //! Out of scope here: VTable / `dyn Trait`, monomorphisation,
-//! supertraits, default method bodies, blanket impls.
+//! supertraits, and blanket impls.
 //!
 //! ## RES-779: Associated Types Extension
 //!
@@ -86,6 +86,12 @@ pub(crate) struct TraitMethodSig {
     /// RES-2697: parameter names in declaration order (e.g. `["self", "x"]`).
     /// Used to bind arguments when dispatching a default method body.
     pub params: Vec<String>,
+    /// Declared parameter types in the same order as `params`. The receiver's
+    /// type is represented as `any` because each implementation supplies its
+    /// concrete receiver type.
+    pub param_types: Vec<String>,
+    /// Declared return type, when the trait method has an explicit annotation.
+    pub return_type: Option<String>,
     /// RES-2697: optional default body. `None` means the method must be
     /// provided by every `impl` block; `Some` means the impl may omit it
     /// and the default fires instead.
@@ -97,6 +103,12 @@ pub(crate) struct TraitMethodSig {
     /// promising to hand back "the same concrete type" can't be
     /// satisfied through the trait-object receiver.
     pub returns_self: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ImplMethodSig {
+    parameters: Vec<(String, String)>,
+    return_type: Option<String>,
 }
 
 /// Associated type declaration in a trait.
@@ -212,9 +224,7 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
 }
 
 /// Parse a single method signature inside a trait body:
-/// `fn name(self, param: Type, ...) -> RetType;` or `fn name(self) {}`
-/// (the body is allowed but ignored — keeps the parser tolerant of
-/// stub bodies that future tickets may grow into default methods).
+/// `fn name(self, Type param, ...) -> RetType;` or `fn name(self) {}`.
 fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     let sig_span = parser.span_at_current();
     parser.next_token(); // skip 'fn'
@@ -239,64 +249,89 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     }
     parser.next_token(); // skip '('
 
-    // RES-2697: walk parameter tokens until the matching `)`, collecting
-    // param names for default-body dispatch. Arity still drives
-    // typecheck coverage; names drive runtime binding.
+    // RES-2697 / RES-4460: walk parameter tokens until the matching `)`,
+    // retaining both names for default-body dispatch and types for trait
+    // signature validation. Trait parameters use the same `Type name`
+    // order as regular functions; the receiver is the one bare `self` name.
     let mut depth = 0_i32;
     let mut takes_self = false;
-    let mut param_count = 0_usize;
     let mut params: Vec<String> = Vec::new();
-    let mut saw_any_token_in_param = false;
+    let mut param_types: Vec<String> = Vec::new();
+    let mut current_param: Vec<Token> = Vec::with_capacity(4);
     let mut first_param = true;
-    let mut at_param_start = true;
+
+    let finish_param = |tokens: &mut Vec<Token>,
+                        first: bool,
+                        takes_self: &mut bool,
+                        params: &mut Vec<String>,
+                        param_types: &mut Vec<String>| {
+        if tokens.is_empty() {
+            return;
+        }
+
+        // Default values are not part of a trait method's signature. Stop at
+        // the first assignment token when finding the declared name.
+        let declaration_end = tokens
+            .iter()
+            .position(|token| *token == Token::Assign)
+            .unwrap_or(tokens.len());
+        let declaration = &tokens[..declaration_end];
+
+        if first
+            && declaration.len() == 1
+            && matches!(&declaration[0], Token::Identifier(name) if name == "self")
+        {
+            *takes_self = true;
+            params.push("self".to_string());
+            param_types.push("any".to_string());
+        } else if let Some(name_index) = declaration
+            .iter()
+            .rposition(|token| matches!(token, Token::Identifier(_)))
+            && let Token::Identifier(name) = &declaration[name_index]
+        {
+            params.push(name.clone());
+            let ty = join_type_tokens(&declaration[..name_index]);
+            param_types.push(if ty.is_empty() { "any".to_string() } else { ty });
+        }
+        tokens.clear();
+    };
+
     while parser.current_token != Token::Eof {
         match &parser.current_token {
             Token::LeftParen | Token::Less | Token::LeftBracket | Token::LeftBrace => {
                 depth += 1;
-                saw_any_token_in_param = true;
-                at_param_start = false;
+                current_param.push(parser.current_token.clone());
                 parser.next_token();
             }
             Token::RightParen if depth == 0 => {
-                if saw_any_token_in_param {
-                    param_count += 1;
-                }
+                finish_param(
+                    &mut current_param,
+                    first_param,
+                    &mut takes_self,
+                    &mut params,
+                    &mut param_types,
+                );
                 parser.next_token(); // skip ')'
                 break;
             }
             Token::RightParen | Token::Greater | Token::RightBracket | Token::RightBrace => {
                 depth -= 1;
-                saw_any_token_in_param = true;
-                at_param_start = false;
+                current_param.push(parser.current_token.clone());
                 parser.next_token();
             }
             Token::Comma if depth == 0 => {
-                if saw_any_token_in_param {
-                    param_count += 1;
-                }
-                saw_any_token_in_param = false;
+                finish_param(
+                    &mut current_param,
+                    first_param,
+                    &mut takes_self,
+                    &mut params,
+                    &mut param_types,
+                );
                 first_param = false;
-                at_param_start = true;
-                parser.next_token();
-            }
-            Token::Identifier(ident)
-                if first_param && !saw_any_token_in_param && ident == "self" =>
-            {
-                takes_self = true;
-                saw_any_token_in_param = true;
-                at_param_start = false;
-                params.push("self".to_string());
-                parser.next_token();
-            }
-            Token::Identifier(ident) if at_param_start && depth == 0 => {
-                params.push(ident.clone());
-                saw_any_token_in_param = true;
-                at_param_start = false;
                 parser.next_token();
             }
             _ => {
-                saw_any_token_in_param = true;
-                at_param_start = false;
+                current_param.push(parser.current_token.clone());
                 parser.next_token();
             }
         }
@@ -307,32 +342,19 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     // identifier `Self` (single token, nothing else before the
     // terminator) — that's the only shape `dyn_trait::check` needs to
     // flag as object-safety-breaking.
-    let mut returns_self = false;
+    let mut return_tokens: Vec<Token> = Vec::with_capacity(2);
     if parser.current_token == Token::Arrow {
         parser.next_token(); // skip '->'
-        let mut first = true;
         while !matches!(
             parser.current_token,
             Token::Semicolon | Token::LeftBrace | Token::RightBrace | Token::Function | Token::Eof
         ) {
-            if first
-                && let Token::Identifier(ident) = &parser.current_token
-                && ident == "Self"
-            {
-                returns_self = true;
-            } else if first {
-                returns_self = false;
-            } else {
-                // More than one token before the terminator (e.g. a
-                // generic return type or a compound path) — not the
-                // bare-`Self` shape, regardless of what the first
-                // token was.
-                returns_self = false;
-            }
-            first = false;
+            return_tokens.push(parser.current_token.clone());
             parser.next_token();
         }
     }
+    let return_type = join_type_tokens(&return_tokens);
+    let returns_self = return_type == "Self";
 
     // RES-2697: `;` means abstract signature; `{ ... }` means default body.
     // After parse_block_statement returns the cursor sits ON the closing `}`;
@@ -351,13 +373,59 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
 
     Some(TraitMethodSig {
         name: method_name,
-        param_arity: param_count,
+        param_arity: params.len(),
         takes_self,
         span: sig_span,
         params,
+        param_types,
+        return_type: (!return_type.is_empty()).then_some(return_type),
         default_body,
         returns_self,
     })
+}
+
+/// Reconstruct the compact type spelling used by the parser's regular
+/// function-parameter path. Whitespace is inserted only between adjacent
+/// identifier-like tokens (`dyn Trait`, `linear T`); punctuation stays tight.
+fn join_type_tokens(tokens: &[Token]) -> String {
+    let mut result = String::new();
+    for token in tokens {
+        let text = match token {
+            Token::Identifier(name) => name.clone(),
+            Token::Function => "fn".to_string(),
+            Token::Linear => "linear".to_string(),
+            Token::Mut => "mut".to_string(),
+            Token::Less => "<".to_string(),
+            Token::Greater => ">".to_string(),
+            Token::ShiftRight => ">>".to_string(),
+            Token::LeftParen => "(".to_string(),
+            Token::RightParen => ")".to_string(),
+            Token::LeftBracket => "[".to_string(),
+            Token::RightBracket => "]".to_string(),
+            Token::Comma => ",".to_string(),
+            Token::Semicolon => ";".to_string(),
+            Token::Colon => ":".to_string(),
+            Token::Arrow => "->".to_string(),
+            Token::BitAnd => "&".to_string(),
+            Token::Bang => "!".to_string(),
+            Token::Dot => ".".to_string(),
+            Token::DoubleColon => "::".to_string(),
+            _ => continue,
+        };
+        let previous_is_word = result
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        let current_is_word = text
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        if previous_is_word && current_is_word {
+            result.push(' ');
+        }
+        result.push_str(&text);
+    }
+    result
 }
 
 /// Parse a single associated type declaration inside a trait body:
@@ -560,16 +628,26 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 
             // Build the set of methods this impl block actually provides.
             // RES-1802: pre-size to methods.len() — one insert per method.
-            let mut provided: HashMap<String, usize> = HashMap::with_capacity(methods.len());
+            let mut provided: HashMap<String, ImplMethodSig> =
+                HashMap::with_capacity(methods.len());
             for m in methods {
                 if let Node::Function {
-                    name, parameters, ..
+                    name,
+                    parameters,
+                    return_type,
+                    ..
                 } = m
                 {
                     let plain = name
                         .strip_prefix(&format!("{}$", struct_name))
                         .unwrap_or(name);
-                    provided.insert(plain.to_string(), parameters.len());
+                    provided.insert(
+                        plain.to_string(),
+                        ImplMethodSig {
+                            parameters: parameters.clone(),
+                            return_type: return_type.clone(),
+                        },
+                    );
                 }
             }
 
@@ -591,17 +669,37 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                             ),
                         ));
                     }
-                    Some(&arity) if arity != sig.param_arity => {
+                    Some(method) if method.parameters.len() != sig.param_arity => {
                         return Err(format_err(
                             source_path,
                             *span,
                             &format!(
                                 "impl `{}` for `{}` method `{}` has {} parameter(s); trait `{}` declares {}",
-                                t, struct_name, sig.name, arity, t, sig.param_arity
+                                t,
+                                struct_name,
+                                sig.name,
+                                method.parameters.len(),
+                                t,
+                                sig.param_arity
                             ),
                         ));
                     }
-                    Some(_) => {}
+                    Some(method) => {
+                        if let Some(mismatch) = method_signature_mismatch(
+                            sig,
+                            &method.parameters,
+                            method.return_type.as_deref(),
+                        ) {
+                            return Err(format_err(
+                                source_path,
+                                *span,
+                                &format!(
+                                    "impl `{}` for `{}` method `{}` signature mismatch: {}",
+                                    t, struct_name, sig.name, mismatch
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -1176,6 +1274,49 @@ fn normalize_assoc_type_expr(type_expr: &str) -> String {
         .to_string()
 }
 
+fn normalize_type_spelling(type_name: &str) -> String {
+    type_name
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn method_signature_mismatch(
+    trait_method: &TraitMethodSig,
+    impl_parameters: &[(String, String)],
+    impl_return_type: Option<&str>,
+) -> Option<String> {
+    for (index, trait_type) in trait_method.param_types.iter().enumerate() {
+        // The trait's receiver has no concrete type until an implementation
+        // chooses its target type. All other parameters must match exactly.
+        if trait_method.takes_self && index == 0 {
+            continue;
+        }
+        let Some((impl_type, _)) = impl_parameters.get(index) else {
+            continue;
+        };
+        if normalize_type_spelling(trait_type) != normalize_type_spelling(impl_type) {
+            return Some(format!(
+                "parameter {} has type `{}`; trait declares `{}`",
+                index + 1,
+                impl_type,
+                trait_type
+            ));
+        }
+    }
+
+    if let (Some(trait_type), Some(impl_type)) =
+        (trait_method.return_type.as_deref(), impl_return_type)
+        && normalize_type_spelling(trait_type) != normalize_type_spelling(impl_type)
+    {
+        return Some(format!(
+            "return type is `{}`; trait declares `{}`",
+            impl_type, trait_type
+        ));
+    }
+    None
+}
+
 fn format_err(source_path: &str, span: Span, msg: &str) -> String {
     if span.start.line == 0 {
         msg.to_string()
@@ -1744,5 +1885,71 @@ mod tests {
             "got: {:?}",
             result.stdout
         );
+    }
+
+    #[test]
+    fn trait_method_signature_preserves_parameter_names_and_types() {
+        let prog = parse_program(
+            "trait Adder { fn add(self, int amount) -> int; }\n\
+             fn main(int d) {} main();",
+        );
+        let method = match &prog {
+            Node::Program(stmts) => stmts.iter().find_map(|stmt| match &stmt.node {
+                Node::TraitDecl { methods, .. } => methods.first(),
+                _ => None,
+            }),
+            _ => None,
+        }
+        .expect("trait method");
+
+        assert_eq!(method.params, vec!["self", "amount"]);
+        assert_eq!(method.param_types, vec!["any", "int"]);
+        assert_eq!(method.return_type.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn trait_impl_rejects_incompatible_parameter_type() {
+        let prog = parse_program(
+            "trait Adder { fn add(self, int amount) -> int; }\n\
+             struct Box { int value }\n\
+             impl Adder for Box {\n\
+                 fn add(self, string amount) -> int { return 0; }\n\
+             }\n\
+             fn main(int d) {} main();",
+        );
+        let error = check(&prog, "test.rz").expect_err("expected parameter mismatch");
+        assert!(error.contains("parameter 2"), "got: {error}");
+        assert!(error.contains("string"), "got: {error}");
+        assert!(error.contains("int"), "got: {error}");
+    }
+
+    #[test]
+    fn trait_impl_rejects_incompatible_return_type() {
+        let prog = parse_program(
+            "trait Render { fn render(self) -> string; }\n\
+             struct Box { int value }\n\
+             impl Render for Box {\n\
+                 fn render(self) -> int { return 0; }\n\
+             }\n\
+             fn main(int d) {} main();",
+        );
+        let error = check(&prog, "test.rz").expect_err("expected return mismatch");
+        assert!(error.contains("return type"), "got: {error}");
+        assert!(error.contains("int"), "got: {error}");
+        assert!(error.contains("string"), "got: {error}");
+    }
+
+    #[test]
+    fn default_method_binds_typed_parameter_name() {
+        let src = "trait Adder {\
+             fn add(self, int amount) -> int { return amount + 1; }\
+             }\
+             struct Box { int value }\
+             impl Adder for Box {}\
+             let b = new Box { value: 0 };\
+             println(b.add(41));";
+        let result = crate::run_program(src);
+        assert!(result.ok, "runtime failed: {:?}", result.errors);
+        assert!(result.stdout.contains("42"), "got: {:?}", result.stdout);
     }
 }
