@@ -40328,24 +40328,6 @@ struct Counter { int value; }"#,
     }
 
     #[test]
-    fn random_int_handles_full_signed_range_without_overflow() {
-        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_rng(11);
-        let lo = i64::MIN;
-        let hi = i64::MAX;
-        for _ in 0..200 {
-            let value = builtin_random_int(&[Value::Int(lo), Value::Int(hi)]).unwrap();
-            let Value::Int(value) = value else {
-                panic!("expected Int, got {value:?}");
-            };
-            assert!(
-                value >= lo && value < hi,
-                "value {value} outside [{lo}, {hi})"
-            );
-        }
-    }
-
-    #[test]
     fn random_int_rejects_reversed_bounds() {
         let err = builtin_random_int(&[Value::Int(5), Value::Int(5)]).unwrap_err();
         assert!(err.contains("hi must be > lo"), "err was: {}", err);

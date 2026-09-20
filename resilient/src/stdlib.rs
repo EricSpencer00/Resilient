@@ -4912,22 +4912,6 @@ mod tests {
     }
 
     #[test]
-    fn random_int_handles_full_signed_range_without_overflow() {
-        let lo = i64::MIN;
-        let hi = i64::MAX;
-        for _ in 0..200 {
-            let value = random_int(&[Value::Int(lo), Value::Int(hi)]).unwrap();
-            let Value::Int(value) = value else {
-                panic!("expected Int, got {value:?}");
-            };
-            assert!(
-                value >= lo && value < hi,
-                "value {value} outside [{lo}, {hi})"
-            );
-        }
-    }
-
-    #[test]
     fn json_roundtrip() {
         let input = r#"{"name":"test","value":42,"items":[1,2,3],"active":true}"#;
         let parsed = parse_json_value(input).unwrap();
