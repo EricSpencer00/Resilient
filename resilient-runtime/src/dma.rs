@@ -386,19 +386,6 @@ impl<const N: usize> DmaChain<N> {
         Some(&self.descriptors[index])
     }
 
-    /// Head pointer — what you'd hand a DMA controller's `PADR`
-    /// (peripheral address-of-descriptor) register. Null if the
-    /// chain is empty.
-    ///
-    /// Returned as `*const DmaDescriptor` (the engine reads it, never
-    /// writes it). The chain is relinked before the pointer is
-    /// returned, and it remains valid for as long as `self` is alive
-    /// and unmoved after this call.
-    pub fn head_ptr(&mut self) -> *const DmaDescriptor {
-        self.relink();
-        self.current_head_ptr()
-    }
-
     /// Rebuild every internal link from the arena's current address.
     ///
     /// `DmaChain` is movable until a transfer borrows it. Relinking at
@@ -414,7 +401,14 @@ impl<const N: usize> DmaChain<N> {
         }
     }
 
-    fn current_head_ptr(&self) -> *const DmaDescriptor {
+    /// Head pointer — what you'd hand a DMA controller's `PADR`
+    /// (peripheral address-of-descriptor) register after calling
+    /// [`Self::start`]. Null if the chain is empty.
+    ///
+    /// Returned as `*const DmaDescriptor` (the engine reads it, never
+    /// writes it). The transfer handoff relinks the chain first, and
+    /// the pointer remains valid for the transfer's lifetime.
+    pub fn head_ptr(&self) -> *const DmaDescriptor {
         if self.len == 0 {
             ptr::null()
         } else {
@@ -466,7 +460,7 @@ impl<const N: usize> DmaTransfer<'_, N> {
     /// Head pointer — hand this to the DMA controller's address
     /// register. Stays valid for the lifetime of `self`.
     pub fn head_ptr(&self) -> *const DmaDescriptor {
-        self.chain.current_head_ptr()
+        self.chain.head_ptr()
     }
 
     /// Total bytes the entire chain will transfer. Useful for
