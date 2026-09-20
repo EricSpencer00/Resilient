@@ -212,9 +212,13 @@
       "branch": "res-4701-flatten-stack-safe",
       "claimed_at": "2026-09-20T20:47:58Z"
     },
-    "resilient/src/stdlib.rs": {
-      "branch": "res-4702-stdlib-range-overflow",
-      "claimed_at": "2026-09-20T20:49:37Z"
+    "resilient/src/bytes_helpers.rs": {
+      "branch": "res-4706-bytes-repeat-empty",
+      "claimed_at": "2026-09-20T20:59:10Z"
+    },
+    "resilient/tests/bytes_repeat_resource_boundary.rs": {
+      "branch": "res-4706-bytes-repeat-empty",
+      "claimed_at": "2026-09-20T20:59:10Z"
     }
   }
 }
