@@ -3522,6 +3522,12 @@ struct VmState<'p> {
     stack: Vec<Value>,
     locals: Vec<Value>,
     frames: Vec<CallFrame>,
+    /// RES-4481: function-scoped static-let storage shared by every
+    /// invocation of the corresponding function chunk. Unlike locals,
+    /// these tables must survive frame teardown so the direct dispatcher
+    /// has the same persistence semantics as the match dispatcher.
+    statics: Vec<Vec<Value>>,
+    statics_init: Vec<Vec<bool>>,
     overflow_mode: OverflowMode,
     try_stack: Vec<TryFrame>,
     /// RES-4131: threaded through to `stacktrace()`'s frame
@@ -3760,9 +3766,9 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ASSUME_FAIL] = h_assume_fail;
     table[OP_KIND_ENTER_LIVE] = h_live_unsupported;
     table[OP_KIND_EXIT_LIVE] = h_live_unsupported;
-    table[OP_KIND_PUSH_STATIC_INITIALIZED] = h_static_unsupported;
-    table[OP_KIND_STORE_STATIC] = h_static_unsupported;
-    table[OP_KIND_LOAD_STATIC] = h_static_unsupported;
+    table[OP_KIND_PUSH_STATIC_INITIALIZED] = h_push_static_initialized;
+    table[OP_KIND_STORE_STATIC] = h_store_static;
+    table[OP_KIND_LOAD_STATIC] = h_load_static;
     table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
     table[OP_KIND_DEFER_PUSH] = h_defer_unsupported;
     table
@@ -3788,15 +3794,102 @@ fn h_live_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError
     ))
 }
 
-/// RES-4046: `run_direct` doesn't implement function-scoped `static
-/// let` persistence yet — see the `OP_KIND_PUSH_STATIC_INITIALIZED`
-/// doc comment. Surface a clean error instead of silently resetting
-/// the static's value on every call (the bug this ticket fixes).
+/// RES-4481: mirror the match dispatcher's eager static-initialization
+/// guard. The bit is set before the initializer runs so a self-reference
+/// cannot recursively re-enter the initializer forever.
 #[inline(never)]
-fn h_static_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported(
-        "static let (RESILIENT_DISPATCH=direct doesn't implement RES-4046 persistence yet)",
-    ))
+fn h_push_static_initialized(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::PushStaticInitialized(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let chunk_idx = state.frames[frame_idx].chunk_idx;
+    if chunk_idx == usize::MAX {
+        return Err(VmError::Unsupported(
+            "static let initializer guard at program scope",
+        ));
+    }
+    if state.statics_init.len() <= chunk_idx {
+        state.statics_init.resize_with(chunk_idx + 1, Vec::new);
+    }
+    let flags = &mut state.statics_init[chunk_idx];
+    let abs = idx as usize;
+    if flags.len() <= abs {
+        flags.resize(abs + 1, false);
+    }
+    let already_initialized = flags[abs];
+    flags[abs] = true;
+    state.stack.push(Value::Bool(already_initialized));
+    Ok(Step::Continue)
+}
+
+/// RES-4481: store a function-scoped static in storage shared across
+/// calls to that function. Requiring a prior initialization guard keeps
+/// malformed bytecode from creating arbitrary hidden slots.
+#[inline(never)]
+fn h_store_static(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::StoreStatic(idx) = op else {
+        unreachable!()
+    };
+    let value = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let frame_idx = state.frame_idx();
+    let chunk_idx = state.frames[frame_idx].chunk_idx;
+    if chunk_idx == usize::MAX {
+        return Err(VmError::Unsupported("static let store at program scope"));
+    }
+    let abs = idx as usize;
+    let declared = state
+        .statics_init
+        .get(chunk_idx)
+        .and_then(|flags| flags.get(abs))
+        .copied()
+        .ok_or(VmError::LocalOutOfBounds(idx))?;
+    if !declared {
+        return Err(VmError::LocalOutOfBounds(idx));
+    }
+    if state.statics.len() <= chunk_idx {
+        state.statics.resize_with(chunk_idx + 1, Vec::new);
+    }
+    let slots = &mut state.statics[chunk_idx];
+    if slots.len() <= abs {
+        slots.resize(abs + 1, Value::Void);
+    }
+    slots[abs] = value;
+    Ok(Step::Continue)
+}
+
+/// RES-4481: load a function-scoped static without consulting the
+/// per-call locals slab. A declared-but-not-yet-stored slot is Void,
+/// which preserves the match dispatcher's self-referential initializer
+/// behavior; an undeclared slot is malformed bytecode and is rejected.
+#[inline(never)]
+fn h_load_static(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::LoadStatic(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let chunk_idx = state.frames[frame_idx].chunk_idx;
+    if chunk_idx == usize::MAX {
+        return Err(VmError::Unsupported("static let load at program scope"));
+    }
+    let abs = idx as usize;
+    let declared = state
+        .statics_init
+        .get(chunk_idx)
+        .and_then(|flags| flags.get(abs))
+        .copied()
+        .ok_or(VmError::LocalOutOfBounds(idx))?;
+    if !declared {
+        return Err(VmError::LocalOutOfBounds(idx));
+    }
+    let value = state
+        .statics
+        .get(chunk_idx)
+        .and_then(|slots| slots.get(abs))
+        .cloned()
+        .unwrap_or(Value::Void);
+    state.stack.push(value);
+    Ok(Step::Continue)
 }
 
 /// Direct-threaded entry point. Mirrors `run_inner` byte-for-byte but
@@ -3817,6 +3910,8 @@ fn run_direct(
         stack: Vec::with_capacity(64),
         locals: Vec::with_capacity(32),
         frames: Vec::with_capacity(16),
+        statics: Vec::new(),
+        statics_init: Vec::new(),
         overflow_mode,
         try_stack: Vec::new(),
         source_path,
@@ -7015,6 +7110,25 @@ mod tests {
                 src, m, d
             ),
         }
+    }
+
+    #[test]
+    fn res4481_direct_static_persists_across_calls() {
+        // A local static belongs to the function, not to an invocation.
+        // Direct dispatch must retain the first call's initialized value
+        // after its frame and locals have been torn down.
+        assert_both_eq(
+            "fn bump() { static let counter = 40; counter = counter + 1; return counter; } +             return bump() * 100 + bump();",
+        );
+    }
+
+    #[test]
+    fn res4481_direct_static_storage_is_per_function() {
+        // Two functions may use the same source-level static name without
+        // sharing a slot: the table is keyed by function chunk.
+        assert_both_eq(
+            "fn first() { static let value = 3; return value; } +             fn second() { static let value = 7; return value; } +             return first() * 10 + second();",
+        );
     }
 
     #[test]
