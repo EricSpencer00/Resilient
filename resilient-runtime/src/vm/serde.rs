@@ -167,8 +167,9 @@ pub enum DecodeError {
     /// A branch in the program-format stream targets an instruction
     /// outside its main or function chunk.
     InvalidJumpTarget { target: u32, code_len: usize },
-    /// A call, tail call, closure constant, or closure constructor
-    /// refers to a function outside the decoded function table.
+    /// A call, tail call, closure constant, closure constructor, or
+    /// postcheck metadata entry refers to a function outside the decoded
+    /// function table.
     InvalidFunctionReference(u16),
     /// An `EnterTry` instruction refers to a try-handler entry outside
     /// the decoded try-handler table.
@@ -819,6 +820,14 @@ pub fn decode_program(
             });
         }
         *entry_slot = super::TryHandlerEntry { arms };
+    }
+
+    for meta in out_func_meta.iter().take(func_count) {
+        if let Some(postcheck) = meta.postcheck {
+            if postcheck as usize >= func_count {
+                return Err(DecodeError::InvalidFunctionReference(postcheck));
+            }
+        }
     }
 
     validate_code_references(
@@ -1550,6 +1559,57 @@ mod tests {
     }
 
     #[test]
+    fn program_decode_rejects_all_invalid_function_references() {
+        let tail_call_result = decode_program_for_test(&[Instr::TailCall(0)], &[], &[]);
+        assert_eq!(
+            tail_call_result,
+            Err(DecodeError::InvalidFunctionReference(0))
+        );
+
+        let make_closure_result = decode_program_for_test(
+            &[Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 0,
+            }],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            make_closure_result,
+            Err(DecodeError::InvalidFunctionReference(0))
+        );
+
+        let function = [Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: Some(1),
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let postcheck_result = decode_program_for_test(&[], &functions, &[]);
+        assert_eq!(
+            postcheck_result,
+            Err(DecodeError::InvalidFunctionReference(1))
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_all_invalid_branch_targets() {
+        for instruction in [Instr::Jump(2), Instr::JumpIfFalse(2), Instr::JumpIfTrue(2)] {
+            let result = decode_program_for_test(&[instruction, Instr::Return], &[], &[]);
+            assert_eq!(
+                result,
+                Err(DecodeError::InvalidJumpTarget {
+                    target: 2,
+                    code_len: 2,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn program_decode_rejects_invalid_try_handler_references() {
         let result = decode_program_for_test(&[Instr::EnterTry(0), Instr::Return], &[], &[]);
         assert_eq!(result, Err(DecodeError::InvalidTryHandlerReference(0)));
@@ -1563,6 +1623,33 @@ mod tests {
             handler_pc: 2,
         });
         let result = decode_program_for_test(&[Instr::EnterTry(0), Instr::Return], &[], &[handler]);
+        assert_eq!(
+            result,
+            Err(DecodeError::InvalidHandlerTarget {
+                target: 2,
+                code_len: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn program_decode_rejects_out_of_range_function_handler_pc() {
+        let function = [Instr::EnterTry(0), Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &function,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let mut handler = crate::vm::TryHandlerEntry::EMPTY;
+        handler.arms[0] = Some(crate::vm::CatchArm {
+            variant: 7,
+            handler_pc: 2,
+        });
+
+        let result = decode_program_for_test(&[], &functions, &[handler]);
         assert_eq!(
             result,
             Err(DecodeError::InvalidHandlerTarget {
