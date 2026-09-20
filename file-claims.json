@@ -203,6 +203,10 @@
     "resilient/src/vm.rs": {
       "branch": "res-4699-string-repeat-width",
       "claimed_at": "2026-09-20T20:41:14Z"
+    },
+    "resilient/src/array_flatten_depth.rs": {
+      "branch": "res-4701-flatten-stack-safe",
+      "claimed_at": "2026-09-20T20:44:13Z"
     }
   }
 }
