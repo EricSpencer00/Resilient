@@ -76,7 +76,7 @@ use std::collections::HashSet;
 /// — the function tries to recover so subsequent items continue
 /// parsing rather than the whole program aborting at the first
 /// malformed enum.
-pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
+pub(crate) fn parse_enum_decl(parser: &mut Parser, is_pub: bool) -> Node {
     let enum_span = parser.span_at_current();
     parser.next_token(); // consume 'enum'
 
@@ -106,6 +106,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
             type_params,
             variants: Vec::new(),
             span: enum_span,
+            is_pub,
         };
     }
     parser.next_token(); // consume '{'
@@ -187,6 +188,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
         type_params,
         variants,
         span: enum_span,
+        is_pub,
     }
 }
 
@@ -494,6 +496,17 @@ mod tests {
             super::variant_names(decls[0]).unwrap(),
             vec!["Red", "Green", "Blue"]
         );
+    }
+
+    #[test]
+    fn parses_public_enum_visibility() {
+        let (program, errs) = parse("pub enum Color { Red, Blue }");
+        assert!(errs.is_empty(), "expected clean parse, got: {:?}", errs);
+        let decls = super::extract_enum_decls(&program);
+        assert!(matches!(
+            decls[0],
+            crate::Node::EnumDecl { is_pub: true, .. }
+        ));
     }
 
     #[test]

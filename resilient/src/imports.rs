@@ -249,19 +249,24 @@ fn is_pub_decl(node: &Node) -> bool {
     match node {
         Node::Function { is_pub, .. } => *is_pub,
         Node::StructDecl { is_pub, .. } => *is_pub,
+        Node::EnumDecl { is_pub, .. } => *is_pub,
         _ => false,
     }
 }
 
 /// Check if a node is a declaration that could be exported.
 fn is_exportable_decl(node: &Node) -> bool {
-    matches!(node, Node::Function { .. } | Node::StructDecl { .. })
+    matches!(
+        node,
+        Node::Function { .. } | Node::StructDecl { .. } | Node::EnumDecl { .. }
+    )
 }
 
 /// Return the declaration name for items that can be re-exported.
 fn decl_name(node: &Node) -> Option<&str> {
     match node {
         Node::Function { name, .. } | Node::StructDecl { name, .. } => Some(name.as_str()),
+        Node::EnumDecl { name, .. } => Some(name.as_str()),
         _ => None,
     }
 }
@@ -272,6 +277,7 @@ fn mark_pub_decl(node: &mut Node) {
         Node::Function { is_pub, .. } | Node::StructDecl { is_pub, .. } => {
             *is_pub = true;
         }
+        Node::EnumDecl { is_pub, .. } => *is_pub = true,
         _ => {}
     }
 }
@@ -283,6 +289,9 @@ fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
             *name = format!("{}::{}", ns, name);
         }
         Node::StructDecl { name, .. } => {
+            *name = format!("{}::{}", ns, name);
+        }
+        Node::EnumDecl { name, .. } => {
             *name = format!("{}::{}", ns, name);
         }
         _ => {}
@@ -567,6 +576,28 @@ mod tests {
             )),
             "expected `shared` re-exported through a.rz"
         );
+    }
+
+    #[test]
+    fn pub_use_reexports_enum_declaration() {
+        let dir = make_temp_dir().join("pub_use_enum");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("b.rz"), "pub enum Color { Red, Blue }\n").unwrap();
+        fs::write(dir.join("a.rz"), "pub use \"b.rz\";\n").unwrap();
+
+        let (mut program, _) = crate::parse("use \"a.rz\";\n");
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "expand failed: {:?}", result);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        assert!(stmts.iter().any(|s| matches!(
+            &s.node,
+            Node::EnumDecl { name, is_pub: true, .. } if name == "Color"
+        )));
     }
 
     #[test]

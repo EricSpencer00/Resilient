@@ -412,8 +412,14 @@ impl Formatter {
             // PR 2 will extend this with payload kinds (named-field
             // and tuple-style); the format follows Rust convention so
             // upstream IDE tooling can reuse syntax-highlighting.
-            Node::EnumDecl { name, variants, .. } => {
-                self.write_args(format_args!("enum {} {{", name));
+            Node::EnumDecl {
+                name,
+                variants,
+                is_pub,
+                ..
+            } => {
+                let visibility = if *is_pub { "pub " } else { "" };
+                self.write_args(format_args!("{}enum {} {{", visibility, name));
                 self.newline();
                 self.indent();
                 for (i, v) in variants.iter().enumerate() {

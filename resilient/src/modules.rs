@@ -50,6 +50,16 @@ pub(crate) fn eval_module(
                 }
                 interp.eval(&renamed)?;
             }
+            Node::EnumDecl { name, .. } => {
+                let mut renamed = node.clone();
+                if let Node::EnumDecl {
+                    name: ref mut n, ..
+                } = renamed
+                {
+                    *n = format!("{}::{}", mod_name, name);
+                }
+                interp.eval(&renamed)?;
+            }
             Node::ImplBlock { .. } => {
                 // impl blocks inside modules are evaluated directly; their
                 // methods are already parser-mangled with the struct name
@@ -162,6 +172,7 @@ fn glob_export_name(node: &Node) -> Option<&str> {
         Node::Function { name, is_pub, .. } | Node::StructDecl { name, is_pub, .. } if *is_pub => {
             Some(name)
         }
+        Node::EnumDecl { name, is_pub, .. } if *is_pub => Some(name),
         _ => None,
     }
 }
