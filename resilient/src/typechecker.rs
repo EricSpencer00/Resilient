@@ -2138,7 +2138,7 @@ impl TypeChecker {
                 );
                 // RES-536: gcd / lcm reduction over an integer array.
                 let arr_to_int = Type::Function {
-                    params: vec![Type::Any],
+                    params: vec![Type::Array],
                     return_type: Box::new(Type::Int),
                 };
                 env.set("gcd_array".to_string(), arr_to_int.clone());
@@ -3832,13 +3832,13 @@ impl TypeChecker {
                 env.set(
                     "array_position".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Any, Type::Int],
+                        params: vec![Type::Array, Type::Any, Type::Int],
                         return_type: Box::new(Type::Int),
                     },
                 );
                 // RES-449: array padding (3-arg: arr, n, fill).
                 let fn_any_int_any_to_any = Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
+                    params: vec![Type::Array, Type::Int, Type::Any],
                     return_type: Box::new(Type::Any),
                 };
                 env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
@@ -3849,7 +3849,7 @@ impl TypeChecker {
                 env.set(
                     "array_swap".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int, Type::Int],
+                        params: vec![Type::Array, Type::Int, Type::Int],
                         return_type: Box::new(Type::Array),
                     },
                 );
@@ -3858,14 +3858,14 @@ impl TypeChecker {
                 env.set(
                     "array_insert_at".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int, Type::Any],
+                        params: vec![Type::Array, Type::Int, Type::Any],
                         return_type: Box::new(Type::Array),
                     },
                 );
                 env.set(
                     "array_remove_at".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int],
+                        params: vec![Type::Array, Type::Int],
                         return_type: Box::new(Type::Array),
                     },
                 );
@@ -3874,7 +3874,7 @@ impl TypeChecker {
                 env.set(
                     "array_set_at".to_string(),
                     Type::Function {
-                        params: vec![Type::Any, Type::Int, Type::Any],
+                        params: vec![Type::Array, Type::Int, Type::Any],
                         return_type: Box::new(Type::Array),
                     },
                 );
