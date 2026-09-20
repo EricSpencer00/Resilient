@@ -2812,7 +2812,9 @@ fn random_int(args: &[Value]) -> RResult<Value> {
     if lo >= hi {
         return Err(format!("random::int: lo ({}) must be < hi ({})", lo, hi));
     }
-    Ok(Value::Int(lo + (random_seed() % (hi - lo) as u64) as i64))
+    crate::sample_i64_range(lo, hi, random_seed())
+        .map(Value::Int)
+        .ok_or_else(|| "random::int: bounds do not form a valid i64 range".to_string())
 }
 fn random_float(_args: &[Value]) -> RResult<Value> {
     Ok(Value::Float((random_seed() as f64 / u64::MAX as f64).abs()))

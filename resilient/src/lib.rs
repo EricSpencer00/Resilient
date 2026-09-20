@@ -15796,9 +15796,9 @@ fn builtin_random_int(args: &[Value]) -> RResult<Value> {
             if hi <= lo {
                 return Err(format!("random_int: hi must be > lo ({} <= {})", hi, lo));
             }
-            let span = (*hi - *lo) as u64;
-            let r = splitmix64_next() % span;
-            Ok(Value::Int((*lo).wrapping_add(r as i64)))
+            sample_i64_range(*lo, *hi, splitmix64_next())
+                .map(Value::Int)
+                .ok_or_else(|| "random_int: bounds do not form a valid i64 range".to_string())
         }
         [a, b] => Err(format!(
             "random_int: expected (Int, Int), got ({:?}, {:?})",
@@ -15809,6 +15809,19 @@ fn builtin_random_int(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// Sample a `u64` value into the half-open signed range `[lo, hi)` without
+/// performing a potentially overflowing `i64` subtraction or addition.
+/// Every valid pair of `i64` bounds has a span representable by `u128`, even
+/// when it covers nearly the entire signed domain.
+pub(crate) fn sample_i64_range(lo: i64, hi: i64, sample: u64) -> Option<i64> {
+    if lo >= hi {
+        return None;
+    }
+    let span = (hi as i128).checked_sub(lo as i128)? as u128;
+    let offset = (sample as u128 % span) as i128;
+    i64::try_from((lo as i128).checked_add(offset)?).ok()
 }
 
 /// RES-150: `random_float() -> Float` — uniform in `[0.0, 1.0)`.
