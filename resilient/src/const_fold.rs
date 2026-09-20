@@ -165,17 +165,20 @@ pub fn optimize_if_enabled(chunk: &mut Chunk) -> Result<(), FoldError> {
 /// caller re-runs the pass to catch newly-adjacent windows). On
 /// `false` the chunk is at a local fixpoint for the rules below.
 fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
-    let targets = jump_targets(chunk);
-
     // Capture each jump's ORIGINAL target PC up-front so we can
     // remap through old_to_new at the end. Identical strategy to
-    // peephole.rs.
+    // peephole.rs. Validate the references before any fold can make
+    // the remapping table observable: malformed bytecode must produce
+    // a typed optimizer error, never an indexing panic.
     let orig_targets: Vec<Option<usize>> = chunk
         .code
         .iter()
         .enumerate()
-        .map(|(pc, op)| jump_target_pc(*op, pc))
-        .collect();
+        .map(|(pc, op)| checked_jump_target_pc(*op, pc, chunk.code.len()))
+        .collect::<Result<_, _>>()?;
+
+    validate_handler_pcs(chunk)?;
+    let targets = jump_targets(chunk);
 
     let mut new_code: Vec<Op> = Vec::with_capacity(chunk.code.len());
     let mut new_line_info: Vec<u32> = Vec::with_capacity(chunk.code.len());
@@ -316,6 +319,13 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
         }
     }
 
+    // RES-3995: live-block bodies are raw PCs too. Constant folding
+    // shortens the stream before a retry resumes, so keep the retry
+    // target aligned with the rewritten instruction sequence.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
     Ok(true)
@@ -348,6 +358,40 @@ fn jump_target_pc(op: Op, pc: usize) -> Option<usize> {
     } else {
         Some(target as usize)
     }
+}
+
+fn checked_jump_target_pc(op: Op, pc: usize, code_len: usize) -> Result<Option<usize>, FoldError> {
+    let Some(target) = jump_target_pc(op, pc) else {
+        if is_jump_op(op) {
+            return Err(FoldError::InternalError("invalid jump target"));
+        }
+        return Ok(None);
+    };
+    if target > code_len {
+        return Err(FoldError::InternalError("jump target is outside the chunk"));
+    }
+    Ok(Some(target))
+}
+
+fn validate_handler_pcs(chunk: &Chunk) -> Result<(), FoldError> {
+    let code_len = chunk.code.len();
+    for entry in &chunk.try_handlers {
+        for arm in &entry.arms {
+            if arm.handler_pc > code_len {
+                return Err(FoldError::InternalError(
+                    "try handler PC is outside the chunk",
+                ));
+            }
+        }
+    }
+    for entry in &chunk.live_handlers {
+        if entry.body_start_pc > code_len {
+            return Err(FoldError::InternalError(
+                "live handler PC is outside the chunk",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn is_jump_op(op: Op) -> bool {
@@ -570,6 +614,7 @@ pub(crate) fn try_fold_binary_builtin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::{CatchArm, LiveHandlerEntry, TryHandlerEntry};
 
     fn mk_chunk(code: &[Op], constants: Vec<Value>, lines: &[u32]) -> Chunk {
         Chunk {
@@ -1056,6 +1101,53 @@ mod tests {
             Op::JumpIfFalse(o) => assert_eq!(o, 1, "jump must land on Return at new PC 3"),
             other => panic!("expected JumpIfFalse, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn rejects_jump_target_outside_chunk() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Jump(8)],
+            vec![Value::Int(2), Value::Int(3)],
+            &[1, 1, 1, 1],
+        );
+        let err = optimize(&mut chunk).unwrap_err();
+        assert!(err.to_string().contains("jump target"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_try_handler_pc_outside_chunk() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+            vec![Value::Int(2), Value::Int(3)],
+            &[1, 1, 1, 1],
+        );
+        chunk.try_handlers.push(TryHandlerEntry {
+            arms: vec![CatchArm {
+                variant: "Fault".to_string(),
+                handler_pc: usize::MAX,
+            }],
+        });
+        let err = optimize(&mut chunk).unwrap_err();
+        assert!(err.to_string().contains("try handler PC"), "got: {err}");
+    }
+
+    #[test]
+    fn remaps_live_handler_pc_across_folded_window() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+            vec![Value::Int(2), Value::Int(3)],
+            &[1, 1, 1, 1],
+        );
+        chunk.live_handlers.push(LiveHandlerEntry {
+            body_start_pc: 3,
+            max_retries: 1,
+            backoff: None,
+            backoff_kind: crate::BackoffKind::Exponential,
+            timeout_ns: None,
+        });
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        assert_eq!(chunk.live_handlers[0].body_start_pc, 1);
     }
 
     // ---------- invariants ----------
