@@ -83,6 +83,27 @@ compute_close_issue() {
 
   return 0
 }
+# mark_pr_ready PR — transition a draft PR to ready, treating GitHub's
+# already-ready response as an idempotent success while preserving real errors.
+mark_pr_ready() {
+  local pr="$1"
+  local output_file
+  local status
+  output_file="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-ready.XXXXXX")"
+
+  if gh pr ready "$pr" >"$output_file" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+
+  cat "$output_file"
+  if (( status != 0 )) && grep -Eiq 'already[[:space:]]+ready[[:space:]]+for[[:space:]]+review' "$output_file"; then
+    status=0
+  fi
+  rm -f "$output_file"
+  return "$status"
+}
 
 # RES-4021: allow this file to be `source`d (e.g. by
 # agent-scripts/test-ready-or-bail-closes.sh) to unit-test the functions
@@ -162,7 +183,7 @@ PYEOF
       fi
   fi
 
-  gh pr ready "$PR" 2>&1 | tail -2
+  mark_pr_ready "$PR" | tail -2
   gh label create "agent-vetted" \
     --color "0E8A16" \
     --description "ready-or-bail passed substantive local guardrails and integration sync" \
