@@ -280,13 +280,13 @@
       "branch": "res-4762-stats-histogram-bound",
       "claimed_at": "2026-09-20T22:53:02Z"
     },
-    "resilient/src/buffer_builtins.rs": {
-      "branch": "res-4767-buffer-capacity",
-      "claimed_at": "2026-09-20T23:05:20Z"
+    "resilient/src/cert_sign.rs": {
+      "branch": "res-4768-cert-manifest-path",
+      "claimed_at": "2026-09-20T23:05:30Z"
     },
-    "resilient/tests/buffer_capacity_boundary.rs": {
-      "branch": "res-4767-buffer-capacity",
-      "claimed_at": "2026-09-20T23:05:20Z"
+    "resilient/tests/cert_manifest_path_guard.rs": {
+      "branch": "res-4768-cert-manifest-path",
+      "claimed_at": "2026-09-20T23:05:30Z"
     }
   }
 }
