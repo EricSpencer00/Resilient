@@ -26,7 +26,7 @@
     },
     "resilient/src/vm.rs": {
       "branch": "res-4482-vm-side-table-safety",
-      "claimed_at": "2026-09-20T04:28:13Z"
+      "claimed_at": "2026-09-20T04:29:09Z"
     }
   }
 }
