@@ -17010,6 +17010,25 @@ fn builtin_array_interleave(args: &[Value]) -> RResult<Value> {
     }
 }
 
+const MAX_ARRAY_INTERSPERSE_OUTPUT: usize = 10_000_000;
+
+fn array_intersperse_output_len(input_len: usize) -> Result<usize, String> {
+    if input_len < 2 {
+        return Ok(input_len);
+    }
+    let output_len = input_len
+        .checked_mul(2)
+        .and_then(|n| n.checked_sub(1))
+        .ok_or_else(|| "array_intersperse: output length overflow".to_string())?;
+    if output_len > MAX_ARRAY_INTERSPERSE_OUTPUT {
+        return Err(format!(
+            "array_intersperse: output length {} exceeds cap of {}",
+            output_len, MAX_ARRAY_INTERSPERSE_OUTPUT
+        ));
+    }
+    Ok(output_len)
+}
+
 /// RES-437: `array_intersperse(arr, x)` — insert `x` between every
 /// pair of adjacent elements. `[a, b, c]` ⇒ `[a, x, b, x, c]`.
 /// Empty or single-element arrays return a clone unchanged.
@@ -17019,7 +17038,8 @@ fn builtin_array_intersperse(args: &[Value]) -> RResult<Value> {
             if items.len() < 2 {
                 return Ok(Value::Array(items.clone()));
             }
-            let mut out = Vec::with_capacity(items.len() * 2 - 1);
+            let output_len = array_intersperse_output_len(items.len())?;
+            let mut out = Vec::with_capacity(output_len);
             for (i, v) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(sep.clone());
@@ -53842,6 +53862,20 @@ struct Counter { int value; }"#,
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    #[test]
+    fn array_intersperse_output_length_checks_overflow() {
+        assert_eq!(array_intersperse_output_len(0).unwrap(), 0);
+        assert_eq!(array_intersperse_output_len(3).unwrap(), 5);
+        assert!(array_intersperse_output_len(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn array_intersperse_output_length_rejects_excessive_expansion() {
+        let input_len = (MAX_ARRAY_INTERSPERSE_OUTPUT / 2) + 1;
+        let err = array_intersperse_output_len(input_len).unwrap_err();
+        assert!(err.contains("exceeds cap"), "unexpected error: {err}");
     }
 
     // ---------- RES-516: array_interleave ----------
