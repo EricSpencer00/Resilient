@@ -63,6 +63,22 @@
     "resilient/tests/it/named_default_args.rs": {
       "branch": "res-4566-named-default-args",
       "claimed_at": "2026-09-20T13:58:41Z"
+    },
+    "4568": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T14:12:37Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T14:12:37Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T14:12:37Z"
+    },
+    "resilient/tests/stacktrace_optimizer.rs": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T14:12:37Z"
     }
   }
 }
