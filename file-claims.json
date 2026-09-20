@@ -243,10 +243,6 @@
     "resilient/src/bytecode.rs": {
       "branch": "res-4732-bytecode-patch-guard",
       "claimed_at": "2026-09-20T22:00:45Z"
-    },
-    "resilient/src/actor_runtime.rs": {
-      "branch": "res-4738-actor-pid-boundary",
-      "claimed_at": "2026-09-20T22:11:02Z"
     }
   }
 }
