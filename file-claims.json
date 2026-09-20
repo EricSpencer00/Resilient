@@ -112,9 +112,13 @@
       "branch": "res-4622-range-loop-contracts",
       "claimed_at": "2026-09-20T16:21:32Z"
     },
-    "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-4635-for-in-loop-invariants",
-      "claimed_at": "2026-09-20T16:52:10Z"
+    "resilient/src/contract_verify.rs": {
+      "branch": "res-4634-contract-structured",
+      "claimed_at": "2026-09-20T16:54:33Z"
+    },
+    "resilient/src/contract_verify/symbolic_eval.rs": {
+      "branch": "res-4634-contract-structured",
+      "claimed_at": "2026-09-20T16:54:33Z"
     }
   }
 }
