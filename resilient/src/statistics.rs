@@ -29,6 +29,8 @@ type RResult<T> = Result<T, String>;
 
 type LuResult = RResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<usize>, f64)>;
 
+const MAX_HISTOGRAM_BINS: i64 = 10_000_000;
+
 // ── shared helpers ────────────────────────────────────────────────────────────
 
 fn to_f64(v: &Value, ctx: &str) -> RResult<f64> {
@@ -237,7 +239,6 @@ pub(crate) fn builtin_stats_normalize(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_stats_histogram(args: &[Value]) -> RResult<Value> {
     match args {
         [arr, bins_val] => {
-            let xs = extract_floats("stats_histogram", arr)?;
             let bins = match bins_val {
                 Value::Int(b) => *b,
                 other => return Err(format!("stats_histogram: bins must be int, got {other}")),
@@ -245,21 +246,29 @@ pub(crate) fn builtin_stats_histogram(args: &[Value]) -> RResult<Value> {
             if bins <= 0 {
                 return Err(format!("stats_histogram: bins must be > 0, got {bins}"));
             }
+            if bins > MAX_HISTOGRAM_BINS {
+                return Err(format!(
+                    "stats_histogram: bins {bins} too large (max {MAX_HISTOGRAM_BINS})"
+                ));
+            }
+            let bin_count = usize::try_from(bins)
+                .map_err(|_| format!("stats_histogram: bins {bins} cannot fit the target usize"))?;
+            let xs = extract_floats("stats_histogram", arr)?;
             if xs.is_empty() {
-                return Ok(int_arr(vec![0; bins as usize]));
+                return Ok(int_arr(vec![0; bin_count]));
             }
             let min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
             let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let mut counts = vec![0i64; bins as usize];
+            let mut counts = vec![0i64; bin_count];
             if (max - min).abs() < 1e-15 {
                 counts[0] = xs.len() as i64;
                 return Ok(int_arr(counts));
             }
-            let width = (max - min) / bins as f64;
+            let width = (max - min) / bin_count as f64;
             for x in &xs {
                 let mut b = ((x - min) / width).floor() as usize;
-                if b >= bins as usize {
-                    b = bins as usize - 1;
+                if b >= bin_count {
+                    b = bin_count - 1;
                 }
                 counts[b] += 1;
             }
