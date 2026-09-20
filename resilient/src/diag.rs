@@ -54,17 +54,18 @@ pub fn format_diagnostic(src: &str, span: Span, level: &str, msg: &str) -> Strin
     let line_text = nth_line(src, line_num).unwrap_or("");
     let expanded = expand_tabs(line_text);
 
-    // Column bounds. `Span::{start,end}.column` are 1-indexed.
-    // Clamp start_col into the line and compute a caret width that
-    // covers at least one `^` so zero-width spans still render.
-    let start_col = span.start.column.max(1);
+    // Column bounds. `Span::{start,end}.column` are 1-indexed. Clamp
+    // malformed columns to the rendered line so diagnostics cannot
+    // request unbounded padding or underflow the caret width.
+    let line_end_col = expanded.chars().count().saturating_add(1);
+    let start_col = span.start.column.max(1).min(line_end_col);
     let end_col = if span.end.line == span.start.line {
-        span.end.column.max(start_col)
+        span.end.column.max(start_col).min(line_end_col)
     } else {
         // Multi-line span: underline to end-of-line only.
-        expanded.chars().count() + 1
+        line_end_col
     };
-    let caret_count = (end_col - start_col).max(1);
+    let caret_count = end_col.saturating_sub(start_col).max(1);
 
     let pad = " ".repeat(start_col - 1);
     let carets = "^".repeat(caret_count);
@@ -488,6 +489,34 @@ mod tests {
         // No crash, caret still present so the message is still
         // visually distinguishable in the terminal.
         assert!(d.contains("^"), "missing caret even on empty line: {}", d);
+    }
+
+    #[test]
+    fn oversized_columns_clamp_to_source_line_end() {
+        let d = format_diagnostic(
+            "abc\n",
+            span(1, usize::MAX, 1, usize::MAX),
+            "Error",
+            "malformed span",
+        );
+        let caret_line = d.lines().nth(2).expect("caret line");
+        assert_eq!(caret_line, "      ^", "caret should be clamped: {d}");
+    }
+
+    #[test]
+    fn malformed_multiline_columns_do_not_underflow() {
+        let d = format_diagnostic(
+            "x\nnext",
+            span(1, usize::MAX, 2, 1),
+            "Error",
+            "malformed span",
+        );
+        let caret_line = d.lines().nth(2).expect("caret line");
+        assert_eq!(
+            caret_line, "    ^",
+            "malformed span should render one caret: {d}"
+        );
+        assert!(d.contains("(span continues on line 2)"));
     }
 
     // ---------- RES-119: Diagnostic model ----------
