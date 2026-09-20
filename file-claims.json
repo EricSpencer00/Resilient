@@ -35,6 +35,10 @@
     "resilient-runtime/src/heap.rs": {
       "branch": "res-4466-heap-counters",
       "claimed_at": "2026-09-20T00:49:40Z"
+    },
+    "resilient-runtime/src/dma.rs": {
+      "branch": "res-4465-dma-descriptor-links",
+      "claimed_at": "2026-09-20T00:57:03Z"
     }
   }
 }
