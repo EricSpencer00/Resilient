@@ -153,9 +153,7 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
         if scaled < lo as i128 || scaled > hi as i128 {
             return None;
         }
-        Some(Self {
-            raw: scaled as i64,
-        })
+        Some(Self { raw: scaled as i64 })
     }
 
     /// Truncate toward zero, returning the integer part.
