@@ -6061,9 +6061,107 @@ impl TypeChecker {
         }
     }
 
+    /// Check a function value at a higher-order boundary.
+    ///
+    /// A callback supplied to a caller that may pass `expected_param` values
+    /// must accept every one of those values, so function parameters are
+    /// contravariant. Return values flow in the opposite direction and are
+    /// therefore covariant. This relation keeps `Any` one-way inside the
+    /// function type so the ordinary bidirectional wildcard rule cannot admit
+    /// a callback that only handles a narrower input.
+    fn function_type_satisfies(
+        &self,
+        actual_params: &[Type],
+        actual_return: &Type,
+        expected_params: &[Type],
+        expected_return: &Type,
+    ) -> bool {
+        actual_params.len() == expected_params.len()
+            && actual_params
+                .iter()
+                .zip(expected_params.iter())
+                .all(|(actual, expected)| self.function_subtype(expected, actual))
+            && self.function_subtype(actual_return, expected_return)
+    }
+
+    /// Directional subtype relation used only inside function-type boundaries.
+    ///
+    /// The checker-wide compatibility relation intentionally treats `Any` as
+    /// a permissive inference wildcard. Function inputs and outputs need the
+    /// sound subtype direction instead, while retaining the existing scalar,
+    /// array, nominal, structural, and composite compatibility rules.
+    fn function_subtype(&self, sub: &Type, sup: &Type) -> bool {
+        if sub == sup || matches!(sup, Type::Any) {
+            return true;
+        }
+        if matches!(sub, Type::Any) {
+            return false;
+        }
+        match (sub, sup) {
+            (Type::Option(sub_inner), Type::Option(sup_inner)) => {
+                self.function_subtype(sub_inner, sup_inner)
+            }
+            (Type::TypedArray(sub_inner), Type::TypedArray(sup_inner)) => {
+                self.function_subtype(sub_inner, sup_inner)
+            }
+            (
+                Type::Function {
+                    params: sub_params,
+                    return_type: sub_return,
+                },
+                Type::Function {
+                    params: sup_params,
+                    return_type: sup_return,
+                },
+            ) => self.function_type_satisfies(sub_params, sub_return, sup_params, sup_return),
+            (Type::Tuple(sub_elems), Type::Tuple(sup_elems)) => {
+                sub_elems.len() == sup_elems.len()
+                    && sub_elems
+                        .iter()
+                        .zip(sup_elems.iter())
+                        .all(|(sub_elem, sup_elem)| self.function_subtype(sub_elem, sup_elem))
+            }
+            (_, Type::AnonymousStruct(expected_fields)) => {
+                let Some(actual_fields) = self.structural_fields(sub) else {
+                    return false;
+                };
+                expected_fields.iter().all(|(expected_name, expected_ty)| {
+                    actual_fields
+                        .iter()
+                        .find(|(actual_name, _)| actual_name == expected_name)
+                        .is_some_and(|(_, actual_ty)| self.function_subtype(actual_ty, expected_ty))
+                })
+            }
+            (Type::Struct(sub_name), Type::Struct(sup_name)) => {
+                self.nominal_is_subtype(sub_name, sup_name)
+            }
+            _ => compatible(sub, sup),
+        }
+    }
+
     fn type_satisfies(&self, actual: &Type, expected: &Type) -> bool {
-        if actual == expected
-            || matches!(actual, Type::Any)
+        if actual == expected {
+            return true;
+        }
+        if let (
+            Type::Function {
+                params: actual_params,
+                return_type: actual_return,
+            },
+            Type::Function {
+                params: expected_params,
+                return_type: expected_return,
+            },
+        ) = (actual, expected)
+        {
+            return self.function_type_satisfies(
+                actual_params,
+                actual_return,
+                expected_params,
+                expected_return,
+            );
+        }
+        if matches!(actual, Type::Any)
             || matches!(expected, Type::Any)
             || compatible(actual, expected)
         {
@@ -6105,14 +6203,12 @@ impl TypeChecker {
                     params: expected_params,
                     return_type: expected_ret,
                 },
-            ) => {
-                actual_params.len() == expected_params.len()
-                    && actual_params
-                        .iter()
-                        .zip(expected_params.iter())
-                        .all(|(a, e)| self.type_satisfies(a, e))
-                    && self.type_satisfies(actual_ret, expected_ret)
-            }
+            ) => self.function_type_satisfies(
+                actual_params,
+                actual_ret,
+                expected_params,
+                expected_ret,
+            ),
             (Type::Tuple(actual_elems), Type::Tuple(expected_elems)) => {
                 actual_elems.len() == expected_elems.len()
                     && actual_elems
