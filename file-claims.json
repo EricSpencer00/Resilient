@@ -199,6 +199,10 @@
     "resilient/src/bytes_bitwise.rs": {
       "branch": "res-4694-bytes-fill-bound",
       "claimed_at": "2026-09-20T20:23:36Z"
+    },
+    "resilient-runtime/src/heap.rs": {
+      "branch": "res-4697-zero-realloc-accounting",
+      "claimed_at": "2026-09-20T20:29:27Z"
     }
   }
 }
