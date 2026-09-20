@@ -27,6 +27,10 @@
     "resilient/src/statistics.rs": {
       "branch": "res-4500-percentile-total-order",
       "claimed_at": "2026-09-20T05:29:22Z"
+    },
+    "resilient-runtime/src/vm.rs": {
+      "branch": "res-4524-vm-zero-call-capacity",
+      "claimed_at": "2026-09-20T10:23:13Z"
     }
   }
 }
