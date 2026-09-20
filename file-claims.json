@@ -184,9 +184,13 @@
       "branch": "res-4676-flat-map-budget",
       "claimed_at": "2026-09-20T19:26:20Z"
     },
-    "resilient/src/graph_algorithms.rs": {
-      "branch": "res-4682-graph-dfs-stack-safe",
-      "claimed_at": "2026-09-20T19:46:00Z"
+    "resilient/src/linear_algebra.rs": {
+      "branch": "res-4683-mat-identity-bound",
+      "claimed_at": "2026-09-20T19:46:07Z"
+    },
+    "resilient/tests/mat_identity_resource_boundary.rs": {
+      "branch": "res-4683-mat-identity-bound",
+      "claimed_at": "2026-09-20T19:46:07Z"
     }
   }
 }
