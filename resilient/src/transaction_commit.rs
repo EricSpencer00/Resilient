@@ -307,6 +307,13 @@ fn block_paths_close(stmts: &[Node], tx: &str) -> PathClose {
                     }
                 }
             },
+            Node::ExpressionStatement { expr, .. }
+            | Node::LetStatement { value: expr, .. }
+            | Node::Assignment { value: expr, .. } => match all_paths_close(expr, tx) {
+                PathClose::AlwaysCloses => closed = true,
+                PathClose::UnclosedExit => return PathClose::UnclosedExit,
+                PathClose::NeverCloses => {}
+            },
             Node::Block { stmts: inner, .. } => {
                 let inner_result = block_paths_close(inner, tx);
                 if inner_result == PathClose::UnclosedExit {
