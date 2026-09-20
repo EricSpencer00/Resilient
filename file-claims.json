@@ -245,8 +245,8 @@
       "claimed_at": "2026-09-20T22:00:45Z"
     },
     "resilient/src/bandwidth_budget.rs": {
-      "branch": "res-4739-bandwidth-budget-overflow",
-      "claimed_at": "2026-09-20T22:10:04Z"
+      "branch": "res-4739-bandwidth-overflow",
+      "claimed_at": "2026-09-20T22:10:22Z"
     }
   }
 }
