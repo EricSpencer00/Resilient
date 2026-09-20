@@ -797,7 +797,6 @@ mod tests {
     /// Tests share the `DENY_UNPROVEN_BOUNDS` atomic and the
     /// thread-local stats, so serialize them under a mutex to keep
     /// cargo's parallel runner from producing flakes.
-
     fn parse(src: &str) -> Node {
         let lexer = crate::Lexer::new(src);
         let mut parser = crate::Parser::new(lexer);
