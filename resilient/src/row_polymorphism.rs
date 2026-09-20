@@ -247,6 +247,17 @@ fn walk_calls(
             walk_calls(iterable, specs, struct_fields, source_path)?;
             walk_calls(body, specs, struct_fields, source_path)?;
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_calls(scrutinee, specs, struct_fields, source_path)?;
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    walk_calls(guard, specs, struct_fields, source_path)?;
+                }
+                walk_calls(body, specs, struct_fields, source_path)?;
+            }
+        }
         _ => {}
     }
     Ok(())
