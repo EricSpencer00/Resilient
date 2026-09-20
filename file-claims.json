@@ -140,10 +140,6 @@
       "branch": "res-4659-jit-pattern-fail-closed",
       "claimed_at": "2026-09-20T18:04:28Z"
     },
-    "resilient/src/refinement_types.rs": {
-      "branch": "res-4663-refinement-constant-proof",
-      "claimed_at": "2026-09-20T18:24:20Z"
-    },
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-4665-row-match",
       "claimed_at": "2026-09-20T18:31:39Z"
