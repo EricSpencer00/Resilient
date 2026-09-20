@@ -245,11 +245,10 @@ impl Context {
             | Node::BreakWith { value, .. }
             | Node::NamedArg { value, .. }
             | Node::NewtypeConstruct { value, .. } => visit(value),
-            Node::ReturnStatement { value, .. } => {
-                if let Some(value) = value {
-                    visit(value);
-                }
-            }
+            Node::ReturnStatement {
+                value: Some(value), ..
+            } => visit(value),
+            Node::ReturnStatement { value: None, .. } => {}
             Node::DeferStatement { expr, .. }
             | Node::InvariantStatement { expr, .. }
             | Node::TryExpression { expr, .. } => visit(expr),
