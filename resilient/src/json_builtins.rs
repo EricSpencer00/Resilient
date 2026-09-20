@@ -662,7 +662,8 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::run_program;
+    use super::{MAX_JSON_NESTING_DEPTH, serialize_value, serialize_value_pretty};
+    use crate::{Value, run_program};
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
