@@ -131,6 +131,9 @@ pub enum DmaError {
     /// can only count down a 16-bit counter, so a single descriptor
     /// caps at 65 535 bytes. Split into multiple descriptors.
     LengthTooLarge { length: usize, max: usize },
+    /// `length` is not a whole number of transfer beats for the selected
+    /// width. DMA hardware cannot complete a partial halfword or word beat.
+    LengthMisaligned { length: usize, required: usize },
     /// The chain is already at capacity. Pick a larger `N` when
     /// constructing the [`DmaChain`].
     ChainFull { capacity: usize },
@@ -200,6 +203,8 @@ impl DmaDescriptor {
     ///   if either address isn't aligned to `width.alignment()`.
     /// - [`DmaError::ZeroLength`] if `length == 0`.
     /// - [`DmaError::LengthTooLarge`] if `length > DMA_MAX_LENGTH`.
+    /// - [`DmaError::LengthMisaligned`] if `length` is not a whole number
+    ///   of beats for `width`.
     pub fn new(
         source: usize,
         dest: usize,
@@ -226,6 +231,13 @@ impl DmaDescriptor {
             return Err(DmaError::LengthTooLarge {
                 length,
                 max: DMA_MAX_LENGTH,
+            });
+        }
+        let bytes_per_beat = width.bytes_per_beat();
+        if !length.is_multiple_of(bytes_per_beat) {
+            return Err(DmaError::LengthMisaligned {
+                length,
+                required: bytes_per_beat,
             });
         }
         Ok(Self {
@@ -528,6 +540,28 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_new_rejects_partial_transfer_beats() {
+        let halfword =
+            DmaDescriptor::new(src_addr(), dst_addr(), 3, DmaWidth::HalfWord).unwrap_err();
+        assert_eq!(
+            halfword,
+            DmaError::LengthMisaligned {
+                length: 3,
+                required: 2,
+            }
+        );
+
+        let word = DmaDescriptor::new(src_addr(), dst_addr(), 6, DmaWidth::Word).unwrap_err();
+        assert_eq!(
+            word,
+            DmaError::LengthMisaligned {
+                length: 6,
+                required: 4,
+            }
+        );
+    }
+
+    #[test]
     fn descriptor_new_rejects_zero_length() {
         let err = DmaDescriptor::new(src_addr(), dst_addr(), 0, DmaWidth::Byte).unwrap_err();
         assert_eq!(err, DmaError::ZeroLength);
@@ -547,6 +581,22 @@ mod tests {
     fn descriptor_new_accepts_max_length() {
         let d = DmaDescriptor::new(src_addr(), dst_addr(), DMA_MAX_LENGTH, DmaWidth::Byte).unwrap();
         assert_eq!(d.length as usize, DMA_MAX_LENGTH);
+    }
+
+    #[test]
+    fn descriptor_new_accepts_largest_aligned_lengths() {
+        let halfword = DmaDescriptor::new(
+            src_addr(),
+            dst_addr(),
+            DMA_MAX_LENGTH - 1,
+            DmaWidth::HalfWord,
+        )
+        .unwrap();
+        assert_eq!(halfword.length as usize, DMA_MAX_LENGTH - 1);
+
+        let word =
+            DmaDescriptor::new(src_addr(), dst_addr(), DMA_MAX_LENGTH - 3, DmaWidth::Word).unwrap();
+        assert_eq!(word.length as usize, DMA_MAX_LENGTH - 3);
     }
 
     // ---------- DmaWidth helpers ----------
