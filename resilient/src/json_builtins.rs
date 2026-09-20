@@ -920,4 +920,29 @@ println(type_of(v));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("map"), "stdout: {}", r.stdout);
     }
+
+    fn nested_array_value(depth: usize) -> Value {
+        let mut value = Value::Array(Vec::new());
+        for _ in 1..depth {
+            value = Value::Array(vec![value]);
+        }
+        value
+    }
+
+    #[test]
+    fn json_encoders_reject_excessive_value_depth() {
+        let error = serialize_value(&nested_array_value(MAX_JSON_NESTING_DEPTH + 1))
+            .expect_err("compact encoder must enforce the depth budget");
+        assert!(
+            error.contains("maximum JSON nesting depth"),
+            "error: {error}"
+        );
+
+        let error = serialize_value_pretty(&nested_array_value(MAX_JSON_NESTING_DEPTH + 1), 0)
+            .expect_err("pretty encoder must enforce the depth budget");
+        assert!(
+            error.contains("maximum JSON nesting depth"),
+            "error: {error}"
+        );
+    }
 }
