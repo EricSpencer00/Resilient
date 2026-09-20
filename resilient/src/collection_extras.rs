@@ -7,7 +7,7 @@
 //! * `array_iterate(init, n, fn)` — apply `fn` to value `n` times, returning
 //!   an Array of all `n+1` values starting with `init`.
 
-use crate::{Interpreter, MapKey, Value};
+use crate::{Interpreter, MapKey, Value, collection_budget::MAX_GENERATED_ELEMENTS};
 
 type RResult<T> = Result<T, String>;
 
@@ -116,7 +116,18 @@ pub(crate) fn builtin_array_iterate(interp: &mut Interpreter, args: &[Value]) ->
         return Err(format!("array_iterate: n must be >= 0, got {n}"));
     }
 
-    let mut out = Vec::with_capacity((n as usize) + 1);
+    let n = usize::try_from(n)
+        .map_err(|_| "array_iterate: n does not fit the target usize".to_string())?;
+    let output_len = n
+        .checked_add(1)
+        .ok_or_else(|| "array_iterate: output length overflows the target usize".to_string())?;
+    if output_len > MAX_GENERATED_ELEMENTS {
+        return Err(format!(
+            "array_iterate: requested {output_len} elements exceeds the maximum of {MAX_GENERATED_ELEMENTS}"
+        ));
+    }
+
+    let mut out = Vec::with_capacity(output_len);
     let mut current = init;
     out.push(current.clone());
     for _ in 0..n {
@@ -239,6 +250,22 @@ println(arr[0]);"#,
 println(arr);"#,
         );
         assert!(!r.ok, "expected error for negative n");
+    }
+
+    #[test]
+    fn iterate_rejects_oversized_count_before_callback() {
+        let r = run(
+            r#"let arr = array_iterate(1, 10000000, fn(int x) -> int { return x + 1; });
+println(arr);"#,
+        );
+        assert!(!r.ok, "expected oversized count error");
+        assert!(
+            r.errors
+                .iter()
+                .any(|error| error.contains("exceeds the maximum")),
+            "errors: {:?}",
+            r.errors
+        );
     }
 
     #[test]
