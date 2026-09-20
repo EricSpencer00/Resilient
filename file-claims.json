@@ -155,6 +155,18 @@
     "resilient/src/jit_backend.rs": {
       "branch": "res-4659-jit-pattern-fail-closed",
       "claimed_at": "2026-09-20T18:04:28Z"
+    },
+    "4663": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T18:23:58Z"
+    },
+    "--files": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T18:23:58Z"
+    },
+    "resilient/src/refinement_types.rs": {
+      "branch": "--issue",
+      "claimed_at": "2026-09-20T18:23:58Z"
     }
   }
 }
