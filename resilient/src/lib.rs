@@ -80,6 +80,8 @@ mod int_rotate;
 // RES-1162: deterministic hash builtins — hash_int / hash_string /
 // hash_bytes / hash_combine. Pure leaf builtins; module-isolated.
 mod compiler;
+#[cfg(test)]
+mod compiler_local_slot_tests;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
