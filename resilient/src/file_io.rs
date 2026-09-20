@@ -50,6 +50,29 @@ type Backend = wasm_vfs::WasmFile;
 /// silently alias a freshly opened file.
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 
+const MAX_FILE_READ_CHUNK: i64 = 10 * 1024 * 1024;
+
+fn checked_read_len(max: i64) -> Result<usize, String> {
+    if max < 0 {
+        return Err(format!(
+            "file_read_chunk: max_bytes must be non-negative, got {}",
+            max
+        ));
+    }
+    if max > MAX_FILE_READ_CHUNK {
+        return Err(format!(
+            "file_read_chunk: max_bytes {} too large (max {})",
+            max, MAX_FILE_READ_CHUNK
+        ));
+    }
+    usize::try_from(max).map_err(|_| {
+        format!(
+            "file_read_chunk: max_bytes {} is not representable on this target",
+            max
+        )
+    })
+}
+
 thread_local! {
     static REGISTRY: RefCell<HashMap<i64, Backend>> = RefCell::new(HashMap::new());
 }
@@ -166,13 +189,7 @@ pub(crate) fn builtin_file_read_chunk(args: &[Value]) -> RResult<Value> {
             ));
         }
     };
-    if max < 0 {
-        return Err(format!(
-            "file_read_chunk: max_bytes must be non-negative, got {}",
-            max
-        ));
-    }
-    let max_usize = max as usize;
+    let max_usize = checked_read_len(max)?;
     let result = REGISTRY.with(|r| -> Result<Vec<u8>, std::io::Error> {
         let mut reg = r.borrow_mut();
         let f = reg
@@ -691,6 +708,33 @@ mod tests {
         assert!(msg.contains("closed or unknown"), "unexpected: {}", msg);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn oversized_read_is_rejected_before_handle_lookup() {
+        let err =
+            builtin_file_read_chunk(&[handle_value(i64::MAX), Value::Int(MAX_FILE_READ_CHUNK + 1)])
+                .unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_length_validation_preserves_boundaries() {
+        assert_eq!(checked_read_len(0), Ok(0));
+        assert_eq!(
+            checked_read_len(MAX_FILE_READ_CHUNK),
+            Ok(MAX_FILE_READ_CHUNK as usize)
+        );
+        assert!(
+            checked_read_len(-1)
+                .unwrap_err()
+                .contains("must be non-negative")
+        );
+        assert!(
+            checked_read_len(MAX_FILE_READ_CHUNK + 1)
+                .unwrap_err()
+                .contains("too large")
+        );
     }
 
     #[test]
