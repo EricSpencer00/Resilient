@@ -332,9 +332,9 @@
       "branch": "res-4619-async-call-paths",
       "claimed_at": "2026-09-21T00:24:06Z"
     },
-    "resilient/src/anti_regression.rs": {
-      "branch": "res-4807-stable-diagnostic-position",
-      "claimed_at": "2026-09-21T00:50:20Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4617-pure-defer-guard",
+      "claimed_at": "2026-09-21T00:50:56Z"
     }
   }
 }
