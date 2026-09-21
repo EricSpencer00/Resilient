@@ -26,6 +26,7 @@
 //! is raw-bytes hex (no ASN.1 wrapping).
 
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 use ed25519_dalek::ed25519::signature::Signer;
@@ -43,6 +44,15 @@ use sha2::{Digest, Sha256};
 /// ticket's Notes — deliberately deferred).
 pub const EMBEDDED_PUBLIC_KEY_PEM: &str = include_str!("cert_key.pem");
 
+/// Maximum size of one certificate file retained while building a signed
+/// payload. Certificate artifacts are generated locally, but verification
+/// also consumes directories supplied by callers and must fail closed on
+/// unexpectedly large inputs.
+pub const MAX_CERT_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum combined size of certificate bytes and separators in one payload.
+pub const MAX_CERT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
 /// RES-194: PEM begin/end marker for the public key file.
 const PEM_PUB_BEGIN: &str = "-----BEGIN ED25519 PUBLIC KEY-----";
 const PEM_PUB_END: &str = "-----END ED25519 PUBLIC KEY-----";
@@ -59,6 +69,14 @@ const PEM_PRIV_END: &str = "-----END ED25519 PRIVATE KEY-----";
 /// signature after the fact. `cert.sig` is specifically excluded
 /// too (signing the signature would be a chicken-and-egg issue).
 pub fn compute_cert_payload(dir: &Path) -> Result<Vec<u8>, String> {
+    compute_cert_payload_with_limits(dir, MAX_CERT_FILE_BYTES, MAX_CERT_PAYLOAD_BYTES)
+}
+
+fn compute_cert_payload_with_limits(
+    dir: &Path,
+    max_file_bytes: usize,
+    max_payload_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let rd = fs::read_dir(dir)
         .map_err(|e| format!("could not read cert directory {}: {}", dir.display(), e))?;
     let mut entries: Vec<_> = rd
@@ -70,8 +88,41 @@ pub fn compute_cert_payload(dir: &Path) -> Result<Vec<u8>, String> {
 
     let mut payload = Vec::new();
     for (i, p) in entries.iter().enumerate() {
-        let body =
-            fs::read(p).map_err(|e| format!("could not read cert file {}: {}", p.display(), e))?;
+        let mut file = fs::File::open(p)
+            .map_err(|e| format!("could not read cert file {}: {}", p.display(), e))?;
+        let declared_len = file
+            .metadata()
+            .map_err(|e| format!("could not stat cert file {}: {}", p.display(), e))?
+            .len();
+        if declared_len > max_file_bytes as u64 {
+            return Err(format!(
+                "certificate file {} exceeds {}-byte limit",
+                p.display(),
+                max_file_bytes
+            ));
+        }
+
+        let separator_len = usize::from(i > 0);
+        let remaining = max_payload_bytes
+            .checked_sub(payload.len())
+            .ok_or_else(|| "certificate payload exceeds size limit".to_string())?;
+        if remaining < separator_len {
+            return Err(format!(
+                "certificate payload exceeds {}-byte limit",
+                max_payload_bytes
+            ));
+        }
+        let file_limit = (remaining - separator_len).min(max_file_bytes);
+        let mut body = Vec::with_capacity((declared_len as usize).min(file_limit));
+        file.take(file_limit.saturating_add(1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|e| format!("could not read cert file {}: {}", p.display(), e))?;
+        if body.len() > file_limit {
+            return Err(format!(
+                "certificate payload exceeds {}-byte limit",
+                max_payload_bytes
+            ));
+        }
         if i > 0 {
             payload.push(b'\n');
         }
@@ -691,6 +742,50 @@ mod tests {
         fs::write(dir.join("readme.txt"), b"ignore me").unwrap();
         let payload = compute_cert_payload(&dir).expect("payload");
         assert_eq!(payload, b"AAAA\nBBBB");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_cert_payload_accepts_exact_file_and_payload_limits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("res_certsign_limits_{}_{}", std::process::id(), n));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.smt2"), b"1234").unwrap();
+        fs::write(dir.join("b.smt2"), b"5678").unwrap();
+
+        let payload = compute_cert_payload_with_limits(&dir, 4, 9).expect("exact limits fit");
+        assert_eq!(payload, b"1234\n5678");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_cert_payload_rejects_file_and_aggregate_overages() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "res_certsign_overages_{}_{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.smt2"), b"12345").unwrap();
+        let file_err = compute_cert_payload_with_limits(&dir, 4, 16).unwrap_err();
+        assert!(
+            file_err.contains("cert") && file_err.contains("4-byte"),
+            "error was: {file_err}"
+        );
+
+        fs::write(dir.join("a.smt2"), b"1234").unwrap();
+        fs::write(dir.join("b.smt2"), b"5678").unwrap();
+        let payload_err = compute_cert_payload_with_limits(&dir, 4, 8).unwrap_err();
+        assert!(
+            payload_err.contains("payload") && payload_err.contains("8-byte"),
+            "error was: {payload_err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
