@@ -360,9 +360,9 @@
       "branch": "res-4845-string-interp-bound",
       "claimed_at": "2026-09-21T02:17:10Z"
     },
-    "resilient/src/struct_field_check.rs": {
-      "branch": "res-4848-struct-pattern-containers",
-      "claimed_at": "2026-09-21T02:20:28Z"
+    "resilient/src/cert_sign.rs": {
+      "branch": "res-4849-cert-payload-bound",
+      "claimed_at": "2026-09-21T02:22:28Z"
     }
   }
 }
