@@ -21,6 +21,25 @@ use std::collections::HashMap;
 
 type RResult<T> = Result<T, String>;
 
+/// Maximum number of nested JSON containers accepted by the builtins.
+///
+/// JSON values are traversed recursively by both the parser and serializer.
+/// Keeping the same bound on both sides prevents untrusted documents from
+/// exhausting the call stack before a controlled error can be returned.
+const MAX_JSON_NESTING_DEPTH: usize = 128;
+
+fn nesting_limit_error(operation: &str) -> String {
+    format!("{operation}: maximum nesting depth of {MAX_JSON_NESTING_DEPTH} exceeded")
+}
+
+fn ensure_nesting_depth(operation: &str, depth: usize) -> RResult<()> {
+    if depth >= MAX_JSON_NESTING_DEPTH {
+        Err(nesting_limit_error(operation))
+    } else {
+        Ok(())
+    }
+}
+
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 /// `to_json(value) -> string`
@@ -37,7 +56,7 @@ type RResult<T> = Result<T, String>;
 /// ```
 pub(crate) fn builtin_to_json(args: &[Value]) -> RResult<Value> {
     match args {
-        [v] => serialize_value(v).map(Value::String),
+        [v] => serialize_value(v, 0).map(Value::String),
         _ => Err(format!("to_json: expected 1 argument, got {}", args.len())),
     }
 }
@@ -45,7 +64,7 @@ pub(crate) fn builtin_to_json(args: &[Value]) -> RResult<Value> {
 /// `json_encode(value) -> string` — alias for `to_json`.
 pub(crate) fn builtin_json_encode(args: &[Value]) -> RResult<Value> {
     match args {
-        [v] => serialize_value(v).map(Value::String),
+        [v] => serialize_value(v, 0).map(Value::String),
         _ => Err(format!(
             "json_encode: expected 1 argument, got {}",
             args.len()
@@ -73,7 +92,7 @@ pub(crate) fn builtin_json_decode(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            match parser.parse_value() {
+            match parser.parse_value(0) {
                 Err(e) => Ok(Value::Result {
                     ok: false,
                     payload: Box::new(Value::String(e)),
@@ -110,7 +129,7 @@ pub(crate) fn builtin_json_valid(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            let ok = parser.parse_value().is_ok() && {
+            let ok = parser.parse_value(0).is_ok() && {
                 parser.skip_ws();
                 parser.pos >= parser.src.len()
             };
@@ -129,6 +148,7 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
     let inner_pad = "  ".repeat(indent + 1);
     match v {
         Value::Array(arr) => {
+            ensure_nesting_depth("json_encode_pretty", indent)?;
             if arr.is_empty() {
                 return Ok("[]".to_string());
             }
@@ -147,6 +167,7 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
             Ok(out)
         }
         Value::Map(m) => {
+            ensure_nesting_depth("json_encode_pretty", indent)?;
             if m.is_empty() {
                 return Ok("{}".to_string());
             }
@@ -178,11 +199,11 @@ fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
             Ok(out)
         }
         // Primitives are the same as compact form.
-        other => serialize_value(other),
+        other => serialize_value(other, indent),
     }
 }
 
-fn serialize_value(v: &Value) -> RResult<String> {
+fn serialize_value(v: &Value, depth: usize) -> RResult<String> {
     match v {
         Value::Int(n) => Ok(n.to_string()),
         Value::Float(f) => {
@@ -199,10 +220,15 @@ fn serialize_value(v: &Value) -> RResult<String> {
         Value::Bool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
         Value::String(s) => Ok(json_escape_string(s)),
         Value::Array(arr) => {
-            let items: RResult<Vec<String>> = arr.iter().map(serialize_value).collect();
+            ensure_nesting_depth("to_json", depth)?;
+            let items: RResult<Vec<String>> = arr
+                .iter()
+                .map(|item| serialize_value(item, depth + 1))
+                .collect();
             Ok(format!("[{}]", items?.join(", ")))
         }
         Value::Map(m) => {
+            ensure_nesting_depth("to_json", depth)?;
             // Sort keys for deterministic output
             let mut sorted: Vec<(&MapKey, &Value)> = m.iter().collect();
             sorted.sort_by_key(|(k, _)| match k {
@@ -218,16 +244,17 @@ fn serialize_value(v: &Value) -> RResult<String> {
                         MapKey::Int(n) => format!("\"{}\"", n),
                         MapKey::Bool(b) => format!("\"{}\"", b),
                     };
-                    serialize_value(v).map(|vs| format!("{}: {}", key_str, vs))
+                    serialize_value(v, depth + 1).map(|vs| format!("{}: {}", key_str, vs))
                 })
                 .collect();
             Ok(format!("{{{}}}", pairs?.join(", ")))
         }
         Value::Void => Ok("null".to_string()),
         Value::Option(None) => Ok("null".to_string()),
-        Value::Option(Some(inner)) => serialize_value(inner),
+        Value::Option(Some(inner)) => serialize_value(inner, depth),
         Value::Result { ok, payload } => {
-            let payload_json = serialize_value(payload)?;
+            ensure_nesting_depth("to_json", depth)?;
+            let payload_json = serialize_value(payload, depth + 1)?;
             if *ok {
                 Ok(format!("{{\"ok\": true, \"value\": {}}}", payload_json))
             } else {
@@ -235,7 +262,11 @@ fn serialize_value(v: &Value) -> RResult<String> {
             }
         }
         Value::Tuple(items) => {
-            let parts: RResult<Vec<String>> = items.iter().map(serialize_value).collect();
+            ensure_nesting_depth("to_json", depth)?;
+            let parts: RResult<Vec<String>> = items
+                .iter()
+                .map(|item| serialize_value(item, depth + 1))
+                .collect();
             Ok(format!("[{}]", parts?.join(", ")))
         }
         other => Err(format!(
@@ -313,7 +344,7 @@ pub(crate) fn builtin_from_json(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => {
             let mut parser = JsonParser::new(s);
-            let v = parser.parse_value()?;
+            let v = parser.parse_value(0)?;
             parser.skip_ws();
             if parser.pos < parser.src.len() {
                 return Err(format!(
@@ -385,7 +416,7 @@ impl<'a> JsonParser<'a> {
         Ok(())
     }
 
-    fn parse_value(&mut self) -> RResult<Value> {
+    fn parse_value(&mut self, depth: usize) -> RResult<Value> {
         self.skip_ws();
         match self.peek() {
             Some(b'n') => {
@@ -401,8 +432,8 @@ impl<'a> JsonParser<'a> {
                 Ok(Value::Bool(false))
             }
             Some(b'"') => self.parse_string().map(Value::String),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(depth),
+            Some(b'{') => self.parse_object(depth),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
             Some(b) => Err(format!(
                 "from_json: unexpected character '{}' at position {}",
@@ -559,7 +590,8 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn parse_array(&mut self) -> RResult<Value> {
+    fn parse_array(&mut self, depth: usize) -> RResult<Value> {
+        ensure_nesting_depth("from_json", depth)?;
         self.expect_byte(b'[')?;
         // RES-1946: typical JSON arrays hold 1-10 items; pre-size to
         // 4 to skip the default 0→4 first grow. Empty arrays
@@ -571,7 +603,7 @@ impl<'a> JsonParser<'a> {
             return Ok(Value::Array(items));
         }
         loop {
-            items.push(self.parse_value()?);
+            items.push(self.parse_value(depth + 1)?);
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -592,7 +624,8 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn parse_object(&mut self) -> RResult<Value> {
+    fn parse_object(&mut self, depth: usize) -> RResult<Value> {
+        ensure_nesting_depth("from_json", depth)?;
         self.expect_byte(b'{')?;
         // RES-1946: typical JSON objects hold 2-10 entries; pre-size
         // to 4 to skip the default 0-bucket → 4-bucket rehash. Empty
@@ -608,7 +641,7 @@ impl<'a> JsonParser<'a> {
             let key = self.parse_string()?;
             self.skip_ws();
             self.expect_byte(b':')?;
-            let val = self.parse_value()?;
+            let val = self.parse_value(depth + 1)?;
             map.insert(MapKey::Str(key), val);
             self.skip_ws();
             match self.peek() {
@@ -633,7 +666,12 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        nesting_limit_error, serialize_value, serialize_value_pretty, JsonParser,
+        MAX_JSON_NESTING_DEPTH,
+    };
     use crate::run_program;
+    use crate::Value;
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
@@ -890,5 +928,50 @@ println(len(v));"#);
 println(type_of(v));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("map"), "stdout: {}", r.stdout);
+    }
+
+    fn nested_json(depth: usize) -> String {
+        format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn nested_array(depth: usize) -> Value {
+        let mut value = Value::Int(0);
+        for _ in 0..depth {
+            value = Value::Array(vec![value]);
+        }
+        value
+    }
+
+    #[test]
+    fn parser_accepts_maximum_nesting_depth() {
+        let source = nested_json(MAX_JSON_NESTING_DEPTH);
+        let mut parser = JsonParser::new(&source);
+        assert!(parser.parse_value(0).is_ok());
+        parser.skip_ws();
+        assert_eq!(parser.pos, parser.src.len());
+    }
+
+    #[test]
+    fn parser_rejects_nesting_beyond_limit() {
+        let source = nested_json(MAX_JSON_NESTING_DEPTH + 1);
+        let mut parser = JsonParser::new(&source);
+        let error = parser.parse_value(0).unwrap_err();
+        assert_eq!(error, nesting_limit_error("from_json"));
+    }
+
+    #[test]
+    fn serializers_share_the_nesting_limit() {
+        let within_limit = nested_array(MAX_JSON_NESTING_DEPTH);
+        assert!(serialize_value(&within_limit, 0).is_ok());
+        assert!(serialize_value_pretty(&within_limit, 0).is_ok());
+
+        let beyond_limit = nested_array(MAX_JSON_NESTING_DEPTH + 1);
+        assert_eq!(
+            serialize_value(&beyond_limit, 0).unwrap_err(),
+            nesting_limit_error("to_json")
+        );
+        assert!(serialize_value_pretty(&beyond_limit, 0)
+            .unwrap_err()
+            .contains("maximum nesting depth"));
     }
 }
