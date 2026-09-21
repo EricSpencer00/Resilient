@@ -15,6 +15,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use crate::uniqueness_walk::visit;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
@@ -67,44 +68,23 @@ pub fn build(program: &Node) -> ActorGraph {
 }
 
 fn walk_sends(node: &Node, actors: &HashSet<&str>, out: &mut HashSet<String>) {
-    match node {
-        Node::CallExpression {
+    visit(node, &mut |node| {
+        let Node::CallExpression {
             function,
             arguments,
             ..
-        } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if name == "send" {
-                    if let Some(Node::Identifier { name: tgt, .. }) = arguments.first() {
-                        if actors.contains(tgt.as_str()) {
-                            out.insert(tgt.clone());
-                        }
-                    }
-                }
-            }
-            for a in arguments {
-                walk_sends(a, actors, out);
-            }
+        } = node
+        else {
+            return;
+        };
+        if let Node::Identifier { name, .. } = function.as_ref()
+            && name == "send"
+            && let Some(Node::Identifier { name: tgt, .. }) = arguments.first()
+            && actors.contains(tgt.as_str())
+        {
+            out.insert(tgt.clone());
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                walk_sends(s, actors, out);
-            }
-        }
-        Node::ExpressionStatement { expr, .. } => walk_sends(expr, actors, out),
-        Node::LetStatement { value, .. } => walk_sends(value, actors, out),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            walk_sends(consequence, actors, out);
-            if let Some(e) = alternative {
-                walk_sends(e, actors, out);
-            }
-        }
-        _ => {}
-    }
+    });
 }
 
 // RES-1477: borrow into `graph.edges` for the DFS instead of cloning
@@ -404,3 +384,7 @@ mod tests {
         assert_eq!(cycles.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "deadlock_freedom_regression.rs"]
+mod regression;
