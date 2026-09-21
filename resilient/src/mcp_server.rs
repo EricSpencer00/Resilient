@@ -329,33 +329,40 @@ fn read_bounded_stdio_line<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::
     let mut line = Vec::with_capacity(max_bytes.min(4096));
 
     loop {
-        let chunk = reader.fill_buf()?;
-        if chunk.is_empty() {
-            if line.is_empty() {
-                return Ok(StdioRead::EndOfInput);
+        let (consumed, newline, fits) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                if line.is_empty() {
+                    return Ok(StdioRead::EndOfInput);
+                }
+                return String::from_utf8(line)
+                    .map(StdioRead::Message)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
             }
-            return String::from_utf8(line)
-                .map(StdioRead::Message)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
-        }
 
-        if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
-            if !append_bounded_stdio_chunk(&mut line, &chunk[..newline], max_bytes) {
-                reader.consume(newline + 1);
+            if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                let fits = append_bounded_stdio_chunk(&mut line, &chunk[..newline], max_bytes);
+                (newline + 1, true, fits)
+            } else {
+                let chunk_len = chunk.len();
+                let fits = append_bounded_stdio_chunk(&mut line, chunk, max_bytes);
+                (chunk_len, false, fits)
+            }
+        };
+
+        reader.consume(consumed);
+        if newline {
+            if !fits {
                 return Ok(StdioRead::TooLong);
             }
-            reader.consume(newline + 1);
             return String::from_utf8(line)
                 .map(StdioRead::Message)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
         }
-
-        if !append_bounded_stdio_chunk(&mut line, chunk, max_bytes) {
-            reader.consume(chunk.len());
+        if !fits {
             discard_stdio_line(reader)?;
             return Ok(StdioRead::TooLong);
         }
-        reader.consume(chunk.len());
     }
 }
 
@@ -380,15 +387,21 @@ fn append_bounded_stdio_chunk(line: &mut Vec<u8>, chunk: &[u8], max_bytes: usize
 
 fn discard_stdio_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
     loop {
-        let chunk = reader.fill_buf()?;
-        if chunk.is_empty() {
+        let (consumed, newline) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                (newline + 1, true)
+            } else {
+                (chunk.len(), false)
+            }
+        };
+        reader.consume(consumed);
+        if newline {
             return Ok(());
         }
-        if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
-            reader.consume(newline + 1);
-            return Ok(());
-        }
-        reader.consume(chunk.len());
     }
 }
 
