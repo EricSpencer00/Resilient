@@ -760,20 +760,25 @@ fn decode_chunked(data: &str) -> String {
 
     while let Some(line_end) = remaining.find("\r\n") {
         let size_str = remaining[..line_end].trim();
-        let chunk_size = match i64::from_str_radix(size_str, 16) {
-            Ok(s) => s as usize,
+        let chunk_size = match usize::from_str_radix(size_str, 16) {
+            Ok(s) => s,
             Err(_) => break,
         };
         if chunk_size == 0 {
             break;
         }
-        let chunk_start = line_end + 2;
-        if chunk_start + chunk_size > remaining.len() {
+        let Some(chunk_start) = line_end.checked_add(2) else {
+            break;
+        };
+        let Some(chunk_end) = chunk_start.checked_add(chunk_size) else {
+            break;
+        };
+        if chunk_end > remaining.len() {
             result.push_str(&remaining[chunk_start..]);
             break;
         }
-        result.push_str(&remaining[chunk_start..chunk_start + chunk_size]);
-        remaining = &remaining[chunk_start + chunk_size..];
+        result.push_str(&remaining[chunk_start..chunk_end]);
+        remaining = &remaining[chunk_end..];
         if remaining.starts_with("\r\n") {
             remaining = &remaining[2..];
         }
@@ -993,6 +998,25 @@ mod tests {
     fn decode_chunked_single() {
         let input = "3\r\nfoo\r\n0\r\n\r\n";
         assert_eq!(decode_chunked(input), "foo");
+    }
+
+    #[test]
+    fn decode_chunked_rejects_negative_size_without_panicking() {
+        assert_eq!(decode_chunked("-1\r\nhello\r\n0\r\n\r\n"), "");
+    }
+
+    #[test]
+    fn decode_chunked_rejects_size_larger_than_usize() {
+        assert_eq!(
+            decode_chunked("ffffffffffffffffffffffff\r\nhello\r\n0\r\n\r\n"),
+            ""
+        );
+    }
+
+    #[test]
+    fn decode_chunked_rejects_boundary_overflow_without_panicking() {
+        let input = format!("{:x}\r\nx\r\n0\r\n\r\n", usize::MAX);
+        assert_eq!(decode_chunked(&input), "");
     }
 
     #[test]
