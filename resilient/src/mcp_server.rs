@@ -313,14 +313,112 @@ fn shutdown_requested() -> bool {
 ///
 /// Reads one JSON object per line, dispatches it, and writes the
 /// response (if any) immediately. Returns only on EOF or a fatal IO error.
+const DEFAULT_MAX_STDIO_MESSAGE_BYTES: usize = DEFAULT_MAX_BODY_BYTES;
+
+#[derive(Debug, Eq, PartialEq)]
+enum StdioRead {
+    EndOfInput,
+    Message(String),
+    TooLong,
+}
+
+/// Read one NDJSON message without allowing an unterminated line to grow
+/// beyond the same cap used for HTTP request bodies. `BufRead::lines()` cannot
+/// enforce this boundary because it allocates the complete line first.
+fn read_bounded_stdio_line<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<StdioRead> {
+    let mut line = Vec::with_capacity(max_bytes.min(4096));
+
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            if line.is_empty() {
+                return Ok(StdioRead::EndOfInput);
+            }
+            return String::from_utf8(line)
+                .map(StdioRead::Message)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+        }
+
+        if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+            if !append_bounded_stdio_chunk(&mut line, &chunk[..newline], max_bytes) {
+                reader.consume(newline + 1);
+                return Ok(StdioRead::TooLong);
+            }
+            reader.consume(newline + 1);
+            return String::from_utf8(line)
+                .map(StdioRead::Message)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+        }
+
+        if !append_bounded_stdio_chunk(&mut line, chunk, max_bytes) {
+            reader.consume(chunk.len());
+            discard_stdio_line(reader)?;
+            return Ok(StdioRead::TooLong);
+        }
+        reader.consume(chunk.len());
+    }
+}
+
+fn append_bounded_stdio_chunk(line: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> bool {
+    let Some(required) = line.len().checked_add(chunk.len()) else {
+        return false;
+    };
+    if required > max_bytes {
+        return false;
+    }
+
+    if required > line.capacity() {
+        let doubled = line.capacity().saturating_mul(2).max(1);
+        let target = doubled.max(required).min(max_bytes);
+        if line.try_reserve_exact(target - line.capacity()).is_err() {
+            return false;
+        }
+    }
+    line.extend_from_slice(chunk);
+    true
+}
+
+fn discard_stdio_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+            reader.consume(newline + 1);
+            return Ok(());
+        }
+        reader.consume(chunk.len());
+    }
+}
+
 pub fn run() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
+    let mut input = stdin.lock();
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
+    loop {
+        let line = match read_bounded_stdio_line(&mut input, DEFAULT_MAX_STDIO_MESSAGE_BYTES) {
+            Ok(StdioRead::EndOfInput) => break,
+            Ok(StdioRead::Message(line)) => line,
+            Ok(StdioRead::TooLong) => {
+                let _ = write_response(
+                    &mut out,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {
+                            "code": -32700,
+                            "message": format!(
+                                "Parse error: MCP stdio message exceeds {}-byte limit",
+                                DEFAULT_MAX_STDIO_MESSAGE_BYTES
+                            )
+                        }
+                    }),
+                );
+                continue;
+            }
             Err(_) => break,
         };
         let trimmed = line.trim();
@@ -3657,6 +3755,38 @@ mod tests {
         assert!(resp.is_some());
         let resp = resp.unwrap();
         assert!(resp["result"]["resources"].is_array());
+    }
+
+    #[test]
+    fn stdio_reader_accepts_exact_limit_and_final_partial_line() {
+        let mut input = std::io::Cursor::new(b"abcd\nlast");
+
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("abcd".to_string())
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("last".to_string())
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::EndOfInput
+        );
+    }
+
+    #[test]
+    fn stdio_reader_rejects_oversized_line_and_recovers_at_newline() {
+        let mut input = std::io::Cursor::new(b"abcde\nnext\n");
+
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::TooLong
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("next".to_string())
+        );
     }
 
     fn test_config() -> HttpHardeningConfig {
