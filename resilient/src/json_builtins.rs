@@ -251,7 +251,10 @@ fn serialize_value(v: &Value, depth: usize) -> RResult<String> {
         }
         Value::Void => Ok("null".to_string()),
         Value::Option(None) => Ok("null".to_string()),
-        Value::Option(Some(inner)) => serialize_value(inner, depth),
+        Value::Option(Some(inner)) => {
+            ensure_nesting_depth("to_json", depth)?;
+            serialize_value(inner, depth + 1)
+        }
         Value::Result { ok, payload } => {
             ensure_nesting_depth("to_json", depth)?;
             let payload_json = serialize_value(payload, depth + 1)?;
@@ -942,6 +945,14 @@ println(type_of(v));"#);
         value
     }
 
+    fn nested_option(depth: usize) -> Value {
+        let mut value = Value::Int(0);
+        for _ in 0..depth {
+            value = Value::Option(Some(Box::new(value)));
+        }
+        value
+    }
+
     #[test]
     fn parser_accepts_maximum_nesting_depth() {
         let source = nested_json(MAX_JSON_NESTING_DEPTH);
@@ -971,6 +982,11 @@ println(type_of(v));"#);
             nesting_limit_error("to_json")
         );
         assert!(serialize_value_pretty(&beyond_limit, 0)
+            .unwrap_err()
+            .contains("maximum nesting depth"));
+
+        let deeply_wrapped = nested_option(MAX_JSON_NESTING_DEPTH + 1);
+        assert!(serialize_value(&deeply_wrapped, 0)
             .unwrap_err()
             .contains("maximum nesting depth"));
     }
