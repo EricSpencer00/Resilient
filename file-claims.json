@@ -347,6 +347,10 @@
     "resilient/src/causal_trace.rs": {
       "branch": "res-4823-causal-trace-chain",
       "claimed_at": "2026-09-21T01:45:42Z"
+    },
+    "resilient/src/string_array_misc.rs": {
+      "branch": "res-4826-string-from-chars-bound",
+      "claimed_at": "2026-09-21T01:50:33Z"
     }
   }
 }
