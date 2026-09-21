@@ -11,6 +11,52 @@
 
 use crate::{RResult, Value};
 
+const MAX_STRING_BYTES: usize = 10_000_000;
+
+fn checked_string_capacity(
+    lengths: impl IntoIterator<Item = Result<usize, String>>,
+) -> Result<usize, String> {
+    let mut total = 0usize;
+    for length in lengths {
+        let length = length?;
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| "string_from_chars: output length overflow".to_string())?;
+        if total > MAX_STRING_BYTES {
+            return Err(format!(
+                "string_from_chars: output exceeds maximum of {} UTF-8 bytes",
+                MAX_STRING_BYTES
+            ));
+        }
+    }
+    Ok(total)
+}
+
+fn char_from_value(value: &Value) -> Result<char, String> {
+    match value {
+        // RES-2687: accept Char values (the new canonical form from string_chars)
+        // as well as single-character strings (legacy / direct use).
+        Value::Char(c) => Ok(*c),
+        Value::String(s) => {
+            let mut chars = s.chars();
+            let first = chars
+                .next()
+                .ok_or_else(|| "string_from_chars: empty string at array element".to_string())?;
+            if chars.next().is_some() {
+                return Err(format!(
+                    "string_from_chars: array element must be a single char, got {:?}",
+                    s
+                ));
+            }
+            Ok(first)
+        }
+        other => Err(format!(
+            "string_from_chars: array element must be a char or single-char string, got {}",
+            other
+        )),
+    }
+}
+
 fn split_array_2(before: String, after: String) -> Value {
     Value::Array(vec![Value::String(before), Value::String(after)])
 }
@@ -75,32 +121,14 @@ pub(crate) fn builtin_string_rsplit_once(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_string_from_chars(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let mut out = String::new();
+            let capacity = checked_string_capacity(
+                items
+                    .iter()
+                    .map(|value| char_from_value(value).map(|character| character.len_utf8())),
+            )?;
+            let mut out = String::with_capacity(capacity);
             for v in items {
-                match v {
-                    // RES-2687: accept Char values (the new canonical form from string_chars)
-                    // as well as single-character strings (legacy / direct use).
-                    Value::Char(c) => out.push(*c),
-                    Value::String(s) => {
-                        let mut chars = s.chars();
-                        let first = chars.next().ok_or_else(|| {
-                            "string_from_chars: empty string at array element".to_string()
-                        })?;
-                        if chars.next().is_some() {
-                            return Err(format!(
-                                "string_from_chars: array element must be a single char, got {:?}",
-                                s
-                            ));
-                        }
-                        out.push(first);
-                    }
-                    other => {
-                        return Err(format!(
-                            "string_from_chars: array element must be a char or single-char string, got {}",
-                            other
-                        ));
-                    }
-                }
+                out.push(char_from_value(v)?);
             }
             Ok(Value::String(out))
         }
@@ -246,6 +274,21 @@ mod tests {
         let arr = Value::Array(vec![s("🌟"), s("h"), s("i")]);
         let r = builtin_string_from_chars(&[arr]).unwrap();
         assert_eq!(as_string(r), "🌟hi");
+    }
+
+    #[test]
+    fn from_chars_capacity_accepts_exact_budget() {
+        assert_eq!(
+            checked_string_capacity([Ok::<_, String>(MAX_STRING_BYTES)].into_iter()),
+            Ok(MAX_STRING_BYTES)
+        );
+    }
+
+    #[test]
+    fn from_chars_capacity_rejects_over_budget_before_growth() {
+        let err = checked_string_capacity([Ok::<_, String>(MAX_STRING_BYTES), Ok(1)].into_iter())
+            .unwrap_err();
+        assert!(err.contains("exceeds maximum"), "got: {err}");
     }
 
     #[test]
