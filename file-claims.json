@@ -220,14 +220,6 @@
       "branch": "res-4717-fixed-width-metadata",
       "claimed_at": "2026-09-20T21:33:46Z"
     },
-    "resilient/src/string_interp.rs": {
-      "branch": "res-4722-template-capacity",
-      "claimed_at": "2026-09-20T21:43:39Z"
-    },
-    "resilient/src/format_builtin.rs": {
-      "branch": "res-4722-template-capacity",
-      "claimed_at": "2026-09-20T21:43:39Z"
-    },
     "resilient/src/array_cumulative.rs": {
       "branch": "res-4730-array-cumulative-no-staging",
       "claimed_at": "2026-09-20T21:59:09Z"
@@ -363,10 +355,6 @@
     "resilient/src/file_meta.rs": {
       "branch": "res-4842-dir-list-bound",
       "claimed_at": "2026-09-21T02:11:49Z"
-    },
-    "resilient/src/lsp_server.rs": {
-      "branch": "res-4844-lsp-index-bound",
-      "claimed_at": "2026-09-21T02:15:41Z"
     }
   }
 }
