@@ -29,7 +29,14 @@ type RResult<T> = Result<T, String>;
 // ---------------------------------------------------------------------------
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn sha256_raw(data: &[u8]) -> Vec<u8> {
@@ -231,6 +238,11 @@ mod tests {
             sha512_of("abc"),
             "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
         );
+    }
+
+    #[test]
+    fn hex_encode_preserves_lowercase_and_leading_zeroes() {
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0x10, 0xab, 0xff]), "000f10abff");
     }
 
     #[test]
