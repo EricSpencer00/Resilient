@@ -41,6 +41,7 @@ use crate::bytecode::Chunk;
 #[derive(Debug, Clone, Default)]
 pub struct SourceMap {
     entries: Vec<(usize, u32)>,
+    instruction_count: usize,
 }
 
 impl SourceMap {
@@ -55,7 +56,10 @@ impl SourceMap {
                 last_line = Some(line);
             }
         }
-        SourceMap { entries }
+        SourceMap {
+            entries,
+            instruction_count: chunk.line_info.len(),
+        }
     }
 
     /// Look up the source line for instruction at `pc`.
@@ -81,9 +85,7 @@ impl SourceMap {
     /// Total number of instructions this map covers (length of original line_info).
     #[allow(dead_code)]
     pub fn instruction_count(&self) -> usize {
-        // The last entry's start_pc is the last instruction that changed line;
-        // we don't know the total count without the chunk, so we expose entries.
-        self.entries.last().map(|(pc, _)| pc + 1).unwrap_or(0)
+        self.instruction_count
     }
 }
 
@@ -247,6 +249,18 @@ mod tests {
         let map = SourceMap::from_chunk(&chunk_with_lines(&lines));
         assert_eq!(map.entries().len(), 1);
         assert_eq!(map.lookup(999), Some(7));
+    }
+
+    #[test]
+    fn instruction_count_includes_trailing_rle_run() {
+        let map = SourceMap::from_chunk(&chunk_with_lines(&[1, 1, 2, 2, 2, 2]));
+        assert_eq!(map.instruction_count(), 6);
+    }
+
+    #[test]
+    fn instruction_count_is_zero_for_empty_chunk() {
+        let map = SourceMap::from_chunk(&chunk_with_lines(&[]));
+        assert_eq!(map.instruction_count(), 0);
     }
 
     #[test]

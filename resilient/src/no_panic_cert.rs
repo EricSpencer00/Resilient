@@ -15,7 +15,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const PANIC_TRIGGERS: &[&str] = &[
     "unwrap",
@@ -66,6 +66,44 @@ pub fn collect_no_panic_fns() -> HashSet<String> {
         .collect()
 }
 
+fn called_functions(node: &Node, functions: &HashMap<String, &Node>) -> HashSet<String> {
+    // A callable can be referenced without appearing in the callee slot:
+    // `let callback = helper; callback()` and a closure that captures
+    // `helper` are both valid first-class calls.  `free_vars` preserves the
+    // lexical bindings while finding those references, so parameters and
+    // locals with the same name do not create spurious edges.
+    crate::free_vars::free_vars(node)
+        .into_iter()
+        .filter(|name| functions.contains_key(name))
+        .collect()
+}
+
+fn reachable_panic(root: &str, functions: &HashMap<String, &Node>) -> Option<(String, String)> {
+    let mut pending = vec![root.to_owned()];
+    let mut visited = HashSet::new();
+
+    while let Some(name) = pending.pop() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        let Some(function) = functions.get(&name) else {
+            continue;
+        };
+        let Node::Function { body, .. } = function else {
+            continue;
+        };
+        if let Some(reason) = body_panics(body) {
+            return Some((name, reason));
+        }
+        for callee in called_functions(function, functions) {
+            if functions.contains_key(&callee) {
+                pending.push(callee);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let no_panic = collect_no_panic_fns();
     if no_panic.is_empty() {
@@ -74,13 +112,25 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    let functions: HashMap<_, _> = stmts
+        .iter()
+        .filter_map(|s| match &s.node {
+            Node::Function { name, .. } => Some((name.clone(), &s.node)),
+            _ => None,
+        })
+        .collect();
     for s in stmts {
-        if let Node::Function { name, body, .. } = &s.node {
+        if let Node::Function { name, .. } = &s.node {
             if no_panic.contains(name) {
-                if let Some(reason) = body_panics(body) {
+                if let Some((offending, reason)) = reachable_panic(name, &functions) {
+                    let location = if offending == *name {
+                        format!("contains {reason}")
+                    } else {
+                        format!("reaches `{offending}`, which contains {reason}")
+                    };
                     return Err(format!(
-                        "{}:0:0: error: `{}` is `#[no_panic]` but contains {}",
-                        source_path, name, reason
+                        "{}:0:0: error: `{}` is `#[no_panic]` but {}",
+                        source_path, name, location
                     ));
                 }
             }
