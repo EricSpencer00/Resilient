@@ -299,6 +299,9 @@ pub fn deregister_actor(pid: ActorPid) -> Result<(), MailboxError> {
     if removed.is_none() {
         return Err(MailboxError::NotLive(pid));
     }
+    ACTOR_FN_REGISTRY.with(|r| {
+        r.borrow_mut().remove(&pid);
+    });
     SCHEDULER.with(|s| {
         let mut sched = s.borrow_mut();
         sched.runnable.retain(|p| *p != pid);
@@ -584,6 +587,40 @@ mod tests {
         deregister_actor(pid).expect("deregister should succeed");
         let err = enqueue(pid, Value::Int(1)).expect_err("enqueue after deregister should fail");
         assert!(matches!(err, MailboxError::NotLive(_)));
+    }
+
+    #[test]
+    fn deregister_removes_actor_function_state() {
+        reset_for_test();
+        let Value::ActorPid(id) = actor_spawn(stub_fn()).expect("spawn should succeed") else {
+            panic!("expected ActorPid");
+        };
+        let pid = ActorPid(id);
+        assert!(get_actor_fn(pid).is_some());
+
+        deregister_actor(pid).expect("deregister should succeed");
+
+        assert!(
+            get_actor_fn(pid).is_none(),
+            "deregistered actors must not retain executable state"
+        );
+    }
+
+    #[test]
+    fn deregister_unknown_pid_preserves_live_actor_function_state() {
+        reset_for_test();
+        let Value::ActorPid(id) = actor_spawn(stub_fn()).expect("spawn should succeed") else {
+            panic!("expected ActorPid");
+        };
+        let live = ActorPid(id);
+        let unknown = ActorPid(id + 1_000);
+
+        let err = deregister_actor(unknown).expect_err("unknown PID should fail");
+        assert!(matches!(err, MailboxError::NotLive(pid) if pid == unknown));
+        assert!(
+            get_actor_fn(live).is_some(),
+            "failed deregistration must not remove a live actor's state"
+        );
     }
 
     #[test]
