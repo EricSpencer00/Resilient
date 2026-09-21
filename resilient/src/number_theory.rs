@@ -33,7 +33,9 @@ pub(crate) fn builtin_prime_factors(args: &[Value]) -> RResult<Value> {
             }
             let mut factors = Vec::new();
             let mut d = 2i64;
-            while d * d <= n {
+            // Compare by division so the guard remains defined at the full
+            // positive i64 range; d * d can overflow before the loop exits.
+            while d <= n / d {
                 while n % d == 0 {
                     factors.push(Value::Int(d));
                     n /= d;
@@ -121,7 +123,8 @@ pub(crate) fn builtin_euler_totient(args: &[Value]) -> RResult<Value> {
             let mut n = *n;
             let mut result = n;
             let mut p = 2i64;
-            while p * p <= n {
+            // Avoid overflowing the divisor-search bound for large inputs.
+            while p <= n / p {
                 if n % p == 0 {
                     while n % p == 0 {
                         n /= p;
@@ -161,7 +164,8 @@ pub(crate) fn builtin_divisors(args: &[Value]) -> RResult<Value> {
             let n = *n;
             let mut divs: Vec<i64> = Vec::new();
             let mut i = 1i64;
-            while i * i <= n {
+            // Avoid overflowing the divisor-search bound for large inputs.
+            while i <= n / i {
                 if n % i == 0 {
                     divs.push(i);
                     if i != n / i {
@@ -197,7 +201,8 @@ pub(crate) fn builtin_is_perfect(args: &[Value]) -> RResult<Value> {
             let n = *n;
             let mut sum = 1i64;
             let mut i = 2i64;
-            while i * i <= n {
+            // Avoid overflowing the divisor-search bound for large inputs.
+            while i <= n / i {
                 if n % i == 0 {
                     sum += i;
                     if i != n / i {
