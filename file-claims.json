@@ -363,10 +363,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/ai_threat_model.rs": {
-      "branch": "res-4851-contract-diagnostic-bound",
-      "claimed_at": "2026-09-21T02:28:05Z"
     }
   }
 }
