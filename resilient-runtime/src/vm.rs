@@ -1202,6 +1202,15 @@ impl<
                 }
                 Instr::Return => {
                     let v = self.pop()?;
+                    // A malformed or hand-authored function can return
+                    // before its `ExitTry`. Those handlers belong to this
+                    // frame and must not remain visible to the caller (or
+                    // to a postcheck running before the frame is popped).
+                    while self.try_sp > 0
+                        && self.try_stack[self.try_sp - 1].call_depth >= self.frame
+                    {
+                        self.try_sp -= 1;
+                    }
                     // RES-4083 (D-E1 tail): `current_func` at this
                     // point still names the function whose body is
                     // returning (it's only reassigned below, to the
