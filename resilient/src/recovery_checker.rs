@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn nested_match_live_block_is_checked() {
-        let src = r#"extern "test" { fn malloc(int n) -> int; }
+        let src = r#"extern "test" { fn malloc(n: int) -> int; }
 fn f(int x) -> int {
     return match x {
         0 => { live { return malloc(1); } return 0; },
