@@ -32,7 +32,15 @@ use crate::span::Spanned;
 use crate::{Node, parse};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Maximum source size for one imported module.
+///
+/// Imports are compiler input, so the limit must be applied before the
+/// source text is materialized. Ten MiB is large enough for normal modules
+/// while keeping a single dependency from exhausting the compiler host.
+const MAX_IMPORTED_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Tracks pending standard library imports discovered during expansion.
 /// These are collected and returned so the caller can inject bindings
@@ -375,9 +383,38 @@ fn canonicalize_or_self(p: &Path) -> PathBuf {
     fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+fn import_size_error(path: &Path, size: u64) -> Option<String> {
+    (size > MAX_IMPORTED_SOURCE_BYTES).then(|| {
+        format!(
+            "import \"{}\" exceeds source size limit of {} bytes (got {})",
+            path.display(),
+            MAX_IMPORTED_SOURCE_BYTES,
+            size
+        )
+    })
+}
+
 fn load_and_parse(path: &Path) -> Result<Node, String> {
-    let src = fs::read_to_string(path)
+    let file = fs::File::open(path)
         .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
+    let file_size = file
+        .metadata()
+        .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?
+        .len();
+    if let Some(err) = import_size_error(path, file_size) {
+        return Err(err);
+    }
+
+    // The metadata check handles the normal case. `take` closes the TOCTOU
+    // gap if the file grows after metadata was read, so the fallback path is
+    // still bounded before any source text can exceed the same limit.
+    let mut src = String::new();
+    file.take(MAX_IMPORTED_SOURCE_BYTES + 1)
+        .read_to_string(&mut src)
+        .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
+    if let Some(err) = import_size_error(path, src.len() as u64) {
+        return Err(err);
+    }
     let (program, errors) = parse(&src);
     if !errors.is_empty() {
         return Err(format!(
@@ -401,6 +438,35 @@ mod tests {
 
     fn cleanup_temp_dir(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_size_budget_accepts_exact_boundary() {
+        assert!(import_size_error(Path::new("module.rz"), MAX_IMPORTED_SOURCE_BYTES).is_none());
+    }
+
+    #[test]
+    fn import_size_budget_rejects_first_byte_over_boundary() {
+        let err = import_size_error(Path::new("module.rz"), MAX_IMPORTED_SOURCE_BYTES + 1)
+            .expect("oversized imports must fail closed");
+        assert!(err.contains("module.rz"), "got: {err}");
+        assert!(err.contains("source size limit"), "got: {err}");
+    }
+
+    #[test]
+    fn oversized_import_is_rejected_before_reading_contents() {
+        let dir = make_temp_dir().join("oversized_import");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("huge.rz");
+        let file = fs::File::create(&path).expect("create sparse import");
+        file.set_len(MAX_IMPORTED_SOURCE_BYTES + 1)
+            .expect("grow sparse import");
+        drop(file);
+
+        let err = load_and_parse(&path).expect_err("oversized import must fail");
+        assert!(err.contains("huge.rz"), "got: {err}");
+        assert!(err.contains("source size limit"), "got: {err}");
+        cleanup_temp_dir(&dir);
     }
 
     /// RES-4115: default output stays byte-identical to the legacy
