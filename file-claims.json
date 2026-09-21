@@ -335,26 +335,6 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4617-pure-defer-guard",
       "claimed_at": "2026-09-21T00:50:56Z"
-    },
-    "resilient/src/graph_algorithms.rs": {
-      "branch": "probe-8077",
-      "claimed_at": "2026-09-21T01:05:42Z"
-    },
-    "resilient/src/iter_helpers.rs": {
-      "branch": "probe-8077",
-      "claimed_at": "2026-09-21T01:05:47Z"
-    },
-    "resilient/src/string_utils.rs": {
-      "branch": "probe-8077",
-      "claimed_at": "2026-09-21T01:05:51Z"
-    },
-    "resilient/src/formatting.rs": {
-      "branch": "probe-8077",
-      "claimed_at": "2026-09-21T01:05:55Z"
-    },
-    "resilient/src/loop_bound.rs": {
-      "branch": "probe-8077",
-      "claimed_at": "2026-09-21T01:06:01Z"
     }
   }
 }
