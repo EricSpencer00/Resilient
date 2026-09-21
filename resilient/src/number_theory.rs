@@ -81,7 +81,7 @@ pub(crate) fn builtin_primes_up_to(args: &[Value]) -> RResult<Value> {
             is_prime[0] = false;
             is_prime[1] = false;
             let mut i = 2;
-            while i <= n / i {
+            while i <= n.div_euclid(i) {
                 if is_prime[i] {
                     let mut j = i * i;
                     while j <= n {
