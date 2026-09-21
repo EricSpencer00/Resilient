@@ -6268,6 +6268,18 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            Type::TypedArray(inner_declared) => {
+                if let Type::TypedArray(inner_actual) = actual {
+                    self.bind_generic_type_uses(
+                        fn_name,
+                        tp_set,
+                        tp_bindings,
+                        inner_declared,
+                        inner_actual,
+                    )?;
+                }
+                Ok(())
+            }
             Type::Tuple(declared_elems) => {
                 if let Type::Tuple(actual_elems) = actual
                     && declared_elems.len() == actual_elems.len()
