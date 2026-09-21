@@ -19,6 +19,8 @@ use std::time::Duration;
 type RResult<T> = Result<T, String>;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+const RESPONSE_READ_CHUNK: usize = 8 * 1024;
 
 fn ok(v: Value) -> Value {
     Value::Result {
@@ -646,6 +648,30 @@ fn host_header(parsed: &ParsedUrl) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn read_response_bytes<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut raw = Vec::new();
+    let mut chunk = [0_u8; RESPONSE_READ_CHUNK];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("read failed: {e}"))?;
+        if n == 0 {
+            return Ok(raw);
+        }
+        let next_len = raw
+            .len()
+            .checked_add(n)
+            .ok_or_else(|| "response size arithmetic overflow".to_string())?;
+        if next_len > max_bytes {
+            return Err(format!(
+                "response exceeds maximum size of {max_bytes} bytes"
+            ));
+        }
+        raw.extend_from_slice(&chunk[..n]);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOptions) -> Value {
     let parsed = match parse_url(url) {
         Ok(p) => p,
@@ -696,10 +722,10 @@ fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOpt
         return err_val(format!("flush failed: {e}"));
     }
 
-    let mut raw = Vec::new();
-    if let Err(e) = stream.read_to_end(&mut raw) {
-        return err_val(format!("read failed: {e}"));
-    }
+    let raw = match read_response_bytes(&mut stream, MAX_RESPONSE_BYTES) {
+        Ok(raw) => raw,
+        Err(e) => return err_val(e),
+    };
 
     let raw_str = String::from_utf8_lossy(&raw);
     parse_http_response(&raw_str)
@@ -993,6 +1019,20 @@ mod tests {
     fn decode_chunked_single() {
         let input = "3\r\nfoo\r\n0\r\n\r\n";
         assert_eq!(decode_chunked(input), "foo");
+    }
+
+    #[test]
+    fn response_reader_accepts_exact_limit() {
+        let mut reader = std::io::Cursor::new(b"12345678");
+        let bytes = read_response_bytes(&mut reader, 8).expect("exact limit should fit");
+        assert_eq!(bytes, b"12345678");
+    }
+
+    #[test]
+    fn response_reader_rejects_bytes_over_limit_before_append() {
+        let mut reader = std::io::Cursor::new(b"123456789");
+        let err = read_response_bytes(&mut reader, 8).expect_err("over-limit response");
+        assert!(err.contains("response exceeds maximum size of 8 bytes"));
     }
 
     #[test]
