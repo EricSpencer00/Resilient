@@ -245,8 +245,8 @@ mod tests {
         }
 
         fn enable_bit(peripheral: Peripheral) -> Option<u32> {
-            // Use the same bit layout as Stm32f4Rcc so tests exercise the
-            // actual bit positions.
+            // Use the same bit layout as Stm32f4Rcc for valid cases, while
+            // keeping GpioH malformed for the invalid-index test below.
             let bit = match peripheral {
                 Peripheral::GpioA => 0,
                 Peripheral::GpioB => 1,
@@ -255,7 +255,9 @@ mod tests {
                 Peripheral::GpioE => 4,
                 Peripheral::GpioF => 5,
                 Peripheral::GpioG => 6,
-                Peripheral::GpioH => 7,
+                // Deliberately malformed so the invalid-index guard can be
+                // exercised without adding another unsafe test configuration.
+                Peripheral::GpioH => u32::BITS,
             };
             Some(bit)
         }
@@ -361,38 +363,19 @@ mod tests {
             "is_enabled must return true after enable_peripheral"
         );
     }
-}
-
-#[cfg(test)]
-mod invalid_bit_tests {
-    use super::*;
-    use core::sync::atomic::AtomicU32;
-
-    static REGISTER: AtomicU32 = AtomicU32::new(0);
-
-    struct InvalidBitRcc;
-
-    unsafe impl RccConfig for InvalidBitRcc {
-        fn enable_register_addr(_: Peripheral) -> Option<usize> {
-            Some(&REGISTER as *const AtomicU32 as usize)
-        }
-
-        fn enable_bit(_: Peripheral) -> Option<u32> {
-            Some(u32::BITS)
-        }
-    }
 
     #[test]
     fn invalid_bit_is_rejected_without_touching_register() {
+        reset_mock();
         assert_eq!(
-            enable_peripheral::<InvalidBitRcc>(Peripheral::GpioA),
+            enable_peripheral::<MockRcc>(Peripheral::GpioH),
             Err(RccError::InvalidBit(u32::BITS))
         );
         assert_eq!(
-            disable_peripheral::<InvalidBitRcc>(Peripheral::GpioA),
+            disable_peripheral::<MockRcc>(Peripheral::GpioH),
             Err(RccError::InvalidBit(u32::BITS))
         );
-        assert!(!is_enabled::<InvalidBitRcc>(Peripheral::GpioA));
-        assert_eq!(REGISTER.load(core::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!is_enabled::<MockRcc>(Peripheral::GpioH));
+        assert_eq!(MOCK_AHB1ENR.load(Ordering::SeqCst), 0);
     }
 }
