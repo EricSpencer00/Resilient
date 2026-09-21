@@ -84,6 +84,27 @@ impl From<VmError> for LoaderError {
     }
 }
 
+/// Validate every branch in a flat program before it crosses the execution
+/// boundary. The legacy flat decoder intentionally preserves its permissive
+/// round-trip behavior, but a loader must reject malformed control flow even
+/// when the bad instruction is unreachable.
+fn validate_flat_branch_targets(code: &[Instr]) -> Result<(), DecodeError> {
+    for instr in code {
+        let target = match *instr {
+            Instr::Jump(target) | Instr::JumpIfFalse(target) | Instr::JumpIfTrue(target) => target,
+            _ => continue,
+        };
+        let valid = usize::try_from(target).is_ok_and(|target| target < code.len());
+        if !valid {
+            return Err(DecodeError::InvalidJumpTarget {
+                target,
+                code_len: code.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Decode `blob` (a `.rzbc` byte stream — see [`super::serde`]) into
 /// a fixed-capacity buffer of at most `N` instructions, then run it
 /// to completion on a fresh [`Vm`] with `STACK` operand-stack slots
@@ -121,6 +142,7 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
 ) -> Result<Value, LoaderError> {
     let mut instrs = [Instr::Return; N];
     let count = serde::decode(blob, &mut instrs)?;
+    validate_flat_branch_targets(&instrs[..count])?;
     let mut vm = Vm::<STACK, LOCALS>::new();
     let result = vm.run(&instrs[..count])?;
     Ok(result)
