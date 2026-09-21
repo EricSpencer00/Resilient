@@ -60,10 +60,10 @@ fn rejects_certificate_paths_that_leave_manifest_directory() {
 
         let output = run_verify_all(&dir);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "path should be rejected: {cert}");
+        assert!(!output.status.success(), "path case should be rejected: {tag}");
         assert!(
             stderr.contains("invalid `cert`") || stderr.contains("invalid cert"),
-            "unexpected diagnostics for {cert}: {stderr}"
+            "unexpected diagnostics for path case {tag}"
         );
 
         std::fs::remove_dir_all(&dir).expect("remove temporary certificate directory");
