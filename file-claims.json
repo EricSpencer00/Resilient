@@ -359,10 +359,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/pkg_publish.rs": {
-      "branch": "res-4854-package-archive-bound",
-      "claimed_at": "2026-09-21T05:32:24Z"
     }
   }
 }
