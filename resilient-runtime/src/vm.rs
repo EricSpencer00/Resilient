@@ -774,6 +774,9 @@ impl<
         if idx as usize >= LOCALS {
             return Err(VmError::LocalsOutOfBounds);
         }
+        if CALLS == 0 {
+            return Err(VmError::CallStackOverflow);
+        }
         let abs = self.frame_base[self.frame] + idx as usize;
         match self.locals.get_mut(abs) {
             Some(slot) => {
