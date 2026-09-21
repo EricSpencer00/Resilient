@@ -81,7 +81,7 @@ pub(crate) fn builtin_primes_up_to(args: &[Value]) -> RResult<Value> {
             is_prime[0] = false;
             is_prime[1] = false;
             let mut i = 2;
-            while i * i <= n {
+            while i <= n.div_euclid(i) {
                 if is_prime[i] {
                     let mut j = i * i;
                     while j <= n {
@@ -304,7 +304,13 @@ pub(crate) fn builtin_collatz_length(args: &[Value]) -> RResult<Value> {
                 if n.is_multiple_of(2) {
                     n /= 2;
                 } else {
-                    n = n.saturating_mul(3).saturating_add(1);
+                    n = n
+                        .checked_mul(3)
+                        .and_then(|next| next.checked_add(1))
+                        .ok_or_else(|| {
+                            "collatz_length: 3n + 1 overflowed the unsigned integer range"
+                                .to_string()
+                        })?;
                 }
                 steps += 1;
                 if steps > 10_000_000 {
@@ -339,15 +345,17 @@ pub(crate) fn builtin_is_fibonacci(args: &[Value]) -> RResult<Value> {
             if *n < 0 {
                 return Ok(Value::Bool(false));
             }
-            let n = *n as u64;
-            let is_perfect_square = |x: u64| -> bool {
-                let s = (x as f64).sqrt() as u64;
-                s * s == x || (s + 1) * (s + 1) == x
-            };
-            let five_n_sq = 5u64.saturating_mul(n.saturating_mul(n));
-            let result = is_perfect_square(five_n_sq.saturating_add(4))
-                || five_n_sq >= 4 && is_perfect_square(five_n_sq - 4);
-            Ok(Value::Bool(result))
+            let target = *n as u64;
+            let mut previous = 0u64;
+            let mut current = 1u64;
+            while previous < target {
+                let Some(next) = previous.checked_add(current) else {
+                    return Ok(Value::Bool(false));
+                };
+                previous = current;
+                current = next;
+            }
+            Ok(Value::Bool(previous == target))
         }
         [other] => Err(format!("is_fibonacci: expected int, got {other}")),
         _ => Err(format!(
