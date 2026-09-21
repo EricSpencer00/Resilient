@@ -10,11 +10,24 @@
 
 use crate::{RResult, Value};
 
+const MAX_ENUMERATE_ITEMS: usize = 10_000_000;
+
+fn validate_enumerate_len(len: usize) -> RResult<()> {
+    if len > MAX_ENUMERATE_ITEMS {
+        return Err(format!(
+            "enumerate: output length {} exceeds limit {}",
+            len, MAX_ENUMERATE_ITEMS
+        ));
+    }
+    Ok(())
+}
+
 /// `enumerate(arr) -> Array` — `[[0, arr[0]], [1, arr[1]], ...]`.
 /// Indices start at 0. Empty input returns empty.
 pub(crate) fn builtin_enumerate(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
+            validate_enumerate_len(items.len())?;
             let out: Vec<Value> = items
                 .iter()
                 .enumerate()
@@ -157,6 +170,13 @@ mod tests {
     fn enumerate_rejects_non_array() {
         let err = builtin_enumerate(&[Value::Int(7)]).unwrap_err();
         assert!(err.contains("expected array"));
+    }
+
+    #[test]
+    fn enumerate_rejects_output_over_limit_before_allocation() {
+        assert!(validate_enumerate_len(MAX_ENUMERATE_ITEMS).is_ok());
+        let err = validate_enumerate_len(MAX_ENUMERATE_ITEMS + 1).unwrap_err();
+        assert!(err.contains("exceeds limit"));
     }
 
     // --- array_zip3 ---
