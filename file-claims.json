@@ -339,6 +339,10 @@
     "resilient/src/loop_bound.rs": {
       "branch": "res-4813-loop-counter-initializer",
       "claimed_at": "2026-09-21T01:08:05Z"
+    },
+    "resilient/src/numeric_utils.rs": {
+      "branch": "res-4818-int-pow-width",
+      "claimed_at": "2026-09-21T01:28:03Z"
     }
   }
 }
