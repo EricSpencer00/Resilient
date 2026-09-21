@@ -157,8 +157,8 @@ Private declarations remain reachable only through the module's qualified
 name. A glob import that would introduce a duplicate unqualified name — from
 another glob or from a top-level declaration — is rejected deterministically
 as ambiguous. This avoids silently changing which function a safety-critical
-program calls. The current slice is intentionally limited to top-level globs
-over inline modules; file and dependency imports keep their existing
+program calls. Nested inline-module paths such as `use outer::inner::*;` are
+resolved recursively. File and dependency imports keep their existing
 `pub`/selective/re-export behavior, and enum declarations do not yet carry a
 `pub` marker to export through this form.
 
