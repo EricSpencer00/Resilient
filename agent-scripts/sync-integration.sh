@@ -153,10 +153,12 @@ fi
 git push --force-with-lease origin "$branch"
 
 # Fast-forward integration. If someone else moved integration forward
-# since our fetch, retry once.
+# since our fetch, retry twice more before failing closed.
+integration_synced=0
 for attempt in 1 2 3; do
     if git push origin "HEAD:refs/heads/$INTEGRATION_REF"; then
         echo "integration: fast-forwarded to $(git rev-parse --short HEAD)"
+        integration_synced=1
         break
     fi
     echo "integration push failed (attempt $attempt), refetching and retrying..."
@@ -167,6 +169,11 @@ for attempt in 1 2 3; do
     }
     git push --force-with-lease origin "$branch"
 done
+
+if (( integration_synced == 0 )); then
+    echo "integration push failed after 3 attempts — run sync-integration again" >&2
+    exit 7
+fi
 
 # Stamp the PR if known.
 if [[ -n "$PR" && "$PR" != "null" ]]; then
