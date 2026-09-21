@@ -309,10 +309,7 @@ fn shutdown_requested() -> bool {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Run the MCP server loop on stdin/stdout.
-///
-/// Reads one JSON object per line, dispatches it, and writes the
-/// response (if any) immediately. Returns only on EOF or a fatal IO error.
+/// Maximum bytes accepted for one newline-delimited stdio message.
 const DEFAULT_MAX_STDIO_MESSAGE_BYTES: usize = DEFAULT_MAX_BODY_BYTES;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -405,6 +402,10 @@ fn discard_stdio_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
     }
 }
 
+/// Run the MCP server loop on stdin/stdout.
+///
+/// Reads one JSON object per line, dispatches it, and writes the
+/// response (if any) immediately. Returns only on EOF or a fatal IO error.
 pub fn run() {
     let stdin = io::stdin();
     let stdout = io::stdout();
