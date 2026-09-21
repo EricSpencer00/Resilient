@@ -340,9 +340,9 @@
       "branch": "res-4813-loop-counter-initializer",
       "claimed_at": "2026-09-21T01:08:05Z"
     },
-    "resilient/src/self_host_parity_report.rs": {
-      "branch": "res-4819-token-parity-fail-closed",
-      "claimed_at": "2026-09-21T01:32:18Z"
+    "resilient/src/numeric_utils.rs": {
+      "branch": "res-4818-int-pow-width",
+      "claimed_at": "2026-09-21T01:33:13Z"
     }
   }
 }
