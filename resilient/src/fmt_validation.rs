@@ -82,116 +82,140 @@ fn static_template(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
 }
 
 fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
-    match node {
-        Node::CallExpression {
+    // Keep validation in lock-step with the compiler's complete AST shape.
+    // The former hand-written descent only followed blocks, returns, lets,
+    // assignments, and expression statements, so calls nested in branches,
+    // loops, matches, or deferred actions silently escaped this pass.
+    crate::uniqueness_walk::visit(node, &mut |node| {
+        let Node::CallExpression {
             function,
             arguments,
             ..
-        } => {
-            if let Node::Identifier { name: callee, .. } = function.as_ref() {
-                if callee == "format" && !arguments.is_empty() {
-                    if let Some(tmpl) = static_template(&arguments[0]) {
-                        match crate::format_builtin::parse_template(&tmpl) {
-                            Err(e) => {
-                                // RES-1101: surface the unterminated `{`
-                                // diagnostic directly.
-                                errs.push(format!("in `{}`: {}", fn_name, e));
-                            }
-                            Ok(segs) => {
-                                let need = segs
-                                    .iter()
-                                    .filter(|s| {
-                                        matches!(
-                                            s,
-                                            crate::format_builtin::FormatSegment::Placeholder(_)
-                                        )
-                                    })
-                                    .count();
-                                // The runtime `format(template, args)` signature
-                                // accepts EITHER individual positional args or a
-                                // single array literal.  Check both conventions:
-                                //  - Array arg:  `format("t", [a, b])` → count array items
-                                //  - Individual: `format("t", a, b)`   → count extra args
-                                let (got, args_to_check) = if arguments.len() == 2 {
-                                    if let Node::ArrayLiteral { items, .. } = &arguments[1] {
-                                        (items.len(), items.clone())
-                                    } else {
-                                        (arguments.len() - 1, arguments[1..].to_vec())
-                                    }
-                                } else {
-                                    (arguments.len() - 1, arguments[1..].to_vec())
-                                };
-                                if got != need {
-                                    errs.push(format!(
-                                        "in `{}`: format string has {} placeholder(s) but {} arg(s) were passed",
-                                        fn_name, need, got
-                                    ));
-                                } else {
-                                    // RES-3789: validate each argument against its format specifier
-                                    let mut arg_idx = 0;
-                                    for seg in &segs {
-                                        if let crate::format_builtin::FormatSegment::Placeholder(
-                                            spec,
-                                        ) = seg
-                                        {
-                                            if arg_idx < args_to_check.len() {
-                                                let arg = &args_to_check[arg_idx];
-                                                let arg_kind =
-                                                    crate::format_builtin::infer_arg_kind(arg);
-                                                if arg_kind != crate::format_builtin::FormatArgumentKind::Unknown {
-                                                    let requires_int = crate::format_builtin::spec_requires_integer(spec);
-                                                    let requires_float = crate::format_builtin::spec_requires_float(spec);
+        } = node
+        else {
+            return;
+        };
+        validate_format_call(function, arguments, fn_name, errs);
+    });
+}
 
-                                                    let type_err = match (arg_kind, requires_int, requires_float) {
-                                                        (crate::format_builtin::FormatArgumentKind::String, true, _) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got string", fn_name, spec))
-                                                        }
-                                                        (crate::format_builtin::FormatArgumentKind::String, false, true) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got string", fn_name, spec))
-                                                        }
-                                                        (crate::format_builtin::FormatArgumentKind::Boolean, true, _) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got boolean", fn_name, spec))
-                                                        }
-                                                        (crate::format_builtin::FormatArgumentKind::Boolean, false, true) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got boolean", fn_name, spec))
-                                                        }
-                                                        (crate::format_builtin::FormatArgumentKind::Integer, false, true) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got integer", fn_name, spec))
-                                                        }
-                                                        (crate::format_builtin::FormatArgumentKind::Float, true, false) => {
-                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got float", fn_name, spec))
-                                                        }
-                                                        _ => None,
-                                                    };
-                                                    if let Some(err) = type_err {
-                                                        errs.push(err);
-                                                    }
-                                                }
-                                            }
-                                            arg_idx += 1;
-                                        }
-                                    }
+fn validate_format_call(
+    function: &Node,
+    arguments: &[Node],
+    fn_name: &str,
+    errs: &mut Vec<String>,
+) {
+    let Node::Identifier { name: callee, .. } = function else {
+        return;
+    };
+    if callee != "format" || arguments.is_empty() {
+        return;
+    }
+    let Some(tmpl) = static_template(&arguments[0]) else {
+        return;
+    };
+
+    match crate::format_builtin::parse_template(&tmpl) {
+        Err(e) => {
+            // RES-1101: surface the unterminated `{` diagnostic directly.
+            errs.push(format!("in `{}`: {}", fn_name, e));
+        }
+        Ok(segs) => {
+            let need = segs
+                .iter()
+                .filter(|s| matches!(s, crate::format_builtin::FormatSegment::Placeholder(_)))
+                .count();
+            // The runtime `format(template, args)` signature accepts EITHER
+            // individual positional args or a single array literal.
+            let (got, args_to_check) = if arguments.len() == 2 {
+                if let Node::ArrayLiteral { items, .. } = &arguments[1] {
+                    (items.len(), items.clone())
+                } else {
+                    (arguments.len() - 1, arguments[1..].to_vec())
+                }
+            } else {
+                (arguments.len() - 1, arguments[1..].to_vec())
+            };
+            if got != need {
+                errs.push(format!(
+                    "in `{}`: format string has {} placeholder(s) but {} arg(s) were passed",
+                    fn_name, need, got
+                ));
+            } else {
+                // RES-3789: validate each argument against its format specifier.
+                let mut arg_idx = 0;
+                for seg in &segs {
+                    if let crate::format_builtin::FormatSegment::Placeholder(spec) = seg {
+                        if arg_idx < args_to_check.len() {
+                            let arg = &args_to_check[arg_idx];
+                            let arg_kind = crate::format_builtin::infer_arg_kind(arg);
+                            if arg_kind != crate::format_builtin::FormatArgumentKind::Unknown {
+                                let requires_int =
+                                    crate::format_builtin::spec_requires_integer(spec);
+                                let requires_float =
+                                    crate::format_builtin::spec_requires_float(spec);
+
+                                let type_err = match (arg_kind, requires_int, requires_float) {
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::String,
+                                        true,
+                                        _,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires integer argument, got string",
+                                        fn_name, spec
+                                    )),
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::String,
+                                        false,
+                                        true,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires float argument, got string",
+                                        fn_name, spec
+                                    )),
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::Boolean,
+                                        true,
+                                        _,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires integer argument, got boolean",
+                                        fn_name, spec
+                                    )),
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::Boolean,
+                                        false,
+                                        true,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires float argument, got boolean",
+                                        fn_name, spec
+                                    )),
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::Integer,
+                                        false,
+                                        true,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires float argument, got integer",
+                                        fn_name, spec
+                                    )),
+                                    (
+                                        crate::format_builtin::FormatArgumentKind::Float,
+                                        true,
+                                        false,
+                                    ) => Some(format!(
+                                        "in `{}`: format specifier `{{{}}}` requires integer argument, got float",
+                                        fn_name, spec
+                                    )),
+                                    _ => None,
+                                };
+                                if let Some(err) = type_err {
+                                    errs.push(err);
                                 }
                             }
                         }
+                        arg_idx += 1;
                     }
                 }
             }
-            for a in arguments {
-                walk(a, fn_name, errs);
-            }
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                walk(s, fn_name, errs);
-            }
-        }
-        Node::ReturnStatement { value: Some(e), .. } => walk(e, fn_name, errs),
-        Node::LetStatement { value, .. } | Node::Assignment { value, .. } => {
-            walk(value, fn_name, errs)
-        }
-        Node::ExpressionStatement { expr, .. } => walk(expr, fn_name, errs),
-        _ => {}
     }
 }
 
@@ -211,6 +235,35 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::parse;
+
+    #[test]
+    fn structured_control_flow_calls_are_validated() {
+        let src = r#"
+            fn f(bool flag, int n) {
+                if flag {
+                    format("if {", 1);
+                }
+                while n > 0 {
+                    format("while {", 1);
+                    n = n - 1;
+                }
+                let rendered = match n {
+                    0 => format("match {", 1),
+                    _ => "ok",
+                };
+                return 0;
+            }
+        "#;
+        let (prog, parse_errors) = parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        let errors = analyze(&prog);
+        assert_eq!(
+            errors.len(),
+            3,
+            "structured calls must all be checked: {errors:?}"
+        );
+        assert!(errors.iter().all(|error| error.contains("unterminated")));
+    }
 
     #[test]
     fn matching_placeholder_and_arg_count() {

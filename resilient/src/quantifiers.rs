@@ -357,12 +357,15 @@ pub(crate) fn z3_encode<'c>(
     let hi_z = crate::verifier_z3::translate_int_pub(ctx, hi, bindings)?;
 
     // Rebind `var` to a fresh symbolic Int before encoding the body.
-    // The `bindings` map carries *known constants*; a quantified
-    // variable is intentionally absent so `translate_int` falls back
-    // to `Int::new_const(name)` — that gives Z3 the universal/existential
-    // constant it needs.
+    // The `bindings` map carries *known constants*. Remove a same-named
+    // outer binding before translating the body so lexical quantifier
+    // shadowing cannot turn the bound variable into a captured constant.
+    // Keep the original map for the range bounds: the quantifier variable
+    // is scoped by the body, not by its own lower/upper expressions.
+    let mut body_bindings = bindings.clone();
+    body_bindings.remove(var);
     let var_const = Int::new_const(ctx, var);
-    let body_z = crate::verifier_z3::translate_bool_pub(ctx, body, bindings)?;
+    let body_z = crate::verifier_z3::translate_bool_pub(ctx, body, &body_bindings)?;
 
     // `lo <= var < hi`
     let in_range = Bool::and(ctx, &[&var_const.ge(&lo_z), &var_const.lt(&hi_z)]);
@@ -567,5 +570,30 @@ mod tests {
                 parser.errors
             );
         }
+    }
+
+    #[cfg(feature = "z3")]
+    #[test]
+    fn z3_quantifier_body_shadows_outer_constant_binding() {
+        let q = first_assert_expr(&parse_program("assert(forall i in 0..2: i < 2);"));
+        let mut bindings = std::collections::HashMap::new();
+        // An outer `i` must not capture the `i` bound by the quantified body.
+        bindings.insert("i".to_string(), 99);
+        let (verdict, _, _, _) =
+            crate::verifier_z3::prove_with_axioms_and_timeout(&q, &bindings, &[], 1_000);
+        assert_eq!(verdict, Some(true), "bound i must range over 0..2");
+    }
+
+    #[cfg(feature = "z3")]
+    #[test]
+    fn z3_nested_quantifier_rebinds_same_name() {
+        let q = first_assert_expr(&parse_program(
+            "assert(forall i in 0..2: exists i in 0..2: i == 1);",
+        ));
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("i".to_string(), 99);
+        let (verdict, _, _, _) =
+            crate::verifier_z3::prove_with_axioms_and_timeout(&q, &bindings, &[], 1_000);
+        assert_eq!(verdict, Some(true), "inner i must shadow the outer i");
     }
 }

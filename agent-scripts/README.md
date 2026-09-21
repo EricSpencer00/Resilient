@@ -12,6 +12,7 @@ file-claims + extension-point system introduced in PR #230.
 | `release-claims.sh` | Release claims (called by CI on PR close) |
 | `reconcile-integration.sh` | Safely reconcile `agents/integration` after squash merges |
 | `test-reconcile-integration.sh` | Exercise integration-ref reconciliation states locally and in CI |
+| `test-sync-integration.sh` | Exercise integration push success, retry, and exhausted-retry paths |
 | `pick-ticket.sh` | Select the next `agent-ready` ticket by priority / roadmap order, skipping open PR claims |
 | `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket, then record inferred file claims |
 | `agent-handoff.sh` | Post resumable PR handoff comments when model context is lost |
