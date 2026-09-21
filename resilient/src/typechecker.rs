@@ -12910,6 +12910,9 @@ fn check_body_purity(
         Node::ExpressionStatement { expr, .. } => {
             check_body_purity(expr, fn_name, pure_fns)?;
         }
+        Node::DeferStatement { expr, .. } => {
+            check_body_purity(expr, fn_name, pure_fns)?;
+        }
         Node::TryExpression { expr, .. } => {
             check_body_purity(expr, fn_name, pure_fns)?;
         }
@@ -14606,6 +14609,24 @@ mod purity_tests {
         let s = stmts(src);
         let err = check_program_purity(&s, "<t>").expect_err("live blocks are impure");
         assert!(err.contains("live"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn pure_fn_calling_impure_defer_is_rejected() {
+        let src = "@pure fn f() { defer println(\"late\"); return 0; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>").expect_err("deferred println is impure");
+        assert!(
+            err.contains("calls impure builtin `println`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_fn_calling_pure_defer_passes() {
+        let src = "@pure fn f(int x) { defer abs(x); return x; }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>").expect("pure deferred expressions are allowed");
     }
 
     #[test]
