@@ -30,6 +30,18 @@ const REGEX_BUILTINS: &[(&str, usize)] = &[
 
 const CACHE_CAPACITY: usize = 64;
 
+/// Maximum number of matches a single eager `regex_find_all` call may retain.
+pub(crate) const MAX_FIND_ALL_MATCHES: usize = 10_000_000;
+
+fn check_find_all_growth(current_len: usize) -> RResult<()> {
+    if current_len >= MAX_FIND_ALL_MATCHES {
+        return Err(format!(
+            "regex_find_all: result would exceed {MAX_FIND_ALL_MATCHES} matches"
+        ));
+    }
+    Ok(())
+}
+
 static REGEX_CACHE: LazyLock<RwLock<HashMap<String, Regex>>> =
     LazyLock::new(|| RwLock::new(HashMap::with_capacity(CACHE_CAPACITY)));
 
@@ -163,10 +175,11 @@ pub(crate) fn builtin_regex_find_all(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(text), Value::String(pattern)] => {
             let re = get_or_compile(pattern)?;
-            let matches: Vec<Value> = re
-                .find_iter(text)
-                .map(|m| Value::String(m.as_str().to_string()))
-                .collect();
+            let mut matches = Vec::new();
+            for m in re.find_iter(text) {
+                check_find_all_growth(matches.len())?;
+                matches.push(Value::String(m.as_str().to_string()));
+            }
             Ok(Value::Array(matches))
         }
         [a, b] => Err(format!(
@@ -394,6 +407,18 @@ mod tests {
             Value::Array(items) => assert!(items.is_empty()),
             other => panic!("expected empty Array, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn regex_find_all_rejects_growth_past_budget() {
+        let error = check_find_all_growth(MAX_FIND_ALL_MATCHES).expect_err("expected match cap");
+        assert!(error.contains("exceed"), "error: {error}");
+    }
+
+    #[test]
+    fn regex_find_all_accepts_last_budgeted_match() {
+        check_find_all_growth(MAX_FIND_ALL_MATCHES - 1)
+            .expect("the final match within the budget should be accepted");
     }
 
     #[test]
