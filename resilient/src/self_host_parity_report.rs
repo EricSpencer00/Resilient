@@ -413,7 +413,8 @@ fn run_success_case(exe: &Path, corpus_root: &Path, source: &Path) -> Result<Suc
     let label = relative_case_label(corpus_root, source)?;
     let src =
         fs::read_to_string(source).map_err(|err| format!("read {}: {err}", source.display()))?;
-    let rust_tokens = normalize_rust_tokens(&crate::dump_tokens_string(&src));
+    let rust_tokens = normalize_rust_tokens(&crate::dump_tokens_string(&src))
+        .map_err(|err| format!("Rust token normalization failed for {label}: {err}"))?;
     let self_host_tokens = run_self_host_lexer(exe, source)?;
     let rust_ast = crate::dump_ast_json_value(&src)
         .map_err(|errs| format!("Rust AST dump failed for {}: {}", label, errs.join(" | ")))?;
@@ -455,7 +456,8 @@ fn run_error_case(exe: &Path, corpus_root: &Path, source: &Path) -> Result<Error
     let label = relative_case_label(corpus_root, source)?;
     let src =
         fs::read_to_string(source).map_err(|err| format!("read {}: {err}", source.display()))?;
-    let rust_tokens = normalize_rust_tokens(&crate::dump_tokens_string(&src));
+    let rust_tokens = normalize_rust_tokens(&crate::dump_tokens_string(&src))
+        .map_err(|err| format!("Rust token normalization failed for {label}: {err}"))?;
     let self_host_tokens = run_self_host_lexer(exe, source)?;
     let token_parity = rust_tokens == self_host_tokens;
     let mut details = Vec::new();
@@ -701,51 +703,57 @@ fn normalize_self_host_stream(stdout: &str) -> String {
         .join("\n")
 }
 
-fn normalize_rust_tokens(stdout: &str) -> String {
+fn normalize_rust_tokens(stdout: &str) -> Result<String, String> {
     stdout
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(normalize_rust_token_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .enumerate()
+        .map(|(line_index, line)| {
+            normalize_rust_token_line(line)
+                .map_err(|err| format!("invalid Rust token line {}: {err}", line_index + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|lines| lines.join("\n"))
 }
 
-fn normalize_rust_token_line(line: &str) -> String {
+fn normalize_rust_token_line(line: &str) -> Result<String, String> {
     let (loc, rest) = line
         .split_once("  ")
-        .unwrap_or_else(|| panic!("unexpected token line format: {line}"));
+        .ok_or_else(|| format!("missing location separator in `{line}`"))?;
     let (kind, payload_start) = if let Some(idx) = rest.rfind(")(\"") {
         (&rest[..idx + 1], idx + 1)
     } else {
         let idx = rest
             .find("(\"")
-            .unwrap_or_else(|| panic!("missing lexeme payload start: {line}"));
+            .ok_or_else(|| format!("missing lexeme payload start in `{line}`"))?;
         (&rest[..idx], idx)
     };
     let payload_end = rest
         .rfind(')')
-        .unwrap_or_else(|| panic!("missing lexeme payload end: {line}"));
-    assert!(
-        payload_start < payload_end,
-        "bad lexeme payload bounds: {line}"
-    );
+        .ok_or_else(|| format!("missing lexeme payload end in `{line}`"))?;
+    if payload_start >= payload_end {
+        return Err(format!("bad lexeme payload bounds in `{line}`"));
+    }
     let mut lexeme = &rest[payload_start + 1..payload_end];
     if lexeme.starts_with('"') && lexeme.ends_with('"') && lexeme.len() >= 2 {
         lexeme = &lexeme[1..lexeme.len() - 1];
     }
     let (line_no, col_no) = loc
         .split_once(':')
-        .unwrap_or_else(|| panic!("missing location separator: {line}"));
+        .ok_or_else(|| format!("missing line/column separator in `{line}`"))?;
+    if line_no.parse::<usize>().is_err() || col_no.parse::<usize>().is_err() {
+        return Err(format!("invalid line/column location `{loc}` in `{line}`"));
+    }
     let decoded_lexeme = lexeme
         .replace("\\n", "\n")
         .replace("\\\"", "\"")
         .replace("\\\\", "\\");
-    let (bucket, rendered_lexeme) = map_rust_token_kind(kind, &decoded_lexeme);
-    format!("{bucket} {rendered_lexeme} {line_no} {col_no}")
+    let (bucket, rendered_lexeme) = map_rust_token_kind(kind, &decoded_lexeme)?;
+    Ok(format!("{bucket} {rendered_lexeme} {line_no} {col_no}"))
 }
 
-fn map_rust_token_kind(kind: &str, lexeme: &str) -> (&'static str, String) {
-    match kind {
+fn map_rust_token_kind(kind: &str, lexeme: &str) -> Result<(&'static str, String), String> {
+    let mapped = match kind {
         "Function" | "Function(\"fn\")" => ("KW", "fn".to_string()),
         "If" | "If(\"if\")" => ("KW", "if".to_string()),
         "Else" | "Else(\"else\")" => ("KW", "else".to_string()),
@@ -769,8 +777,13 @@ fn map_rust_token_kind(kind: &str, lexeme: &str) -> (&'static str, String) {
         "Arrow" | "Arrow(\"->\")" => ("OP", "->".to_string()),
         "Assign" => ("OP", "=".to_string()),
         "Eof" => ("EOF", String::new()),
-        other => panic!("unmapped Rust token kind `{other}` for lexeme `{lexeme}`"),
-    }
+        other => {
+            return Err(format!(
+                "unmapped Rust token kind `{other}` for lexeme `{lexeme}`"
+            ));
+        }
+    };
+    Ok(mapped)
 }
 
 fn first_self_host_parse_error(stdout: &str) -> Option<String> {
@@ -791,6 +804,62 @@ fn extract_line_col(msg: &str) -> Option<(usize, usize)> {
 
 fn bool_status(ok: bool) -> &'static str {
     if ok { "pass" } else { "fail" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_rust_token_line, normalize_rust_tokens};
+
+    #[test]
+    fn malformed_token_line_returns_an_error() {
+        let err = normalize_rust_token_line("not a token line").unwrap_err();
+        assert!(
+            err.contains("location separator"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_token_location_returns_an_error() {
+        let err = normalize_rust_token_line("line:column  Function(\"fn\")").unwrap_err();
+        assert!(
+            err.contains("invalid line/column location"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_token_payload_returns_an_error() {
+        let err = normalize_rust_token_line("1:2  Function").unwrap_err();
+        assert!(
+            err.contains("lexeme payload start"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_token_kind_returns_an_error() {
+        let err = normalize_rust_token_line("1:2  FutureToken(\"x\")").unwrap_err();
+        assert!(
+            err.contains("unmapped Rust token kind"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn valid_escaped_token_remains_normalized() {
+        let line = r#"1:2  StringLiteral("ignored")("a\"b")"#;
+        assert_eq!(normalize_rust_token_line(line).unwrap(), "STRING a\"b 1 2");
+    }
+
+    #[test]
+    fn token_stream_reports_the_first_malformed_line() {
+        let err = normalize_rust_tokens("1:1  Function(\"fn\")\nmalformed").unwrap_err();
+        assert!(
+            err.contains("invalid Rust token line 2"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 fn json_any_object<F>(value: &Value, predicate: &F) -> bool
