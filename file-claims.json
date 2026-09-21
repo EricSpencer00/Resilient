@@ -348,9 +348,9 @@
       "branch": "res-4823-causal-trace-chain",
       "claimed_at": "2026-09-21T01:45:42Z"
     },
-    "resilient/src/imports.rs": {
-      "branch": "res-4827-import-source-bound",
-      "claimed_at": "2026-09-21T01:50:34Z"
+    "resilient/src/crypto_hash.rs": {
+      "branch": "res-4828-crypto-hex-perf",
+      "claimed_at": "2026-09-21T01:51:51Z"
     }
   }
 }
