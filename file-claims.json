@@ -331,6 +331,10 @@
     "resilient/src/async_await.rs": {
       "branch": "res-4619-async-call-paths",
       "claimed_at": "2026-09-21T00:24:06Z"
+    },
+    "resilient/src/array_combinators.rs": {
+      "branch": "res-4806-array-iterate-bound",
+      "claimed_at": "2026-09-21T00:47:52Z"
     }
   }
 }
