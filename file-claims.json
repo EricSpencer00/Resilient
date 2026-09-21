@@ -319,6 +319,10 @@
     "resilient/tests/range_max_inclusive.rs": {
       "branch": "res-4788-range-max-inclusive",
       "claimed_at": "2026-09-20T23:40:52Z"
+    },
+    "resilient/src/recovery_checker.rs": {
+      "branch": "res-4794-recovery-checker-structured",
+      "claimed_at": "2026-09-21T00:05:32Z"
     }
   }
 }
