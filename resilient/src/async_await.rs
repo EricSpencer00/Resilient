@@ -90,11 +90,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 
 fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut Vec<&'a str>) {
     match node {
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
+        // Nested functions execute in their own effect context. Keep the
+        // existing boundary: their calls are checked when that function is
+        // visited as a top-level declaration, not as part of its enclosing
+        // caller.
+        Node::Function { .. } | Node::FunctionLiteral { .. } => return,
+        Node::CallExpression { function, .. } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if name == "block_on" {
                     // explicit bridge — skip recursion into args here since they are awaited
@@ -104,20 +105,13 @@ fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut V
                     out.push(name.as_str());
                 }
             }
-            for a in arguments {
-                walk_async_calls(a, async_fns, out);
-            }
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                walk_async_calls(s, async_fns, out);
-            }
-        }
-        Node::ReturnStatement { value: Some(e), .. } => walk_async_calls(e, async_fns, out),
-        Node::LetStatement { value, .. } => walk_async_calls(value, async_fns, out),
-        Node::ExpressionStatement { expr, .. } => walk_async_calls(expr, async_fns, out),
         _ => {}
     }
+
+    crate::uniqueness_walk::walk_children(node, &mut |child| {
+        walk_async_calls(child, async_fns, out)
+    });
 }
 
 #[cfg(test)]
@@ -244,6 +238,58 @@ mod tests {
         "#;
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn structured_control_flow_from_sync_is_blocked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fetch",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn fetch(int x) -> int { return x; }
+            fn caller(int x) -> int {
+                if (x > 0) { return fetch(x); }
+                try {
+                    defer fetch(x);
+                } catch Timeout {
+                    return match x { 0 => fetch(x), _ => x, };
+                }
+                return x;
+            }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn nested_expression_async_call_from_sync_is_blocked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fetch",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn fetch(int x) -> int { return x; }
+            fn caller(int x) -> int { return (fetch(x) + 1) * (x + 2); }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        assert!(check(&prog, "test").is_err());
         crate::feature_attrs::reset();
     }
 }
