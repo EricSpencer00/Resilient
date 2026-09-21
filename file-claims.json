@@ -335,10 +335,6 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4617-pure-defer-guard",
       "claimed_at": "2026-09-21T00:50:56Z"
-    },
-    "resilient/src/json_builtins.rs": {
-      "branch": "probe-json",
-      "claimed_at": "2026-09-21T01:04:25Z"
     }
   }
 }
