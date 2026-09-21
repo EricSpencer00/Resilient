@@ -32,10 +32,6 @@
       "branch": "res-4566-named-default-args",
       "claimed_at": "2026-09-20T13:58:41Z"
     },
-    "resilient/src/crash_only_cert.rs": {
-      "branch": "res-4570-crash-only-control-flow",
-      "claimed_at": "2026-09-20T14:18:55Z"
-    },
     "resilient/src/rounding.rs": {
       "branch": "res-4581-rounding-i64-boundary",
       "claimed_at": "2026-09-20T14:45:19Z"
