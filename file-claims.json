@@ -331,6 +331,10 @@
     "resilient/src/async_await.rs": {
       "branch": "res-4619-async-call-paths",
       "claimed_at": "2026-09-21T00:24:06Z"
+    },
+    "resilient/src/map_functional.rs": {
+      "branch": "res-4803-map-to-pairs-bound",
+      "claimed_at": "2026-09-21T00:39:32Z"
     }
   }
 }
