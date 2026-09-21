@@ -356,9 +356,9 @@
       "branch": "res-4833-mcp-stdio-bound",
       "claimed_at": "2026-09-21T02:00:14Z"
     },
-    "resilient/src/fmt_validation.rs": {
-      "branch": "res-4837-format-validation-structured",
-      "claimed_at": "2026-09-21T02:05:17Z"
+    "resilient/src/http_client.rs": {
+      "branch": "res-4839-http-response-bound",
+      "claimed_at": "2026-09-21T02:07:37Z"
     }
   }
 }
