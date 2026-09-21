@@ -331,10 +331,6 @@
     "resilient/src/async_await.rs": {
       "branch": "res-4619-async-call-paths",
       "claimed_at": "2026-09-21T00:24:06Z"
-    },
-    "resilient/src/ai_threat_model.rs": {
-      "branch": "res-4804-ai-threat-spans",
-      "claimed_at": "2026-09-21T00:42:24Z"
     }
   }
 }
