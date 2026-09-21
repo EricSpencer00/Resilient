@@ -351,6 +351,10 @@
     "resilient/src/crypto_hash.rs": {
       "branch": "res-4828-crypto-hex-perf",
       "claimed_at": "2026-09-21T01:51:51Z"
+    },
+    "resilient/src/json_builtins.rs": {
+      "branch": "res-4832-json-depth-bound",
+      "claimed_at": "2026-09-21T01:58:19Z"
     }
   }
 }
