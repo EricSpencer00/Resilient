@@ -256,7 +256,7 @@ mod tests {
                 Peripheral::GpioF => 5,
                 Peripheral::GpioG => 6,
                 // Deliberately malformed so the invalid-index guard can be
-                // exercised without adding another unsafe test configuration.
+                // exercised without adding another test-only configuration.
                 Peripheral::GpioH => u32::BITS,
             };
             Some(bit)
