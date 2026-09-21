@@ -8,10 +8,6 @@
       "branch": "res-4524-vm-zero-call-capacity",
       "claimed_at": "2026-09-20T10:23:13Z"
     },
-    "resilient/src/no_alloc_cert.rs": {
-      "branch": "res-4535-no-alloc-transitive",
-      "claimed_at": "2026-09-20T11:37:49Z"
-    },
     "resilient/src/inline.rs": {
       "branch": "res-4540-inline-safety",
       "claimed_at": "2026-09-20T12:07:03Z"
