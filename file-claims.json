@@ -351,6 +351,10 @@
     "resilient/src/formatting.rs": {
       "branch": "probe-8077",
       "claimed_at": "2026-09-21T01:05:55Z"
+    },
+    "resilient/src/loop_bound.rs": {
+      "branch": "probe-8077",
+      "claimed_at": "2026-09-21T01:06:01Z"
     }
   }
 }
