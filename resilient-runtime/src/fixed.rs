@@ -106,6 +106,9 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
     /// generic params come from outside.
     #[inline]
     pub const fn from_raw(raw: i64) -> Self {
+        if !valid_width(N, D) {
+            return Self { raw: 0 };
+        }
         Self { raw }
     }
 
