@@ -27,6 +27,7 @@ use crate::Node;
 pub struct StableSpec {
     pub since: Option<String>,
     pub locked_digest: Option<u64>,
+    pub attribute_line: usize,
 }
 
 pub fn collect_stable_specs() -> Vec<(String, StableSpec)> {
@@ -36,6 +37,7 @@ pub fn collect_stable_specs() -> Vec<(String, StableSpec)> {
         let mut s = StableSpec {
             since: None,
             locked_digest: None,
+            attribute_line: rec.line,
         };
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();
@@ -71,8 +73,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             if let Some(current) = fps.get(item_name.as_str()) {
                 if current.digest != locked {
                     return Err(format!(
-                        "{}:0:0: error: `{}` is `#[stable]` (since={:?}) but its behavior digest changed: {} → {}. Either revert the change or update the digest.",
-                        source_path, item_name, s.since, locked, current.digest
+                        "{}:{}:1: error: `{}` is `#[stable]` (since={:?}) but its behavior digest changed: {} → {}. Either revert the change or update the digest.",
+                        source_path,
+                        s.attribute_line.max(1),
+                        item_name,
+                        s.since,
+                        locked,
+                        current.digest
                     ));
                 }
             }
@@ -121,6 +128,25 @@ mod tests {
             },
         );
         assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn mismatched_digest_reports_attribute_line() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"fn f(int x) -> int ensures result > 0 { return x; }"#;
+        let (prog, _) = parse(src);
+        crate::feature_attrs::record(
+            "f",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: r#"since = "1.0", behavior = "999999""#.into(),
+                line: 7,
+            },
+        );
+        let err_msg = check(&prog, "myfile.res").unwrap_err();
+        assert!(err_msg.starts_with("myfile.res:7:1: error:"), "{err_msg}");
         crate::feature_attrs::reset();
     }
 
