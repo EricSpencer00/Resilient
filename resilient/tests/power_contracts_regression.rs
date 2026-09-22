@@ -1,13 +1,12 @@
 //! Regression coverage for complete `#[power]` executable-path accounting.
 
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn check_source(source: &str) -> Output {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = PathBuf::from(std::env::temp_dir()).join(format!(
+    let path = std::env::temp_dir().join(format!(
         "res_power_contracts_regression_{}_{}.rz",
         std::process::id(),
         id
