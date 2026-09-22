@@ -75,10 +75,12 @@ impl RegexCache {
         self.entries.insert(pattern, regex);
     }
 
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     fn contains_key(&self, pattern: &str) -> bool {
         self.entries.contains_key(pattern)
     }
