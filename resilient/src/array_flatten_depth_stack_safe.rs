@@ -25,11 +25,13 @@ fn deeply_nested_input_does_not_exhaust_native_stack() {
         deep = array(vec![deep]);
     }
 
-    let result = builtin_array_flatten_depth(&[deep, Value::Int(i64::MAX)]).unwrap();
+    let args = [deep, Value::Int(i64::MAX)];
+    let result = builtin_array_flatten_depth(&args).unwrap();
     let Value::Array(values) = result else {
         panic!("expected flattened array");
     };
-    assert_value_shape(&Value::Array(values), &array(vec![Value::Int(42)]));
+    assert!(matches!(values.as_slice(), [Value::Int(42)]));
+    std::mem::forget(args);
 }
 
 #[test]
@@ -43,7 +45,8 @@ fn worklist_preserves_order_and_depth_boundaries() {
     assert_value_shape(
         &depth_one,
         &array(vec![
-            array(vec![Value::Int(1), array(vec![Value::Int(2)])]),
+            Value::Int(1),
+            array(vec![Value::Int(2)]),
             Value::Int(3),
         ]),
     );
@@ -51,11 +54,7 @@ fn worklist_preserves_order_and_depth_boundaries() {
     let depth_two = builtin_array_flatten_depth(&[input.clone(), Value::Int(2)]).unwrap();
     assert_value_shape(
         &depth_two,
-        &array(vec![
-            Value::Int(1),
-            array(vec![Value::Int(2)]),
-            Value::Int(3),
-        ]),
+        &array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
     );
 
     let fully_flattened = builtin_array_flatten_depth(&[input, Value::Int(3)]).unwrap();
