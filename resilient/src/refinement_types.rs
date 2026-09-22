@@ -202,13 +202,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 }
 
 /// Walk the program and emit a compile-time error for any `let` binding
-/// whose type annotation is a refinement type and whose RHS is an integer
-/// literal that violates the refinement predicate, or (with Z3 enabled) whose
-/// RHS is a parameter reference and the refinement predicate cannot be proven
-/// from the enclosing function's `requires` clauses.
+/// whose type annotation is a refinement type and whose RHS is a statically
+/// evaluable integer expression that violates the refinement predicate, or
+/// (with Z3 enabled) whose RHS is a parameter reference and the refinement
+/// predicate cannot be proven from the enclosing function's `requires`
+/// clauses.
 ///
-/// For non-literal RHS values (arbitrary expressions, external I/O) this pass
-/// is a no-op — runtime `refine_int` guards enforce the predicate at
+/// For non-constant RHS values (arbitrary expressions, external I/O) this
+/// pass is a no-op — runtime `refine_int` guards enforce the predicate at
 /// execution time.
 fn check_let_obligations(
     program: &Node,
@@ -360,10 +361,61 @@ fn check_node_obligations(
     specs: &std::collections::HashMap<String, RefinementSpec>,
     fn_ctx: Option<FunctionContext>,
 ) -> Result<(), String> {
+    let mut const_bindings = std::collections::HashMap::new();
+    check_node_obligations_with_bindings(node, source_path, specs, fn_ctx, &mut const_bindings)
+}
+
+/// Fold the integer subset that is safe to prove at compile time. Returning
+/// `None` for overflow or division by zero is intentional: an inconclusive
+/// proof must retain the existing runtime-check behavior.
+fn fold_refinement_const_i64(
+    node: &Node,
+    bindings: &std::collections::HashMap<String, i64>,
+) -> Option<i64> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(*value),
+        Node::Identifier { name, .. } => bindings.get(name).copied(),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if *operator == "-" => fold_refinement_const_i64(right, bindings)?.checked_neg(),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            let left = fold_refinement_const_i64(left, bindings)?;
+            let right = fold_refinement_const_i64(right, bindings)?;
+            match *operator {
+                "+" => left.checked_add(right),
+                "-" => left.checked_sub(right),
+                "*" => left.checked_mul(right),
+                "/" if right != 0 => left.checked_div(right),
+                "%" if right != 0 => left.checked_rem(right),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn check_node_obligations_with_bindings(
+    node: &Node,
+    source_path: &str,
+    specs: &std::collections::HashMap<String, RefinementSpec>,
+    fn_ctx: Option<FunctionContext>,
+    const_bindings: &mut std::collections::HashMap<String, i64>,
+) -> Result<(), String> {
     // Handle the Program node specially to extract statement nodes.
     if let Node::Program(stmts) = node {
         for stmt in stmts {
-            check_node_obligations(&stmt.node, source_path, specs, fn_ctx.clone())?;
+            check_node_obligations_with_bindings(
+                &stmt.node,
+                source_path,
+                specs,
+                fn_ctx.clone(),
+                const_bindings,
+            )?;
         }
         return Ok(());
     }
@@ -371,16 +423,16 @@ fn check_node_obligations(
     match node {
         Node::LetStatement {
             name,
-            type_annot: Some(ty_name),
+            type_annot,
             value,
             span,
             ..
         } => {
-            if let Some(spec) = specs.get(ty_name.as_str()) {
-                match value.as_ref() {
-                    // Check constant integer literals at compile time.
-                    Node::IntegerLiteral { value: int_val, .. } => {
-                        if let Err(msg) = evaluate_int_predicate(*int_val, spec) {
+            let constant_value = fold_refinement_const_i64(value, const_bindings);
+            if let Some(ty_name) = type_annot {
+                if let Some(spec) = specs.get(ty_name.as_str()) {
+                    if let Some(int_val) = constant_value {
+                        if let Err(msg) = evaluate_int_predicate(int_val, spec) {
                             let line = span.start.line;
                             return Err(format!(
                                 "{}:{}: refinement error: let `{}`: {}",
@@ -390,12 +442,13 @@ fn check_node_obligations(
                     }
                     // RES-3839: with Z3 support, check parameter references using requires clauses.
                     #[cfg(feature = "z3")]
-                    Node::Identifier {
-                        name: param_name, ..
-                    } if fn_ctx.is_some() => {
-                        let ctx = fn_ctx.as_ref().unwrap();
-                        // Check if param_name is one of the function's parameters.
-                        if ctx.parameters.iter().any(|(_, pname)| pname == param_name) {
+                    if constant_value.is_none() {
+                        if let Node::Identifier {
+                            name: param_name, ..
+                        } = value.as_ref()
+                            && let Some(ctx) = fn_ctx.as_ref()
+                            && ctx.parameters.iter().any(|(_, pname)| pname == param_name)
+                        {
                             // Try to prove the refinement predicate holds for this parameter
                             // using the function's requires clauses as axioms.
                             check_parameter_refinement_with_z3(
@@ -409,10 +462,22 @@ fn check_node_obligations(
                             )?;
                         }
                     }
-                    _ => {}
                 }
-                // Recurse into the value expression.
-                check_node_obligations(value, source_path, specs, fn_ctx.clone())?;
+            }
+            // Recurse into the value expression before publishing its binding.
+            check_node_obligations_with_bindings(
+                value,
+                source_path,
+                specs,
+                fn_ctx.clone(),
+                const_bindings,
+            )?;
+            if let Some(value) = constant_value {
+                const_bindings.insert(name.clone(), value);
+            } else {
+                // A reassignment to an unknown value invalidates any previous
+                // proof for the same name.
+                const_bindings.remove(name);
             }
         }
         Node::Function {
@@ -426,15 +491,29 @@ fn check_node_obligations(
                 parameters: parameters.clone(),
                 requires: requires.clone(),
             };
-            check_node_obligations(body, source_path, specs, Some(fn_context))?;
+            let mut function_bindings = std::collections::HashMap::new();
+            check_node_obligations_with_bindings(
+                body,
+                source_path,
+                specs,
+                Some(fn_context),
+                &mut function_bindings,
+            )?;
         }
         Node::Block { stmts, .. } => {
+            let mut block_bindings = const_bindings.clone();
             for s in stmts {
-                check_node_obligations(s, source_path, specs, fn_ctx.clone())?;
+                check_node_obligations_with_bindings(
+                    s,
+                    source_path,
+                    specs,
+                    fn_ctx.clone(),
+                    &mut block_bindings,
+                )?;
             }
         }
         Node::ExpressionStatement { expr, .. } => {
-            check_node_obligations(expr, source_path, specs, fn_ctx)?;
+            check_node_obligations_with_bindings(expr, source_path, specs, fn_ctx, const_bindings)?;
         }
         Node::IfStatement {
             condition,
@@ -442,20 +521,53 @@ fn check_node_obligations(
             alternative,
             ..
         } => {
-            check_node_obligations(condition, source_path, specs, fn_ctx.clone())?;
-            check_node_obligations(consequence, source_path, specs, fn_ctx.clone())?;
+            check_node_obligations_with_bindings(
+                condition,
+                source_path,
+                specs,
+                fn_ctx.clone(),
+                const_bindings,
+            )?;
+            let mut consequence_bindings = const_bindings.clone();
+            check_node_obligations_with_bindings(
+                consequence,
+                source_path,
+                specs,
+                fn_ctx.clone(),
+                &mut consequence_bindings,
+            )?;
             if let Some(alt) = alternative {
-                check_node_obligations(alt, source_path, specs, fn_ctx)?;
+                let mut alternative_bindings = const_bindings.clone();
+                check_node_obligations_with_bindings(
+                    alt,
+                    source_path,
+                    specs,
+                    fn_ctx,
+                    &mut alternative_bindings,
+                )?;
             }
         }
         Node::WhileStatement {
             condition, body, ..
         } => {
-            check_node_obligations(condition, source_path, specs, fn_ctx.clone())?;
-            check_node_obligations(body, source_path, specs, fn_ctx)?;
+            check_node_obligations_with_bindings(
+                condition,
+                source_path,
+                specs,
+                fn_ctx.clone(),
+                const_bindings,
+            )?;
+            let mut body_bindings = const_bindings.clone();
+            check_node_obligations_with_bindings(
+                body,
+                source_path,
+                specs,
+                fn_ctx,
+                &mut body_bindings,
+            )?;
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            check_node_obligations(v, source_path, specs, fn_ctx)?;
+            check_node_obligations_with_bindings(v, source_path, specs, fn_ctx, const_bindings)?;
         }
         _ => {}
     }
@@ -547,6 +659,24 @@ mod tests {
         Node::Program(vec![span::Spanned::new(block, Default::default())])
     }
 
+    fn make_binding(name: &str, type_annot: Option<&str>, value: Node) -> Node {
+        Node::LetStatement {
+            name: name.into(),
+            value: Box::new(value),
+            type_annot: type_annot.map(str::to_string),
+            span: Default::default(),
+            is_const: false,
+        }
+    }
+
+    fn make_block_program(stmts: Vec<Node>) -> Node {
+        let block = Node::Block {
+            stmts,
+            span: Default::default(),
+        };
+        Node::Program(vec![span::Spanned::new(block, Default::default())])
+    }
+
     #[test]
     fn check_let_obligation_passes_for_valid_value() {
         let _g = crate::feature_attrs::lock_for_test();
@@ -565,6 +695,91 @@ mod tests {
         let msg = result.unwrap_err();
         assert!(msg.contains("refinement error"), "unexpected msg: {}", msg);
         assert!(msg.contains("Positive"), "missing type name: {}", msg);
+    }
+
+    #[test]
+    fn check_let_obligation_fails_for_constant_alias() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let program = make_block_program(vec![
+            make_binding(
+                "raw",
+                None,
+                Node::IntegerLiteral {
+                    value: -1,
+                    span: Default::default(),
+                },
+            ),
+            make_binding(
+                "x",
+                Some("Positive"),
+                Node::Identifier {
+                    name: "raw".into(),
+                    span: Default::default(),
+                },
+            ),
+        ]);
+
+        let result = check_node_obligations(&program, "test.rz", &specs, None);
+        assert!(result.is_err(), "expected alias violation to fail");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("let `x`"), "missing binding name: {}", msg);
+        assert!(msg.contains("-1 > 0"), "missing predicate failure: {}", msg);
+    }
+
+    #[test]
+    fn check_let_obligation_fails_for_constant_arithmetic() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let value = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 1,
+                span: Default::default(),
+            }),
+            operator: "-",
+            right: Box::new(Node::IntegerLiteral {
+                value: 2,
+                span: Default::default(),
+            }),
+            span: Default::default(),
+        };
+        let program = make_block_program(vec![make_binding("x", Some("Positive"), value)]);
+
+        let result = check_node_obligations(&program, "test.rz", &specs, None);
+        assert!(result.is_err(), "expected arithmetic violation to fail");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("-1 > 0"), "missing folded value: {}", msg);
+    }
+
+    #[test]
+    fn check_let_obligation_accepts_valid_constant_alias_expression() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let value = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "raw".into(),
+                span: Default::default(),
+            }),
+            operator: "+",
+            right: Box::new(Node::IntegerLiteral {
+                value: 3,
+                span: Default::default(),
+            }),
+            span: Default::default(),
+        };
+        let program = make_block_program(vec![
+            make_binding(
+                "raw",
+                None,
+                Node::IntegerLiteral {
+                    value: 2,
+                    span: Default::default(),
+                },
+            ),
+            make_binding("x", Some("Positive"), value),
+        ]);
+
+        assert!(check_node_obligations(&program, "test.rz", &specs, None).is_ok());
     }
 
     #[test]
