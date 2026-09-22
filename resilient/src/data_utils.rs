@@ -27,6 +27,10 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+/// Maximum number of elements a data utility may materialize in one result.
+/// Keep collection-producing builtins fail-closed for caller-controlled sizes.
+const MAX_DATA_ELEMENTS: usize = 10_000_000;
+
 // ── linspace / logspace / arange ──────────────────────────────────────────────
 
 /// `linspace(start, stop, n) -> Array<float>`
@@ -41,7 +45,7 @@ pub(crate) fn builtin_linspace(args: &[Value]) -> RResult<Value> {
         [start, stop, n_val] => {
             let start = to_f64(start, "linspace: start")?;
             let stop = to_f64(stop, "linspace: stop")?;
-            let n = to_usize_pos(n_val, "linspace")?;
+            let n = bounded_element_count(n_val, "linspace")?;
             if n == 0 {
                 return Ok(Value::Array(vec![]));
             }
@@ -69,7 +73,7 @@ pub(crate) fn builtin_logspace(args: &[Value]) -> RResult<Value> {
         [start, stop, n_val] => {
             let start = to_f64(start, "logspace: start")?;
             let stop = to_f64(stop, "logspace: stop")?;
-            let n = to_usize_pos(n_val, "logspace")?;
+            let n = bounded_element_count(n_val, "logspace")?;
             if n == 0 {
                 return Ok(Value::Array(vec![]));
             }
@@ -102,16 +106,15 @@ pub(crate) fn builtin_arange(args: &[Value]) -> RResult<Value> {
             if step == 0.0 {
                 return Err("arange: step must be nonzero".to_string());
             }
-            const MAX_ELEMENTS: usize = 10_000_000;
             // RES-1942: pre-size to the computed step count. Floor at
-            // `MAX_ELEMENTS + 1` so the existing guard still fires for
+            // `MAX_DATA_ELEMENTS + 1` so the existing guard still fires for
             // oversize requests, and clamp NaN / overflow → 0 (fall
             // back to default-cap Vec). The +1 accommodates the
             // strict-inequality bound of the loop above for cases
             // where (stop - start) is an exact multiple of step.
             let raw = ((stop - start) / step).abs().ceil();
             let cap = if raw.is_finite() && raw >= 0.0 {
-                (raw as usize).saturating_add(1).min(MAX_ELEMENTS + 1)
+                (raw as usize).saturating_add(1).min(MAX_DATA_ELEMENTS + 1)
             } else {
                 0
             };
@@ -119,9 +122,9 @@ pub(crate) fn builtin_arange(args: &[Value]) -> RResult<Value> {
             let mut x = start;
             while (step > 0.0 && x < stop) || (step < 0.0 && x > stop) {
                 v.push(Value::Float(x));
-                if v.len() > MAX_ELEMENTS {
+                if v.len() > MAX_DATA_ELEMENTS {
                     return Err(format!(
-                        "arange: result would exceed {MAX_ELEMENTS} elements"
+                        "arange: result would exceed {MAX_DATA_ELEMENTS} elements"
                     ));
                 }
                 x += step;
@@ -144,7 +147,7 @@ pub(crate) fn builtin_csv_parse(args: &[Value]) -> RResult<Value> {
     match args {
         [v] => {
             let s = as_string("csv_parse", v)?;
-            Ok(Value::Array(parse_delimited(s, ',')))
+            Ok(Value::Array(parse_delimited(s, ',')?))
         }
         _ => Err(format!(
             "csv_parse: expected 1 argument, got {}",
@@ -160,7 +163,7 @@ pub(crate) fn builtin_csv_parse_tsv(args: &[Value]) -> RResult<Value> {
     match args {
         [v] => {
             let s = as_string("csv_parse_tsv", v)?;
-            Ok(Value::Array(parse_delimited(s, '\t')))
+            Ok(Value::Array(parse_delimited(s, '\t')?))
         }
         _ => Err(format!(
             "csv_parse_tsv: expected 1 argument, got {}",
@@ -169,13 +172,33 @@ pub(crate) fn builtin_csv_parse_tsv(args: &[Value]) -> RResult<Value> {
     }
 }
 
-fn parse_delimited(s: &str, delim: char) -> Vec<Value> {
-    s.lines()
+const MAX_DELIMITED_ROWS: usize = 100_000;
+const MAX_DELIMITED_FIELDS: usize = 1_000_000;
+
+fn parse_delimited(s: &str, delim: char) -> RResult<Vec<Value>> {
+    let rows = s.lines().count();
+    if rows > MAX_DELIMITED_ROWS {
+        return Err(format!(
+            "delimited input would exceed {MAX_DELIMITED_ROWS} rows"
+        ));
+    }
+
+    // Delimiters inside quoted fields are conservatively counted too. This
+    // upper bound lets us reject oversized inputs before allocating any rows.
+    let delimiter_count = s.bytes().filter(|&byte| byte == delim as u8).count();
+    let field_upper_bound = delimiter_count.saturating_add(rows);
+    if field_upper_bound > MAX_DELIMITED_FIELDS {
+        return Err(format!(
+            "delimited input would exceed {MAX_DELIMITED_FIELDS} fields"
+        ));
+    }
+
+    Ok(s.lines()
         .map(|line| {
             let fields = parse_csv_row(line, delim);
             Value::Array(fields.into_iter().map(Value::String).collect())
         })
-        .collect()
+        .collect())
 }
 
 /// Parse a single CSV row with optional quoting.
@@ -187,7 +210,10 @@ fn parse_csv_row(line: &str, delim: char) -> Vec<String> {
     // escapes can lower the actual field count, but never raise it,
     // so this is a safe upper bound.
     let cap = if (delim as u32) < 0x80 {
-        line.bytes().filter(|&b| b == delim as u8).count() + 1
+        line.bytes()
+            .filter(|&b| b == delim as u8)
+            .count()
+            .saturating_add(1)
     } else {
         1
     };
@@ -523,11 +549,20 @@ pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
                 other => return Err(format!("rle_decode: expected Array, got {other}")),
             };
             let mut out: Vec<Value> = Vec::new();
+            let mut total_count = 0usize;
             for (i, run) in runs.iter().enumerate() {
                 match run {
                     Value::Array(pair) if pair.len() == 2 => {
                         let count = match &pair[0] {
-                            Value::Int(n) if *n >= 0 => *n as usize,
+                            Value::Int(n) if *n >= 0 => {
+                                let count = *n as u64;
+                                if count > MAX_DATA_ELEMENTS as u64 {
+                                    return Err(format!(
+                                        "rle_decode: result would exceed {MAX_DATA_ELEMENTS} elements"
+                                    ));
+                                }
+                                count as usize
+                            }
                             Value::Int(n) => {
                                 return Err(format!(
                                     "rle_decode: run {i} count must be >= 0, got {n}"
@@ -539,6 +574,14 @@ pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
                                 ));
                             }
                         };
+                        total_count = total_count.checked_add(count).ok_or_else(|| {
+                            format!("rle_decode: result would exceed {MAX_DATA_ELEMENTS} elements")
+                        })?;
+                        if total_count > MAX_DATA_ELEMENTS {
+                            return Err(format!(
+                                "rle_decode: result would exceed {MAX_DATA_ELEMENTS} elements"
+                            ));
+                        }
                         let val = pair[1].clone();
                         for _ in 0..count {
                             out.push(val.clone());
@@ -576,10 +619,13 @@ fn to_f64(v: &Value, ctx: &str) -> RResult<f64> {
     }
 }
 
-fn to_usize_pos(v: &Value, name: &str) -> RResult<usize> {
+fn bounded_element_count(v: &Value, name: &str) -> RResult<usize> {
     match v {
-        Value::Int(n) if *n >= 0 => Ok(*n as usize),
-        Value::Int(n) => Err(format!("{name}: n must be >= 0, got {n}")),
+        Value::Int(n) if *n >= 0 && *n <= MAX_DATA_ELEMENTS as i64 => Ok(*n as usize),
+        Value::Int(n) if *n < 0 => Err(format!("{name}: n must be >= 0, got {n}")),
+        Value::Int(_) => Err(format!(
+            "{name}: result would exceed {MAX_DATA_ELEMENTS} elements"
+        )),
         other => Err(format!("{name}: n must be int, got {other}")),
     }
 }

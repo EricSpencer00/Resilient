@@ -75,7 +75,9 @@ const fn raw_range(n: u32, d: u32) -> (i64, i64) {
 impl<const N: u32, const D: u32> Fixed<N, D> {
     /// Total bit width = N + D. Either 32 or 64 for valid
     /// configurations.
-    pub const TOTAL_BITS: u32 = N + D;
+    // Keep metadata evaluation fail-closed for invalid const-generic
+    // widths, matching `valid_width` and the constructors below.
+    pub const TOTAL_BITS: u32 = N.wrapping_add(D);
 
     /// Construct from a raw integer representation. The raw value
     /// is the number multiplied by `2^D`, e.g. for `Fixed<16, 16>`,
@@ -106,6 +108,9 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
     /// generic params come from outside.
     #[inline]
     pub const fn from_raw(raw: i64) -> Self {
+        if !valid_width(N, D) {
+            return Self { raw: 0 };
+        }
         Self { raw }
     }
 

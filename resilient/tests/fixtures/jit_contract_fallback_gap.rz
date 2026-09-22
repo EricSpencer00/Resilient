@@ -1,0 +1,7 @@
+fn broken(int x) -> int
+    ensures result == x
+{
+    return x + 1;
+}
+
+return broken(1);

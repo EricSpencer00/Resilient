@@ -180,11 +180,12 @@ fn node_text_into(n: &Node, out: &mut String) {
             }
             out.push(')');
         }
-        // Preserve the (non-deterministic) pointer-address fallback
-        // from the original — orthogonal to the perf fix, and
-        // changing it would alter the fingerprint digest.
+        // Contract expressions can contain newer structured nodes that
+        // are not worth duplicating in this compact renderer. Use the
+        // canonical formatter for those rare cases so the digest depends
+        // on the expression, not on its allocation address.
         _ => {
-            let _ = write!(out, "{:?}", std::ptr::addr_of!(*n));
+            out.push_str(crate::formatter::Formatter::format(n).trim());
         }
     }
 }
@@ -329,6 +330,43 @@ mod tests {
         assert_eq!(
             f1["f"].digest, f2["f"].digest,
             "body refactor must not break the fingerprint"
+        );
+    }
+
+    #[test]
+    fn structured_contract_expressions_are_stable_across_parses() {
+        let src = r#"
+            fn f(int x) -> int ensures result == settings.limit && result == limits[0] {
+                return x;
+            }
+        "#;
+        let (p1, errors1) = parse(src);
+        let (p2, errors2) = parse(src);
+        assert!(errors1.is_empty(), "first parse errors: {errors1:?}");
+        assert!(errors2.is_empty(), "second parse errors: {errors2:?}");
+
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_eq!(
+            f1["f"].digest, f2["f"].digest,
+            "structured contract expressions must not depend on AST allocation addresses"
+        );
+    }
+
+    #[test]
+    fn structured_contract_changes_still_change_fingerprint() {
+        let src1 = r#"fn f(int x) -> int ensures result == settings.limit { return x; }"#;
+        let src2 = r#"fn f(int x) -> int ensures result == settings.other { return x; }"#;
+        let (p1, errors1) = parse(src1);
+        let (p2, errors2) = parse(src2);
+        assert!(errors1.is_empty(), "first parse errors: {errors1:?}");
+        assert!(errors2.is_empty(), "second parse errors: {errors2:?}");
+
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_ne!(
+            f1["f"].digest, f2["f"].digest,
+            "different structured contract expressions must remain distinguishable"
         );
     }
 

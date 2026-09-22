@@ -27,7 +27,11 @@ fn safe_to_int(name: &str, f: f64) -> RResult<i64> {
     // i64 range check — f64 can represent any i64 magnitude but only
     // with precision loss past 2^53. We accept the precision loss; the
     // check here is purely a range bound.
-    if f < i64::MIN as f64 || f > i64::MAX as f64 {
+    // `i64::MAX as f64` rounds to 2^63, the first value outside the
+    // signed i64 domain. Treat that boundary as exclusive: accepting it
+    // would let Rust's saturating float-to-int cast silently produce
+    // `i64::MAX` for an out-of-range input.
+    if f < i64::MIN as f64 || f >= i64::MAX as f64 {
         return Err(format!("{}: value {} is out of i64 range", name, f));
     }
     Ok(f as i64)

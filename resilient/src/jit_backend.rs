@@ -813,6 +813,8 @@ pub enum JitError {
     IsaInit(String),
     /// `JITModule::finalize_definitions` returned an error.
     LinkError(String),
+    /// Runtime contracts are enforced by the VM, not by native JIT code.
+    RuntimeContracts,
     /// Top-level Program had no `return EXPR;` statement to JIT.
     EmptyProgram,
     /// RES-380: an array index or pop reached a runtime bounds
@@ -851,6 +853,9 @@ impl std::fmt::Display for JitError {
             JitError::Unsupported(what) => write!(f, "jit: unsupported: {}", what),
             JitError::IsaInit(msg) => write!(f, "jit: ISA init failed: {}", msg),
             JitError::LinkError(msg) => write!(f, "jit: link error: {}", msg),
+            JitError::RuntimeContracts => {
+                write!(f, "jit: runtime contracts require VM enforcement")
+            }
             JitError::EmptyProgram => write!(f, "jit: program has no top-level return"),
             JitError::OutOfBounds { index, len } => write!(
                 f,
@@ -892,6 +897,7 @@ impl JitError {
                 | JitError::EmptyProgram
                 | JitError::IsaInit(_)
                 | JitError::LinkError(_)
+                | JitError::RuntimeContracts
         )
     }
 }
@@ -2061,6 +2067,31 @@ fn register_jit_builtin_symbols(builder: &mut JITBuilder) {
     }
 }
 
+fn has_runtime_contracts(program: &Node) -> bool {
+    let mut found = false;
+    crate::uniqueness_walk::visit(program, &mut |node| {
+        found |= match node {
+            Node::Extern { decls, .. } => decls
+                .iter()
+                .any(|decl| !decl.requires.is_empty() || !decl.ensures.is_empty()),
+            Node::Function {
+                requires,
+                ensures,
+                recovers_to,
+                ..
+            }
+            | Node::FunctionLiteral {
+                requires,
+                ensures,
+                recovers_to,
+                ..
+            } => !requires.is_empty() || !ensures.is_empty() || recovers_to.is_some(),
+            _ => false,
+        };
+    });
+    found
+}
+
 /// RES-072 + RES-096 + RES-105: compile a Resilient `Program`
 /// to native code and execute it.
 ///
@@ -2073,6 +2104,10 @@ fn register_jit_builtin_symbols(builder: &mut JITBuilder) {
 ///           plus the program's top-level non-function
 ///           statements as `main`.
 fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
+    if has_runtime_contracts(program) {
+        return Err(JitError::RuntimeContracts);
+    }
+
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(JitError::Unsupported("non-Program root")),

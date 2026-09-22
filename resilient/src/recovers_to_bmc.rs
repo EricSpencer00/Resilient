@@ -292,8 +292,9 @@ impl ControlFlowGraph {
 /// - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
 /// - Boolean: `&&`, `||`, `!`
 ///
-/// Unsupported nodes return a conservative `true` so the obligation
-/// remains satisfiable (safe default: never emit a false counterexample).
+/// The renderer retains a `true` fallback for callers that only need a
+/// syntactically valid preview. The BMC entry point validates its inputs
+/// first, so that fallback can never turn an unmodeled contract into a proof.
 pub(crate) fn node_to_smtlib2(node: &Node) -> String {
     // RES-2268: keep the existing String-returning signature for
     // public/test consumers, but route through a `&mut String`
@@ -385,6 +386,51 @@ fn write_smtlib2(node: &Node, out: &mut String) {
         // Parenthesised expressions are transparent in the AST.
         _ => out.push_str("true"),
     }
+}
+
+/// Return an error for expressions that the recovery BMC cannot model.
+///
+/// Keeping this separate from the string renderer preserves the small public
+/// test helper while giving the verification path a fail-closed boundary.
+fn validate_smtlib2(node: &Node) -> Result<(), &'static str> {
+    match node {
+        Node::IntegerLiteral { .. }
+        | Node::FloatLiteral { .. }
+        | Node::BooleanLiteral { .. }
+        | Node::Identifier { .. } => Ok(()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            if !matches!(
+                *operator,
+                "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+            ) {
+                return Err("an unsupported infix operator");
+            }
+            validate_smtlib2(left)?;
+            validate_smtlib2(right)
+        }
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
+            if !matches!(*operator, "!" | "-") {
+                return Err("an unsupported prefix operator");
+            }
+            validate_smtlib2(right)
+        }
+        _ => Err("an unsupported expression shape"),
+    }
+}
+
+fn validate_clause(fn_name: &str, label: &str, node: &Node) -> Result<(), String> {
+    validate_smtlib2(node).map_err(|reason| {
+        format!(
+            "fn `{fn_name}`: `{label}` contains {reason}; recovery BMC cannot model it, so the contract was not verified"
+        )
+    })
 }
 
 /// Collect all free variable names appearing in an expression node.
@@ -497,6 +543,13 @@ pub(crate) fn check_recovers_to_bmc(
     requires_clauses: &[Node],
     recovers_clause: &Node,
 ) -> Result<(), String> {
+    // An unsupported clause previously rendered as `true`; its negation was
+    // therefore unsatisfiable and incorrectly looked like a proof.
+    validate_clause(fn_name, "recovers_to", recovers_clause)?;
+    for requires_clause in requires_clauses {
+        validate_clause(fn_name, "requires", requires_clause)?;
+    }
+
     let cfg = ControlFlowGraph::from_body(fn_body);
     let prefixes = cfg.enumerate_prefixes();
 
@@ -634,6 +687,56 @@ mod tests {
         };
         let result = check_recovers_to_bmc("f", &body, &[], &clause);
         assert!(result.is_ok(), "stub must return Ok: {:?}", result);
+    }
+
+    #[test]
+    fn unsupported_recovers_to_clause_fails_closed() {
+        let body = body_of("fn f(int x) -> int { return x; }");
+        let clause = Node::CallExpression {
+            function: Box::new(Node::Identifier {
+                name: "is_recovered".to_string(),
+                span: Span::default(),
+            }),
+            arguments: Vec::new(),
+            span: Span::default(),
+        };
+        let err = check_recovers_to_bmc("f", &body, &[], &clause)
+            .expect_err("unsupported recovery clauses must not look proven");
+        assert!(
+            err.contains("recovers_to"),
+            "diagnostic should name clause: {err}"
+        );
+        assert!(
+            err.contains("not verified"),
+            "diagnostic should explain status: {err}"
+        );
+    }
+
+    #[test]
+    fn unsupported_requires_clause_fails_closed() {
+        let body = body_of("fn f(int x) -> int { return x; }");
+        let requires = Node::FieldAccess {
+            target: Box::new(Node::Identifier {
+                name: "state".to_string(),
+                span: Span::default(),
+            }),
+            field: "ready".to_string(),
+            span: Span::default(),
+        };
+        let clause = Node::BooleanLiteral {
+            value: true,
+            span: Span::default(),
+        };
+        let err = check_recovers_to_bmc("f", &body, &[requires], &clause)
+            .expect_err("unsupported requires clauses must not be silently dropped");
+        assert!(
+            err.contains("requires"),
+            "diagnostic should name clause: {err}"
+        );
+        assert!(
+            err.contains("not verified"),
+            "diagnostic should explain status: {err}"
+        );
     }
 
     // --- RES-392b Phase 2: SMT-LIB2 generation tests ---

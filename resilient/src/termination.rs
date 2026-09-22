@@ -201,6 +201,158 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
     }
 
+    // Named nested functions are compiled into their own callable frames,
+    // but they are not part of the top-level call graph. Check their local
+    // self-calls separately so strict mode cannot certify unbounded stack
+    // growth merely because the recursive helper is nested.
+    for spanned in stmts {
+        if let Node::Function { body, .. } = &spanned.node {
+            check_nested_functions(body, source_path, &lines)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn check_nested_functions(node: &Node, source_path: &str, lines: &[&str]) -> Result<(), String> {
+    match node {
+        Node::Function {
+            name, body, span, ..
+        } => {
+            if CallGraph::has_self_call_in_body(body, name) {
+                let fn_line = span.start.line;
+                let col = span.start.column;
+                if fn_line < 2
+                    || !has_termination_annotation(lines.get(fn_line - 2).copied().unwrap_or(""))
+                {
+                    return Err(format!(
+                        "{}:{}:{}: error: function `{}` is directly recursive but has no \
+                         termination annotation; expected `// @decreases <metric>` or \
+                         `// @may_diverge` on the line above",
+                        source_path, fn_line, col, name
+                    ));
+                }
+            }
+            check_nested_functions(body, source_path, lines)?;
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                check_nested_functions(stmt, source_path, lines)?;
+            }
+        }
+        Node::FunctionLiteral { body, .. }
+        | Node::UnsafeBlock { body, .. }
+        | Node::TryExpression { expr: body, .. }
+        | Node::DeferStatement { expr: body, .. }
+        | Node::ExpressionStatement { expr: body, .. }
+        | Node::Assignment { value: body, .. }
+        | Node::StaticLet { value: body, .. }
+        | Node::Const { value: body, .. }
+        | Node::LetStatement { value: body, .. }
+        | Node::ReturnStatement {
+            value: Some(body), ..
+        }
+        | Node::BreakWith { value: body, .. }
+        | Node::FieldAccess { target: body, .. }
+        | Node::IndexExpression { target: body, .. }
+        | Node::Slice { target: body, .. } => check_nested_functions(body, source_path, lines)?,
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_nested_functions(condition, source_path, lines)?;
+            check_nested_functions(consequence, source_path, lines)?;
+            if let Some(alternative) = alternative {
+                check_nested_functions(alternative, source_path, lines)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_nested_functions(condition, source_path, lines)?;
+            check_nested_functions(body, source_path, lines)?;
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            check_nested_functions(iterable, source_path, lines)?;
+            check_nested_functions(body, source_path, lines)?;
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            check_nested_functions(body, source_path, lines)?;
+            for invariant in invariants {
+                check_nested_functions(invariant, source_path, lines)?;
+            }
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            check_nested_functions(function, source_path, lines)?;
+            for argument in arguments {
+                check_nested_functions(argument, source_path, lines)?;
+            }
+        }
+        Node::OptionalChain { object, access, .. } => {
+            check_nested_functions(object, source_path, lines)?;
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                for argument in arguments {
+                    check_nested_functions(argument, source_path, lines)?;
+                }
+            }
+        }
+        Node::InfixExpression { left, right, .. } => {
+            check_nested_functions(left, source_path, lines)?;
+            check_nested_functions(right, source_path, lines)?;
+        }
+        Node::PrefixExpression { right, .. } => {
+            check_nested_functions(right, source_path, lines)?;
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            check_nested_functions(scrutinee, source_path, lines)?;
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    check_nested_functions(guard, source_path, lines)?;
+                }
+                check_nested_functions(body, source_path, lines)?;
+            }
+        }
+        Node::ArrayLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                check_nested_functions(item, source_path, lines)?;
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                check_nested_functions(base, source_path, lines)?;
+            }
+            for (_, value) in fields {
+                check_nested_functions(value, source_path, lines)?;
+            }
+        }
+        Node::FieldAssignment { target, value, .. }
+        | Node::IndexAssignment { target, value, .. } => {
+            check_nested_functions(target, source_path, lines)?;
+            check_nested_functions(value, source_path, lines)?;
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                check_nested_functions(key, source_path, lines)?;
+                check_nested_functions(value, source_path, lines)?;
+            }
+        }
+        Node::SetLiteral { items, .. } => {
+            for item in items {
+                check_nested_functions(item, source_path, lines)?;
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 

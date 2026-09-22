@@ -477,9 +477,13 @@ fn translate_chunk(
             // non-final expression statement (e.g. `f(1);`), so
             // multi-statement programs need it.
             Op::Pop => Instr::Pop,
-            Op::Jump(offset) => Instr::Jump(jump_target(i, offset, target)?),
-            Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, offset, target)?),
-            Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, offset, target)?),
+            Op::Jump(offset) => Instr::Jump(jump_target(i, offset, chunk.code.len(), target)?),
+            Op::JumpIfFalse(offset) => {
+                Instr::JumpIfFalse(jump_target(i, offset, chunk.code.len(), target)?)
+            }
+            Op::JumpIfTrue(offset) => {
+                Instr::JumpIfTrue(jump_target(i, offset, chunk.code.len(), target)?)
+            }
             // RES-4083 (D-E1 tail): `handler_table` is a *local*
             // index into this chunk's own `Chunk::try_handlers` —
             // rebase it by `try_base` (this chunk's offset into the
@@ -1026,9 +1030,17 @@ fn translate_const(chunk: &Chunk, idx: u16, target: &str) -> Result<RtValue, Emi
 /// [`translate_chunk`] emits exactly one `Instr` per `Op`, so index
 /// `i` in `chunk.code` and index `i` in the translated `Instr` stream
 /// always refer to the same instruction.
-fn jump_target(i: usize, offset: i16, target: &str) -> Result<u32, EmitError> {
+fn jump_target(i: usize, offset: i16, code_len: usize, target: &str) -> Result<u32, EmitError> {
     let pc_after = i as i64 + 1;
     let dest = pc_after + offset as i64;
+    if dest < 0 || dest as usize >= code_len {
+        return Err(unsupported(
+            target,
+            format!(
+                "jump target {dest} (from instruction {i} with offset {offset}) is outside this chunk's {code_len} instructions"
+            ),
+        ));
+    }
     u32::try_from(dest).map_err(|_| {
         unsupported(
             target,
@@ -1922,6 +1934,38 @@ mod tests {
             err.reason
         );
     }
+
+    #[test]
+    fn rejects_jump_to_chunk_end() {
+        let main = chunk_from(vec![Op::Jump(1), Op::Return], vec![]);
+        let err = compile_to_rzbc(&program_from(main), "thumbv7em-none-eabihf").unwrap_err();
+        assert!(
+            err.reason.contains("outside this chunk's 2 instructions"),
+            "reason was: {}",
+            err.reason
+        );
+
+        let main = chunk_from(vec![Op::Call(0), Op::Return], vec![]);
+        let invalid_function = function_from(
+            "invalid_jump",
+            0,
+            0,
+            chunk_from(vec![Op::Jump(1), Op::ReturnFromCall], vec![]),
+        );
+        let program = Program {
+            main,
+            functions: vec![invalid_function],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let err = compile_to_rzbc(&program, "thumbv7em-none-eabihf").unwrap_err();
+        assert!(
+            err.reason.contains("outside this chunk's 2 instructions"),
+            "reason was: {}",
+            err.reason
+        );
+    }
+
     #[test]
     fn rejects_empty_stack_return() {
         let main = chunk_from(

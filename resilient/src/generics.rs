@@ -51,7 +51,7 @@
 
 use crate::Node;
 use crate::typechecker::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Substitution machinery (PR 1 — consumed by PRs 2-4).
@@ -245,24 +245,16 @@ fn check_node(node: &Node) -> Result<(), String> {
             // type. Each such name is a "generic-typed local"; using
             // it in arithmetic / numeric comparison is the
             // canonical body-consistency violation.
-            let tp_set: std::collections::HashSet<&str> =
-                type_params.iter().map(String::as_str).collect();
-            // RES-1523: borrow each generic-typed parameter name
-            // as `&str` from the AST rather than cloning. The set
-            // is only used for `contains(name)` lookups inside
-            // `identifier_in_set` — the cloned `String` keys were
-            // pure overhead. Same pattern as RES-1495 / RES-1500 etc.
-            let generic_locals: std::collections::HashSet<&str> = parameters
-                .iter()
-                .filter_map(|(ty, pname)| {
-                    if tp_set.contains(ty.as_str()) {
-                        Some(pname.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            check_body_for_constraints(body, name, type_params, &generic_locals)?;
+            let tp_set: HashSet<&str> = type_params.iter().map(String::as_str).collect();
+            // Keep the local-to-parameter mapping so diagnostics identify the
+            // actual generic that was constrained when a function has several.
+            let mut generic_locals: HashMap<&str, &str> = HashMap::with_capacity(parameters.len());
+            for (ty, pname) in parameters {
+                if tp_set.contains(ty.as_str()) {
+                    generic_locals.insert(pname.as_str(), ty.as_str());
+                }
+            }
+            check_body_for_constraints(body, name, &generic_locals)?;
         }
     }
     Ok(())
@@ -270,92 +262,62 @@ fn check_node(node: &Node) -> Result<(), String> {
 
 /// Walk the body of a generic function looking for places where a
 /// generic-typed local `x` is used in a context that forces a
-/// concrete type. Today the canonical case is arithmetic with a
-/// concrete literal — `x + 1`, `x * 2.0`, `x % 3` — which constrains
-/// `T` to `Int` or `Float`.
+/// concrete type. The shared AST visitor is important here: a constraint
+/// has the same meaning whether it appears directly in a return expression,
+/// a call argument, a match arm, or a nested control-flow body.
 fn check_body_for_constraints(
     body: &Node,
     fn_name: &str,
-    type_params: &[String],
-    generic_locals: &std::collections::HashSet<&str>,
+    generic_locals: &HashMap<&str, &str>,
 ) -> Result<(), String> {
-    match body {
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                check_body_for_constraints(s, fn_name, type_params, generic_locals)?;
-            }
-            Ok(())
+    let mut violation = None;
+    crate::uniqueness_walk::visit(body, &mut |node| {
+        if violation.is_some() {
+            return;
         }
-        Node::ReturnStatement { value: Some(e), .. } => {
-            check_body_for_constraints(e, fn_name, type_params, generic_locals)
-        }
-        Node::ReturnStatement { value: None, .. } => Ok(()),
-        Node::InfixExpression {
+        let Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => {
-            // `x + N` (or `*`, `-`, `/`, `%`) where `x` is a
-            // generic-typed local AND the other operand is a concrete
-            // numeric literal — that's the canonical body-consistency
-            // violation.
-            let arith = matches!(*operator, "+" | "-" | "*" | "/" | "%");
-            if arith {
-                let left_is_generic = identifier_in_set(left, generic_locals);
-                let right_is_generic = identifier_in_set(right, generic_locals);
-                let other_is_int_literal = matches!(left.as_ref(), Node::IntegerLiteral { .. })
-                    || matches!(right.as_ref(), Node::IntegerLiteral { .. });
-                let other_is_float_literal = matches!(left.as_ref(), Node::FloatLiteral { .. })
-                    || matches!(right.as_ref(), Node::FloatLiteral { .. });
-                if (left_is_generic ^ right_is_generic)
-                    && (other_is_int_literal || other_is_float_literal)
-                {
-                    let constraint = if other_is_int_literal { "Int" } else { "Float" };
-                    let tp_name = type_params.first().map(String::as_str).unwrap_or("T");
-                    return Err(format!(
-                        "type parameter `{}` of fn `{}` is constrained to a concrete type by the body — operator `{}` with a {} literal forces {} = {}. Either drop the type parameter and use a concrete type in the signature, or restructure the body so the parameter stays polymorphic.",
-                        tp_name, fn_name, operator, constraint, tp_name, constraint
-                    ));
-                }
-            }
-            // Recurse so nested constraints are still flagged.
-            check_body_for_constraints(left, fn_name, type_params, generic_locals)?;
-            check_body_for_constraints(right, fn_name, type_params, generic_locals)?;
-            Ok(())
+        } = node
+        else {
+            return;
+        };
+        if !matches!(*operator, "+" | "-" | "*" | "/" | "%") {
+            return;
         }
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            check_body_for_constraints(condition, fn_name, type_params, generic_locals)?;
-            check_body_for_constraints(consequence, fn_name, type_params, generic_locals)?;
-            if let Some(alt) = alternative {
-                check_body_for_constraints(alt, fn_name, type_params, generic_locals)?;
-            }
-            Ok(())
-        }
-        Node::ExpressionStatement { expr, .. } => {
-            check_body_for_constraints(expr, fn_name, type_params, generic_locals)
-        }
-        // Anything else: the recursive walker would balloon to
-        // every node variant, so we conservatively skip nodes that
-        // can't directly contain a generic-constraining expression.
-        // The canonical example from the ticket — `fn<T> bad(x: T) -> T { return x + 1; }`
-        // is fully covered by the cases above.
-        _ => Ok(()),
-    }
+
+        let generic_operand = match (
+            generic_type_param(left, generic_locals),
+            generic_type_param(right, generic_locals),
+        ) {
+            (Some(tp), None) => Some((tp, right.as_ref())),
+            (None, Some(tp)) => Some((tp, left.as_ref())),
+            _ => None,
+        };
+        let Some((tp_name, concrete_operand)) = generic_operand else {
+            return;
+        };
+        let constraint = match concrete_operand {
+            Node::IntegerLiteral { .. } => "Int",
+            Node::FloatLiteral { .. } => "Float",
+            _ => return,
+        };
+        violation = Some(format!(
+            "type parameter `{}` of fn `{}` is constrained to a concrete type by the body — operator `{}` with a {} literal forces {} = {}. Either drop the type parameter and use a concrete type in the signature, or restructure the body so the parameter stays polymorphic.",
+            tp_name, fn_name, operator, constraint, tp_name, constraint
+        ));
+    });
+    violation.map_or(Ok(()), Err)
 }
 
-/// True when `node` is a bare `Identifier { name }` whose name is in
-/// the supplied set.
-fn identifier_in_set(node: &Node, names: &std::collections::HashSet<&str>) -> bool {
+/// Return the generic parameter represented by a bare identifier, if any.
+fn generic_type_param<'a>(node: &Node, generic_locals: &'a HashMap<&str, &str>) -> Option<&'a str> {
     if let Node::Identifier { name, .. } = node {
-        names.contains(name.as_str())
+        generic_locals.get(name.as_str()).copied()
     } else {
-        false
+        None
     }
 }
 
@@ -409,6 +371,48 @@ mod tests {
         let err = check_src("fn<T> bad(T x) -> T { return x * 2.0; }")
             .expect_err("x * 2.0 should constrain T to Float");
         assert!(err.contains("T = Float"), "got: {}", err);
+    }
+
+    #[test]
+    fn nested_call_and_literal_constraints_are_rejected() {
+        let err = check_src("fn<T> bad(T x) -> T { return wrap([x + 1]); }")
+            .expect_err("constraints inside call and array nodes must be checked");
+        assert!(err.contains("T = Int"), "got: {}", err);
+    }
+
+    #[test]
+    fn nested_loop_constraint_is_rejected() {
+        let err = check_src("fn<T> bad(T x) -> T { for i in 0..1 { x + 1; } return x; }")
+            .expect_err("constraints inside loop bodies must be checked");
+        assert!(err.contains("T = Int"), "got: {}", err);
+    }
+
+    #[test]
+    fn nested_try_catch_constraint_is_rejected() {
+        let err = check_src(
+            "fn<T> bad(T x) -> T { try { x + 1; } catch Timeout { return x; } return x; }",
+        )
+        .expect_err("constraints inside try/catch bodies must be checked");
+        assert!(err.contains("T = Int"), "got: {}", err);
+    }
+
+    #[test]
+    fn nested_match_constraint_is_rejected() {
+        let err = check_src("fn<T> bad(T x) -> T { return match 0 { _ => x + 1 }; }")
+            .expect_err("constraints inside match arms must be checked");
+        assert!(err.contains("T = Int"), "got: {}", err);
+    }
+
+    #[test]
+    fn nested_constraint_names_the_constrained_parameter() {
+        let err = check_src("fn<T, U> bad(T x, U y) -> U { return wrap(y + 1); }")
+            .expect_err("a nested constraint on U must be rejected");
+        assert!(err.contains("U = Int"), "got: {}", err);
+        assert!(
+            !err.contains("T = Int"),
+            "wrong parameter in diagnostic: {}",
+            err
+        );
     }
 
     #[test]

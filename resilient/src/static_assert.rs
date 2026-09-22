@@ -127,10 +127,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // the typechecker pass doesn't have access to the interpreter's
     // const table.
     let mut consts: HashMap<String, Value> = HashMap::new();
+    let overflow_mode = crate::vm::OverflowMode::from_env();
     for stmt in statements {
         if let Node::Const { name, value, .. } = &stmt.node {
             let mut evaluating: Vec<String> = vec![name.clone()];
-            match crate::Interpreter::eval_const_expr(value, &consts, &mut evaluating) {
+            match crate::Interpreter::eval_const_expr(
+                value,
+                &consts,
+                &mut evaluating,
+                overflow_mode,
+            ) {
                 Ok(v) => {
                     consts.insert(name.clone(), v);
                 }
@@ -155,7 +161,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         };
 
         let mut evaluating: Vec<String> = Vec::new();
-        match eval_const_bool(condition, &consts, &mut evaluating) {
+        match eval_const_bool(condition, &consts, &mut evaluating, overflow_mode) {
             Ok(true) => {
                 // Assertion passed — nothing to do.
             }
@@ -191,6 +197,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 pub(crate) fn check_with_consts(
     statements: &[crate::span::Spanned<Node>],
     consts: &std::rc::Rc<HashMap<String, Value>>,
+    overflow_mode: crate::vm::OverflowMode,
 ) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
 
@@ -205,7 +212,7 @@ pub(crate) fn check_with_consts(
         };
 
         let mut evaluating: Vec<String> = Vec::new();
-        match eval_const_bool(condition, consts, &mut evaluating) {
+        match eval_const_bool(condition, consts, &mut evaluating, overflow_mode) {
             Ok(true) => {}
             Ok(false) => {
                 errors.push(format!(
@@ -238,8 +245,9 @@ fn eval_const_bool(
     node: &Node,
     consts: &HashMap<String, Value>,
     evaluating: &mut Vec<String>,
+    overflow_mode: crate::vm::OverflowMode,
 ) -> Result<bool, String> {
-    let value = crate::Interpreter::eval_const_expr(node, consts, evaluating)?;
+    let value = crate::Interpreter::eval_const_expr(node, consts, evaluating, overflow_mode)?;
     match value {
         Value::Bool(b) => Ok(b),
         other => Err(format!("expected boolean, got {}", other)),
@@ -390,6 +398,34 @@ mod tests {
             result.errors.is_empty(),
             "should compile and run cleanly: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn static_assert_interpreter_path_uses_overflow_mode() {
+        let src = r#"
+            static_assert(
+                9223372036854775807 + 1 ==
+                    (0 - 9223372036854775807 - 1),
+                "signed addition wraps to the minimum integer"
+            );
+        "#;
+        let (program, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+        let crate::Node::Program(statements) = program else {
+            panic!("expected a program");
+        };
+        let consts = std::rc::Rc::new(std::collections::HashMap::new());
+
+        assert!(
+            super::check_with_consts(&statements, &consts, crate::vm::OverflowMode::Wrap).is_ok(),
+            "wrap mode should satisfy the static assertion"
+        );
+        let err = super::check_with_consts(&statements, &consts, crate::vm::OverflowMode::Saturate)
+            .expect_err("saturate mode should reject the wrap-specific assertion");
+        assert!(
+            err.contains("static assertion failed"),
+            "unexpected error: {err}"
         );
     }
 }

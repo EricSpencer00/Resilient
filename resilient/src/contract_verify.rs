@@ -275,6 +275,20 @@ pub(crate) fn prove_ensures(
 
                 combine_branch_verdicts(then_verdict, else_verdict)
             }
+            ResultModel::Paths { paths } => {
+                let verdicts = paths
+                    .into_iter()
+                    .map(|path| {
+                        let obligation = symbolic_eval::substitute_result(clause, &path.ret);
+                        let mut path_axioms = requires.to_vec();
+                        if let Some(condition) = path.condition {
+                            path_axioms.push(*condition);
+                        }
+                        prove_obligation(&obligation, &path_axioms)
+                    })
+                    .collect();
+                combine_path_verdicts(verdicts)
+            }
         };
         return (verdict, ProofBasis::Implementation);
     }
@@ -286,14 +300,25 @@ pub(crate) fn prove_ensures(
 /// reachable branches. A refutation on either branch refutes the
 /// clause; anything short of two proofs is `Unknown`.
 fn combine_branch_verdicts(then_v: Verdict, else_v: Verdict) -> Verdict {
-    match (then_v, else_v) {
-        (Verdict::Fail { counterexample }, _) | (_, Verdict::Fail { counterexample }) => {
-            Verdict::Fail { counterexample }
+    combine_path_verdicts(vec![then_v, else_v])
+}
+
+fn combine_path_verdicts(verdicts: Vec<Verdict>) -> Verdict {
+    if verdicts.is_empty() {
+        return Verdict::Unknown;
+    }
+    let mut certificates = None;
+    for verdict in verdicts {
+        match verdict {
+            Verdict::Fail { counterexample } => return Verdict::Fail { counterexample },
+            Verdict::Pass { certificate } => {
+                certificates = merge_certificates(certificates, certificate);
+            }
+            Verdict::Unknown => return Verdict::Unknown,
         }
-        (Verdict::Pass { certificate: a }, Verdict::Pass { certificate: b }) => Verdict::Pass {
-            certificate: merge_certificates(a, b),
-        },
-        _ => Verdict::Unknown,
+    }
+    Verdict::Pass {
+        certificate: certificates,
     }
 }
 
@@ -752,6 +777,60 @@ mod tests {
                 "wrong_abs must FAIL ensures result >= 0, got {:?}",
                 v.verdict
             );
+        }
+
+        #[test]
+        fn match_return_is_grounded_against_each_scalar_arm() {
+            let src = r#"
+                fn at_least_self(int x) -> int
+                    ensures result >= x
+                { return match x { 0 => x, _ => x + 1 }; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "at_least_self", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Pass { .. }),
+                "match return must PASS its grounded ensures, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
+        }
+
+        #[test]
+        fn wrong_match_arm_is_refuted() {
+            let src = r#"
+                fn positive(int x) -> int
+                    ensures result > 0
+                { return match x { 0 => x, _ => x + 1 }; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "positive", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Fail { .. }),
+                "wrong match arm must FAIL its grounded ensures, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
+        }
+
+        #[test]
+        fn try_catch_scalar_returns_are_grounded() {
+            let src = r#"
+                fn fallback(int x) -> int
+                    ensures result == x || result == 0
+                { try { return x; } catch Failure { return 0; } }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "fallback", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Pass { .. }),
+                "try/catch returns must PASS their grounded ensures, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
         }
     }
 
