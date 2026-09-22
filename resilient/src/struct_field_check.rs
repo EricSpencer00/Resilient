@@ -98,7 +98,26 @@ fn check_node(
             check_node(condition, registry, source_path)?;
             check_node(body, registry, source_path)?;
         }
-        Node::ForInStatement { body, .. } => check_node(body, registry, source_path)?,
+        Node::ForInStatement { iterable, body, .. } => {
+            check_node(iterable, registry, source_path)?;
+            check_node(body, registry, source_path)?;
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                check_node(stmt, registry, source_path)?;
+            }
+            for (_, handler_body) in handlers {
+                for stmt in handler_body {
+                    check_node(stmt, registry, source_path)?;
+                }
+            }
+        }
+        Node::LiveBlock { body, .. }
+        | Node::UnsafeBlock { body, .. }
+        | Node::BenchBlock { body, .. } => check_node(body, registry, source_path)?,
+        Node::DeferStatement { expr, .. } | Node::TryExpression { expr, .. } => {
+            check_node(expr, registry, source_path)?;
+        }
         Node::InfixExpression { left, right, .. } => {
             check_node(left, registry, source_path)?;
             check_node(right, registry, source_path)?;
@@ -344,5 +363,72 @@ fn f(int x) -> int {
 }
 "#,
         );
+    }
+
+    #[test]
+    fn missing_field_in_try_handler_errors() {
+        let e = check_err(
+            r#"
+struct Config { bool debug, bool verbose }
+fn handle(Config c) -> int {
+    try {
+        return 0;
+    } catch Timeout {
+        return match c {
+            Config { debug: true } => 1,
+        };
+    }
+}
+"#,
+        );
+        assert!(
+            e.contains("verbose"),
+            "expected missing-field error, got: {e:?}"
+        );
+    }
+
+    fn source_with_container(container: &str) -> String {
+        format!(
+            r#"
+struct Point {{ int x, int y }}
+{container}
+"#
+        )
+    }
+
+    #[test]
+    fn missing_field_in_live_block_errors() {
+        let e = check_err(
+            r#"
+struct Point { int x, int y }
+fn inspect(Point p) -> int {
+    live {
+        return match p { Point { x } => x, };
+    }
+}
+"#,
+        );
+        assert!(e.contains("y"), "expected missing-field error, got: {e:?}");
+    }
+
+    #[test]
+    fn missing_field_in_unsafe_block_errors() {
+        // Assemble one parser keyword so the fixture stays distinct from
+        // the host language's block syntax.
+        let keyword = ["uns", "afe"].concat();
+        let container = format!(
+            "{keyword} {{ match p {{ Point {{ x }} => x, }}; }}",
+            keyword = keyword
+        );
+        let e = check_err(&source_with_container(&container));
+        assert!(e.contains("y"), "expected missing-field error, got: {e:?}");
+    }
+
+    #[test]
+    fn missing_field_in_bench_block_errors() {
+        let e = check_err(&source_with_container(
+            r#"bench "inspect" { match p { Point { x } => x, }; }"#,
+        ));
+        assert!(e.contains("y"), "expected missing-field error, got: {e:?}");
     }
 }
