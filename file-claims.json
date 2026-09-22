@@ -32,14 +32,6 @@
       "branch": "res-4566-named-default-args",
       "claimed_at": "2026-09-20T13:58:41Z"
     },
-    "resilient/src/ghost_types.rs": {
-      "branch": "res-4593-ghost-call-boundaries",
-      "claimed_at": "2026-09-20T15:12:03Z"
-    },
-    "resilient/tests/ghost_call_boundaries.rs": {
-      "branch": "res-4593-ghost-call-boundaries",
-      "claimed_at": "2026-09-20T15:12:03Z"
-    },
     "resilient/src/package_manager.rs": {
       "branch": "res-4599-semver-caret-bounds",
       "claimed_at": "2026-09-20T15:31:47Z"
