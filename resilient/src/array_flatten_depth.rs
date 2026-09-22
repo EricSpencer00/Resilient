@@ -9,15 +9,23 @@
 
 use crate::{RResult, Value};
 
-fn flatten_rec(items: &[Value], depth: i64, out: &mut Vec<Value>) {
-    for v in items {
-        if depth > 0
-            && let Value::Array(inner) = v
+fn flatten_iterative(items: &[Value], depth: i64, out: &mut Vec<Value>) {
+    // Keep traversal state in an explicit worklist. Borrowing the input
+    // avoids recursively cloning a deeply nested tree before traversal even
+    // begins; reversing each array before pushing its children preserves the
+    // recursive implementation's left-to-right output order.
+    let mut pending: Vec<(&Value, i64)> = items.iter().rev().map(|value| (value, depth)).collect();
+
+    while let Some((value, remaining_depth)) = pending.pop() {
+        if remaining_depth > 0
+            && let Value::Array(inner) = value
         {
-            flatten_rec(inner, depth - 1, out);
+            for child in inner.iter().rev() {
+                pending.push((child, remaining_depth - 1));
+            }
             continue;
         }
-        out.push(v.clone());
+        out.push(value.clone());
     }
 }
 
@@ -33,7 +41,7 @@ pub(crate) fn builtin_array_flatten_depth(args: &[Value]) -> RResult<Value> {
                 ));
             }
             let mut out = Vec::new();
-            flatten_rec(items, *depth, &mut out);
+            flatten_iterative(items, *depth, &mut out);
             Ok(Value::Array(out))
         }
         [a, b] => Err(format!(
@@ -134,3 +142,7 @@ mod tests {
         assert!(err.contains("expected 2 arguments"));
     }
 }
+
+#[cfg(test)]
+#[path = "array_flatten_depth_stack_safe.rs"]
+mod stack_safe_regressions;
