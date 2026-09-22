@@ -806,62 +806,6 @@ fn bool_status(ok: bool) -> &'static str {
     if ok { "pass" } else { "fail" }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{normalize_rust_token_line, normalize_rust_tokens};
-
-    #[test]
-    fn malformed_token_line_returns_an_error() {
-        let err = normalize_rust_token_line("not a token line").unwrap_err();
-        assert!(
-            err.contains("location separator"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn invalid_token_location_returns_an_error() {
-        let err = normalize_rust_token_line("line:column  Function(\"fn\")").unwrap_err();
-        assert!(
-            err.contains("invalid line/column location"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn missing_token_payload_returns_an_error() {
-        let err = normalize_rust_token_line("1:2  Function").unwrap_err();
-        assert!(
-            err.contains("lexeme payload start"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn unknown_token_kind_returns_an_error() {
-        let err = normalize_rust_token_line("1:2  FutureToken(\"x\")").unwrap_err();
-        assert!(
-            err.contains("unmapped Rust token kind"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn valid_escaped_token_remains_normalized() {
-        let line = r#"1:2  StringLiteral("ignored")("a\"b")"#;
-        assert_eq!(normalize_rust_token_line(line).unwrap(), "STRING a\"b 1 2");
-    }
-
-    #[test]
-    fn token_stream_reports_the_first_malformed_line() {
-        let err = normalize_rust_tokens("1:1  Function(\"fn\")\nmalformed").unwrap_err();
-        assert!(
-            err.contains("invalid Rust token line 2"),
-            "unexpected error: {err}"
-        );
-    }
-}
-
 fn json_any_object<F>(value: &Value, predicate: &F) -> bool
 where
     F: Fn(&serde_json::Map<String, Value>) -> bool,
@@ -986,4 +930,60 @@ fn feature_array_literal(case: &SuccessCase) -> bool {
 
 fn feature_parse_error_location(_case: &ErrorCase) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_rust_token_line, normalize_rust_tokens};
+
+    #[test]
+    fn malformed_token_line_returns_an_error() {
+        let err = normalize_rust_token_line("not a token line").unwrap_err();
+        assert!(
+            err.contains("location separator"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_token_location_returns_an_error() {
+        let err = normalize_rust_token_line("line:column  Function(\"fn\")").unwrap_err();
+        assert!(
+            err.contains("invalid line/column location"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_token_payload_returns_an_error() {
+        let err = normalize_rust_token_line("1:2  Function").unwrap_err();
+        assert!(
+            err.contains("lexeme payload start"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_token_kind_returns_an_error() {
+        let err = normalize_rust_token_line("1:2  FutureToken(\"x\")").unwrap_err();
+        assert!(
+            err.contains("unmapped Rust token kind"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn valid_escaped_token_remains_normalized() {
+        let line = r#"1:2  StringLiteral("ignored")("a\"b")"#;
+        assert_eq!(normalize_rust_token_line(line).unwrap(), "STRING a\"b 1 2");
+    }
+
+    #[test]
+    fn token_stream_reports_the_first_malformed_line() {
+        let err = normalize_rust_tokens("1:1  Function(\"fn\")\nmalformed").unwrap_err();
+        assert!(
+            err.contains("invalid Rust token line 2"),
+            "unexpected error: {err}"
+        );
+    }
 }
