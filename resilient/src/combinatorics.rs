@@ -11,6 +11,60 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+// Eager combinatorial operations can multiply a modest input into an
+// unmanageably large materialized result. Keep the limit on result entries
+// rather than bytes because `Value` variants have different sizes and may
+// own further collections.
+const MAX_COMBINATORIC_RESULTS: usize = 1_000_000;
+
+fn enforce_result_budget(name: &str, count: usize) -> RResult<usize> {
+    if count > MAX_COMBINATORIC_RESULTS {
+        return Err(format!(
+            "{name}: result would contain {count} elements, exceeding the limit of {MAX_COMBINATORIC_RESULTS}"
+        ));
+    }
+    Ok(count)
+}
+
+fn checked_result_product(name: &str, lhs: usize, rhs: usize) -> RResult<usize> {
+    let count = lhs
+        .checked_mul(rhs)
+        .ok_or_else(|| format!("{name}: result count overflows usize"))?;
+    enforce_result_budget(name, count)
+}
+
+fn bounded_combination_count(n: usize, k: usize) -> RResult<usize> {
+    let k = k.min(n - k);
+    let mut count = 1u128;
+    for i in 0..k {
+        count = count
+            .checked_mul((n - i) as u128)
+            .ok_or_else(|| "array_combinations: result count overflows u128".to_string())?
+            / (i + 1) as u128;
+        if count > MAX_COMBINATORIC_RESULTS as u128 {
+            return Err(format!(
+                "array_combinations: result would contain more than {MAX_COMBINATORIC_RESULTS} elements"
+            ));
+        }
+    }
+    enforce_result_budget("array_combinations", count as usize)
+}
+
+fn bounded_permutation_count(n: usize, k: usize) -> RResult<usize> {
+    let mut count = 1u128;
+    for i in 0..k {
+        count = count
+            .checked_mul((n - i) as u128)
+            .ok_or_else(|| "array_permutations: result count overflows u128".to_string())?;
+        if count > MAX_COMBINATORIC_RESULTS as u128 {
+            return Err(format!(
+                "array_permutations: result would contain more than {MAX_COMBINATORIC_RESULTS} elements"
+            ));
+        }
+    }
+    enforce_result_budget("array_permutations", count as usize)
+}
+
 /// `array_cartesian_product(a, b) -> Array`
 ///
 /// Returns an array of all `[x, y]` pairs where `x ∈ a` and `y ∈ b`.
@@ -23,7 +77,8 @@ type RResult<T> = Result<T, String>;
 pub(crate) fn builtin_array_cartesian_product(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(a), Value::Array(b)] => {
-            let mut out = Vec::with_capacity(a.len() * b.len());
+            let count = checked_result_product("array_cartesian_product", a.len(), b.len())?;
+            let mut out = Vec::with_capacity(count);
             for x in a {
                 for y in b {
                     out.push(Value::Array(vec![x.clone(), y.clone()]));
@@ -66,17 +121,8 @@ pub(crate) fn builtin_array_combinations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            // RES-1938: pre-size `out` to the exact C(n, k) when
-            // computable. Falls back to Vec::new() on overflow — that
-            // case yields gigantic outputs anyway and is dominated by
-            // the per-element work below.
-            let cap = (0..k).try_fold(1usize, |acc, i| {
-                acc.checked_mul(arr.len() - i).map(|m| m / (i + 1))
-            });
-            let mut out = match cap {
-                Some(c) => Vec::with_capacity(c),
-                None => Vec::new(),
-            };
+            let count = bounded_combination_count(arr.len(), k)?;
+            let mut out = Vec::with_capacity(count);
             let mut indices: Vec<usize> = (0..k).collect();
             if k == 0 {
                 out.push(Value::Array(vec![]));
@@ -137,14 +183,8 @@ pub(crate) fn builtin_array_permutations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            // RES-1938: pre-size `out` to the exact P(n, k) when
-            // computable. Falls back to Vec::new() on overflow — same
-            // shape as the combinations pre-size above.
-            let cap = (0..k).try_fold(1usize, |acc, i| acc.checked_mul(arr.len() - i));
-            let mut out = match cap {
-                Some(c) => Vec::with_capacity(c),
-                None => Vec::new(),
-            };
+            let count = bounded_permutation_count(arr.len(), k)?;
+            let mut out = Vec::with_capacity(count);
             let mut used = vec![false; arr.len()];
             let mut current = Vec::with_capacity(k);
             fn permute(
@@ -198,13 +238,12 @@ pub(crate) fn builtin_array_powerset(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(arr)] => {
             let n = arr.len();
-            if n > 20 {
+            if n >= usize::BITS as usize {
                 return Err(format!(
-                    "array_powerset: array too large ({n} elements) — \
-                     result would have 2^{n} subsets"
+                    "array_powerset: array too large ({n} elements) — result count overflows usize"
                 ));
             }
-            let count = 1usize << n;
+            let count = enforce_result_budget("array_powerset", 1usize << n)?;
             let mut out = Vec::with_capacity(count);
             for mask in 0..count {
                 let subset: Vec<Value> = (0..n)
@@ -303,10 +342,22 @@ pub(crate) fn builtin_array_cartesian_product_n(args: &[Value]) -> RResult<Value
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
+            if arrays_inner.iter().any(|arr| arr.is_empty()) {
+                return Ok(Value::Array(Vec::new()));
+            }
+
+            // Check the complete product before allocating any intermediate
+            // result. This also makes every capacity multiplication checked.
+            let result_count = arrays_inner.iter().try_fold(1usize, |count, arr| {
+                checked_result_product("array_cartesian_product_n", count, arr.len())
+            })?;
+
             // Build the product iteratively.
             let mut result: Vec<Vec<Value>> = vec![vec![]];
             for arr in arrays_inner {
-                let mut new_result = Vec::with_capacity(result.len() * arr.len());
+                let count =
+                    checked_result_product("array_cartesian_product_n", result.len(), arr.len())?;
+                let mut new_result = Vec::with_capacity(count);
                 for existing in &result {
                     for item in arr {
                         let mut combo = existing.clone();
@@ -316,6 +367,7 @@ pub(crate) fn builtin_array_cartesian_product_n(args: &[Value]) -> RResult<Value
                 }
                 result = new_result;
             }
+            debug_assert_eq!(result.len(), result_count);
             Ok(Value::Array(result.into_iter().map(Value::Array).collect()))
         }
         [other] => Err(format!(
@@ -330,10 +382,15 @@ pub(crate) fn builtin_array_cartesian_product_n(args: &[Value]) -> RResult<Value
 
 #[cfg(test)]
 mod tests {
-    use crate::run_program;
+    use super::*;
+    use crate::{Value, run_program};
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
+    }
+
+    fn ints(count: usize) -> Value {
+        Value::Array((0..count).map(|i| Value::Int(i as i64)).collect())
     }
 
     // ── array_cartesian_product ───────────────────────────────────────────────
@@ -361,6 +418,12 @@ println(p[3][1]);"#);
 println(len(p));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn cartesian_product_rejects_over_budget_result_before_allocation() {
+        let err = builtin_array_cartesian_product(&[ints(1_001), ints(1_001)]).unwrap_err();
+        assert!(err.contains("exceeding the limit"), "error: {err}");
     }
 
     // ── array_combinations ────────────────────────────────────────────────────
@@ -407,6 +470,12 @@ println(len(c));"#);
         assert!(!r.ok, "expected error for n > len");
     }
 
+    #[test]
+    fn combinations_rejects_over_budget_result_before_enumeration() {
+        let err = builtin_array_combinations(&[ints(50), Value::Int(25)]).unwrap_err();
+        assert!(err.contains("more than"), "error: {err}");
+    }
+
     // ── array_permutations ────────────────────────────────────────────────────
 
     #[test]
@@ -427,6 +496,12 @@ println(len(p[0]));"#);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "1");
         assert_eq!(lines[1], "0");
+    }
+
+    #[test]
+    fn permutations_rejects_over_budget_result_before_enumeration() {
+        let err = builtin_array_permutations(&[ints(10), Value::Int(10)]).unwrap_err();
+        assert!(err.contains("more than"), "error: {err}");
     }
 
     // ── array_powerset ────────────────────────────────────────────────────────
@@ -457,6 +532,12 @@ println(len(ps));"#);
         // 2^3 = 8
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('8'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn powerset_rejects_over_budget_result_before_allocation() {
+        let err = builtin_array_powerset(&[ints(20)]).unwrap_err();
+        assert!(err.contains("exceeding the limit"), "error: {err}");
     }
 
     // ── array_transpose ───────────────────────────────────────────────────────
@@ -522,5 +603,12 @@ println(len(p));"#);
         // 2^3 = 8
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('8'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn cartesian_product_n_rejects_over_budget_before_intermediate_growth() {
+        let arrays = Value::Array(vec![ints(1_001), ints(1_001)]);
+        let err = builtin_array_cartesian_product_n(&[arrays]).unwrap_err();
+        assert!(err.contains("exceeding the limit"), "error: {err}");
     }
 }
