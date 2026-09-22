@@ -179,6 +179,13 @@ fn checked_wire_capacity(
     function_count: usize,
     try_handler_count: usize,
 ) -> Result<usize, EmitError> {
+    let function_bytes = function_count.checked_mul(8).ok_or_else(|| {
+        unsupported(
+            target,
+            "embedded `.rzbc` function-table sizing overflowed".to_string(),
+        )
+    })?;
+
     // Each function contributes one extra instruction-width slot in the
     // function-table header, matching the encoder's existing conservative
     // sizing formula.
@@ -199,12 +206,6 @@ fn checked_wire_capacity(
                 "embedded `.rzbc` instruction-byte sizing overflowed".to_string(),
             )
         })?;
-    let function_bytes = function_count.checked_mul(8).ok_or_else(|| {
-        unsupported(
-            target,
-            "embedded `.rzbc` function-table sizing overflowed".to_string(),
-        )
-    })?;
     let try_handler_bytes = try_handler_count
         .checked_mul(1 + MAX_CATCH_ARMS * (2 + 4))
         .ok_or_else(|| {
@@ -1141,7 +1142,7 @@ mod tests {
     #[test]
     fn checked_wire_capacity_preserves_small_layouts() {
         let expected = rzbc_serde::HEADER_LEN
-            + 11 * MAX_INSTR_WIRE_WIDTH
+            + 13 * MAX_INSTR_WIRE_WIDTH
             + 2 * 8
             + (1 + MAX_CATCH_ARMS * (2 + 4))
             + 2;
