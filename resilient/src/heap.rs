@@ -244,6 +244,7 @@ pub(crate) fn builtin_heap_is_empty(args: &[Value]) -> RResult<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::{child_index, packed_capacity};
     use crate::run_program;
 
     fn run(src: &str) -> String {

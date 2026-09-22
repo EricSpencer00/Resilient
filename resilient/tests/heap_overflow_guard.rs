@@ -8,6 +8,7 @@ let heap = heap_new();
 let heap = heap_push(heap, 3);
 let heap = heap_push(heap, 1);
 let (value, heap) = heap_pop(heap);
+let value = match value { Some(item) => item, None => -1 };
 println(to_string(value));
 println(to_string(heap_len(heap)));
 "#,
