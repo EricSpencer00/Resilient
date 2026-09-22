@@ -180,10 +180,6 @@
       "branch": "res-4617-pure-defer-guard",
       "claimed_at": "2026-09-21T00:50:56Z"
     },
-    "resilient/src/loop_bound.rs": {
-      "branch": "res-4813-loop-counter-initializer",
-      "claimed_at": "2026-09-21T01:08:05Z"
-    },
     "resilient/src/self_host_parity_report.rs": {
       "branch": "res-4819-token-parity-fail-closed",
       "claimed_at": "2026-09-21T01:35:34Z"
