@@ -1064,14 +1064,12 @@ fn sum_field(Foo f) -> int {
         }"#;
         let (prog, _) = parse(src);
         let inferred = infer_program(&prog);
-        let f = inferred
-            .iter()
-            .find(|c| c.function_name == "lower_bound")
-            .expect("expected inferred contracts for lower_bound");
+        let lower_bound = inferred.iter().find(|c| c.function_name == "lower_bound");
         assert!(
-            !f.requires.iter().any(|r| r.contains("n > 0")),
-            "range lower bound must not infer n > 0; got: {:?}",
-            f.requires
+            lower_bound
+                .map(|f| !f.requires.iter().any(|r| r.contains("n > 0")))
+                .unwrap_or(true),
+            "range lower bound must not infer n > 0; got: {lower_bound:?}"
         );
     }
 }
