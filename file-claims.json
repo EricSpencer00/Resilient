@@ -40,14 +40,6 @@
       "branch": "res-4622-range-loop-contracts",
       "claimed_at": "2026-09-20T16:21:32Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-4641-noninterference-match",
-      "claimed_at": "2026-09-20T17:07:59Z"
-    },
-    "resilient/src/noninterference.rs": {
-      "branch": "res-4641-noninterference-match",
-      "claimed_at": "2026-09-20T17:07:59Z"
-    },
     "resilient/src/where_clauses.rs": {
       "branch": "res-4644-where-unknown-param",
       "claimed_at": "2026-09-20T17:15:38Z"
