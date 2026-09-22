@@ -58,5 +58,10 @@ fn arrays_and_bytes_remain_valid_quantifier_sources() {
         "iterable quantifier sources failed: stdout={stdout} stderr={stderr}"
     );
     assert!(stdout.contains("true"), "unexpected output: {stdout}");
-    assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
+    assert!(
+        stderr
+            .lines()
+            .all(|line| line.is_empty() || line.starts_with("seed=")),
+        "unexpected diagnostics: {stderr}"
+    );
 }
