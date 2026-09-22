@@ -394,25 +394,42 @@ pub fn extract_ustar(bytes: &[u8], dest: &Path) -> Result<(), PkgRegistryError> 
 
     let mut offset = 0usize;
     let mut wrote_any = false;
-    while offset + 512 <= bytes.len() {
-        let header = &bytes[offset..offset + 512];
+    while offset <= bytes.len().saturating_sub(512) {
+        let header_end = offset + 512;
+        let header = &bytes[offset..header_end];
         if header.iter().all(|&b| b == 0) {
             // End-of-archive marker (two consecutive zero blocks).
             break;
         }
         let name = parse_header_str(&header[0..100])?;
-        let size = parse_octal(&header[124..136])?;
+        let size_u64 = parse_octal(&header[124..136])?;
+        let size = usize::try_from(size_u64).map_err(|_| PkgRegistryError::ExtractFailed {
+            detail: format!("archive entry `{}` is too large for this target", name),
+        })?;
         let typeflag = header[156];
-        offset += 512;
-        let body_end =
-            offset
-                .checked_add(size as usize)
-                .ok_or_else(|| PkgRegistryError::ExtractFailed {
-                    detail: format!("archive entry `{}` has an invalid size", name),
-                })?;
+        offset = header_end;
+        let body_end = offset
+            .checked_add(size)
+            .ok_or_else(|| PkgRegistryError::ExtractFailed {
+                detail: format!("archive entry `{}` has an invalid size", name),
+            })?;
         if body_end > bytes.len() {
             return Err(PkgRegistryError::ExtractFailed {
                 detail: format!("archive entry `{}` is truncated", name),
+            });
+        }
+        // A valid body can still be followed by truncated 512-byte padding.
+        // Check the next header offset before touching the entry or writing it.
+        let pad = (512 - (size % 512)) % 512;
+        let next_offset =
+            body_end
+                .checked_add(pad)
+                .ok_or_else(|| PkgRegistryError::ExtractFailed {
+                    detail: format!("archive entry `{}` has invalid padding", name),
+                })?;
+        if next_offset > bytes.len() {
+            return Err(PkgRegistryError::ExtractFailed {
+                detail: format!("archive entry `{}` has truncated padding", name),
             });
         }
         let body = &bytes[offset..body_end];
@@ -441,8 +458,7 @@ pub fn extract_ustar(bytes: &[u8], dest: &Path) -> Result<(), PkgRegistryError> 
             }
         }
         // Body is padded to the next 512-byte boundary.
-        let pad = (512 - (size as usize % 512)) % 512;
-        offset = body_end + pad;
+        offset = next_offset;
     }
     if !wrote_any {
         return Err(PkgRegistryError::ExtractFailed {
@@ -451,6 +467,10 @@ pub fn extract_ustar(bytes: &[u8], dest: &Path) -> Result<(), PkgRegistryError> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "pkg_registry_archive_bounds_tests.rs"]
+mod archive_bounds_tests;
 
 /// Join `rel` onto `dest`, rejecting any component that would escape
 /// `dest` (`..` or an absolute path) — an archive should never be
