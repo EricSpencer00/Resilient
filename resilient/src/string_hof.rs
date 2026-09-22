@@ -13,6 +13,27 @@ use crate::{Interpreter, Value};
 
 type RResult<T> = Result<T, String>;
 
+// Keep callback-produced strings within the same 10 MiB resource envelope
+// used by the scalar string-repeat builtin.
+const MAX_STRING_HOF_OUTPUT: usize = 10_000_000;
+
+fn push_string_map_piece(output: &mut String, piece: &str) -> RResult<()> {
+    let new_len = output.len().checked_add(piece.len()).ok_or_else(|| {
+        format!(
+            "string_map_chars: output length overflow (limit {})",
+            MAX_STRING_HOF_OUTPUT
+        )
+    })?;
+    if new_len > MAX_STRING_HOF_OUTPUT {
+        return Err(format!(
+            "string_map_chars: output length {} exceeds limit {}",
+            new_len, MAX_STRING_HOF_OUTPUT
+        ));
+    }
+    output.push_str(piece);
+    Ok(())
+}
+
 /// `string_map_chars(s, fn) -> string`
 ///
 /// Calls `fn(c)` for every character `c` of `s` (each passed as a 1-char
@@ -49,7 +70,7 @@ pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value])
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
         match interp.apply_function(f, vec![c_str])? {
-            Value::String(piece) => out.push_str(&piece),
+            Value::String(piece) => push_string_map_piece(&mut out, &piece)?,
             other => {
                 return Err(format!(
                     "string_map_chars: callback must return a string, got {other}"
