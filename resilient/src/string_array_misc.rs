@@ -286,8 +286,7 @@ mod tests {
 
     #[test]
     fn from_chars_capacity_rejects_over_budget_before_growth() {
-        let err = checked_string_capacity([Ok::<_, String>(MAX_STRING_BYTES), Ok(1)].into_iter())
-            .unwrap_err();
+        let err = checked_string_capacity([Ok::<_, String>(MAX_STRING_BYTES), Ok(1)]).unwrap_err();
         assert!(err.contains("exceeds maximum"), "got: {err}");
     }
 
