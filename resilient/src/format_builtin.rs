@@ -29,6 +29,19 @@ pub enum FormatSegment {
     Placeholder(String),
 }
 
+fn bounded_placeholder_capacity(count: usize, input_len: usize) -> usize {
+    let input_bound = input_len.saturating_add(1);
+    count
+        .checked_mul(2)
+        .and_then(|capacity| capacity.checked_add(1))
+        .unwrap_or(input_bound)
+        .min(input_bound)
+}
+
+fn placeholder_capacity(template: &str) -> usize {
+    bounded_placeholder_capacity(template.matches('{').count(), template.len())
+}
+
 /// Parse a `format()` template into a list of segments.
 ///
 /// RES-1093: an unterminated `{` (no matching `}`) is now a hard
@@ -54,7 +67,7 @@ pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
     // Literal per `{...}` placeholder plus a trailing Literal, so this
     // matches the typical 1-3-placeholder shape. fmt_validation calls
     // this on every `format(...)` expression at typecheck time.
-    let mut out = Vec::with_capacity(s.matches('{').count() * 2 + 1);
+    let mut out = Vec::with_capacity(placeholder_capacity(s));
     // RES-1832: pre-size buf/spec to cover typical template segments
     // and format specifiers without realloc.
     let mut buf = String::with_capacity(16);
@@ -672,6 +685,15 @@ mod tests {
                 FormatSegment::Literal("!".into()),
             ]
         );
+    }
+
+    #[test]
+    fn placeholder_capacity_handles_arithmetic_boundaries() {
+        assert_eq!(
+            bounded_placeholder_capacity(usize::MAX, usize::MAX),
+            usize::MAX
+        );
+        assert_eq!(placeholder_capacity("{{"), 3);
     }
 
     #[test]
