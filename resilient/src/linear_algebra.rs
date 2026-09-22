@@ -25,6 +25,9 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+// Bound total cells because matrix storage grows quadratically with the side.
+const MAX_MATRIX_CELLS: usize = 1_000_000;
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn to_float(v: &Value) -> RResult<f64> {
@@ -426,9 +429,23 @@ pub(crate) fn builtin_mat_identity(args: &[Value]) -> RResult<Value> {
             if *n < 0 {
                 return Err(format!("mat_identity: n must be >= 0, got {n}"));
             }
-            let n = *n as usize;
-            let mat: Vec<Vec<f64>> = (0..n)
-                .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            let dimension = usize::try_from(*n).map_err(|_| {
+                format!("mat_identity: dimension {n} does not fit the target platform")
+            })?;
+            let cells = dimension.checked_mul(dimension).ok_or_else(|| {
+                format!("mat_identity: dimension {n} overflows the matrix cell count")
+            })?;
+            if cells > MAX_MATRIX_CELLS {
+                return Err(format!(
+                    "mat_identity: {n}x{n} matrix has {cells} cells (maximum {MAX_MATRIX_CELLS})"
+                ));
+            }
+            let mat: Vec<Vec<f64>> = (0..dimension)
+                .map(|i| {
+                    (0..dimension)
+                        .map(|j| if i == j { 1.0 } else { 0.0 })
+                        .collect()
+                })
                 .collect();
             Ok(float_matrix(mat))
         }
