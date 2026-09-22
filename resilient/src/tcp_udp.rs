@@ -18,6 +18,22 @@ use std::time::Duration;
 
 type RResult<T> = Result<T, String>;
 
+const MAX_SOCKET_RECEIVE_BYTES: i64 = 16 * 1024 * 1024;
+
+fn checked_read_len(name: &str, requested: i64) -> RResult<usize> {
+    if requested < 0 {
+        return Err(format!(
+            "{name}: max_bytes must be non-negative, got {requested}"
+        ));
+    }
+    if requested > MAX_SOCKET_RECEIVE_BYTES {
+        return Err(format!(
+            "{name}: max_bytes {requested} too large (max {MAX_SOCKET_RECEIVE_BYTES})"
+        ));
+    }
+    usize::try_from(requested).map_err(|_| format!("{name}: max_bytes {requested} out of range"))
+}
+
 // ---------------------------------------------------------------------------
 // Handle registries
 // ---------------------------------------------------------------------------
@@ -180,7 +196,7 @@ pub(crate) fn builtin_tcp_read(args: &[Value]) -> RResult<Value> {
     match args {
         [handle, Value::Int(max_bytes)] => {
             let id = extract_handle_id(handle, "tcp_read")?;
-            let cap = (*max_bytes).max(0) as usize;
+            let cap = checked_read_len("tcp_read", *max_bytes)?;
             let result = TCP_CONNS.with(|r| {
                 let mut borrow = r.borrow_mut();
                 match borrow.get_mut(&id) {
@@ -188,7 +204,10 @@ pub(crate) fn builtin_tcp_read(args: &[Value]) -> RResult<Value> {
                         let mut buf = vec![0u8; cap];
                         stream
                             .read(&mut buf)
-                            .map(|n| buf[..n].to_vec())
+                            .map(|n| {
+                                buf.truncate(n);
+                                buf
+                            })
                             .map_err(|e| format!("tcp_read: {}", e))
                     }
                     None => Err(format!("tcp_read: unknown or closed connection {}", id)),
@@ -354,7 +373,7 @@ pub(crate) fn builtin_udp_recv_from(args: &[Value]) -> RResult<Value> {
     match args {
         [handle, Value::Int(max_bytes)] => {
             let id = extract_handle_id(handle, "udp_recv_from")?;
-            let cap = (*max_bytes).max(0) as usize;
+            let cap = checked_read_len("udp_recv_from", *max_bytes)?;
             let result = UDP_SOCKETS.with(|r| {
                 let borrow = r.borrow();
                 match borrow.get(&id) {
@@ -362,7 +381,10 @@ pub(crate) fn builtin_udp_recv_from(args: &[Value]) -> RResult<Value> {
                         let mut buf = vec![0u8; cap];
                         socket
                             .recv_from(&mut buf)
-                            .map(|(n, _src)| buf[..n].to_vec())
+                            .map(|(n, _src)| {
+                                buf.truncate(n);
+                                buf
+                            })
                             .map_err(|e| format!("udp_recv_from: {}", e))
                     }
                     None => Err(format!("udp_recv_from: unknown or closed socket {}", id)),
@@ -396,5 +418,38 @@ pub(crate) fn builtin_udp_close(args: &[Value]) -> RResult<Value> {
             "udp_close: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SOCKET_RECEIVE_BYTES, checked_read_len};
+
+    #[test]
+    fn receive_length_rejects_negative_requests() {
+        let err = checked_read_len("tcp_read", -1).expect_err("negative size must fail");
+        assert_eq!(err, "tcp_read: max_bytes must be non-negative, got -1");
+    }
+
+    #[test]
+    fn receive_length_rejects_requests_above_the_cap() {
+        let requested = MAX_SOCKET_RECEIVE_BYTES + 1;
+        let err =
+            checked_read_len("udp_recv_from", requested).expect_err("over-limit size must fail");
+        assert_eq!(
+            err,
+            format!(
+                "udp_recv_from: max_bytes {requested} too large (max {MAX_SOCKET_RECEIVE_BYTES})"
+            )
+        );
+    }
+
+    #[test]
+    fn receive_length_accepts_the_boundaries() {
+        assert_eq!(checked_read_len("tcp_read", 0), Ok(0));
+        assert_eq!(
+            checked_read_len("udp_recv_from", MAX_SOCKET_RECEIVE_BYTES),
+            Ok(MAX_SOCKET_RECEIVE_BYTES as usize)
+        );
     }
 }
