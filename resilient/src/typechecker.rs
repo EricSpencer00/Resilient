@@ -13196,6 +13196,11 @@ fn check_body_purity(
         Node::TryExpression { expr, .. } => {
             check_body_purity(expr, fn_name, pure_fns)?;
         }
+        Node::DeferStatement { expr, .. } => {
+            // Deferred expressions run when the function exits, so they
+            // must obey the same purity boundary as inline expressions.
+            check_body_purity(expr, fn_name, pure_fns)?;
+        }
         Node::OptionalChain { object, access, .. } => {
             check_body_purity(object, fn_name, pure_fns)?;
             if let crate::ChainAccess::Method(_, args) = access {
@@ -14889,6 +14894,31 @@ mod purity_tests {
         let s = stmts(src);
         let err = check_program_purity(&s, "<t>").expect_err("live blocks are impure");
         assert!(err.contains("live"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn pure_fn_deferred_impure_call_is_rejected() {
+        let src = "@pure fn f() { defer println(\"late\"); return 0; }\n";
+        let s = stmts(src);
+        let err =
+            check_program_purity(&s, "<t>").expect_err("deferred impure calls must violate purity");
+        assert!(err.contains("println"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn pure_fn_deferred_pure_expression_is_allowed() {
+        let src = "@pure fn f(int x) { defer abs(x); return x; }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>").expect("pure deferred expressions are allowed");
+    }
+
+    #[test]
+    fn pure_fn_deferred_unannotated_call_is_rejected() {
+        let src = "fn helper() { return 0; }\n@pure fn f() { defer helper(); return 0; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>")
+            .expect_err("deferred unannotated calls must violate purity");
+        assert!(err.contains("helper"), "unexpected error: {err}");
     }
 
     #[test]
