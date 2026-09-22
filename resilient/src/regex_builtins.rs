@@ -60,8 +60,8 @@ impl RegexCache {
     }
 
     fn insert(&mut self, pattern: String, regex: Regex) {
-        if self.entries.contains_key(&pattern) {
-            self.entries.insert(pattern, regex);
+        if let Some(entry) = self.entries.get_mut(&pattern) {
+            *entry = regex;
             return;
         }
 
@@ -521,9 +521,10 @@ mod tests {
     #[test]
     fn cache_churn_evicts_one_entry_without_clearing_retained_entries() {
         let mut cache = RegexCache::new();
+        let regex = Regex::new(".*").unwrap();
         for i in 0..CACHE_CAPACITY {
             let pattern = format!("^p{i}$");
-            cache.insert(pattern, Regex::new(".*").unwrap());
+            cache.insert(pattern, regex.clone());
         }
 
         assert_eq!(cache.len(), CACHE_CAPACITY);
