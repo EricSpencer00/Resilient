@@ -12,7 +12,8 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 // ============================================================
 // Tag constants (4 bits, positions 63-60)
@@ -33,6 +34,46 @@ const TAG_SHIFT: i64 = 60;
 const TAG_MASK: i64 = 0xF;
 const PAYLOAD_MASK: i64 = (1i64 << TAG_SHIFT) - 1;
 
+/// The top bits of a raw integer can coincide with a heap tag, so alignment
+/// alone cannot prove that the payload is a pointer produced by this runtime.
+/// Keep the tag and masked payload for every boxed value we create; generic
+/// display/equality and typed shims can then reject forged handles before
+/// dereferencing them.
+fn is_heap_tag(tag: i64) -> bool {
+    matches!(
+        tag,
+        TAG_FLOAT | TAG_STRING | TAG_STRUCT | TAG_ENUM | TAG_CLOSURE | TAG_MAP
+    )
+}
+
+fn heap_handles() -> &'static Mutex<HashSet<(i64, usize)>> {
+    static HEAP_HANDLES: OnceLock<Mutex<HashSet<(i64, usize)>>> = OnceLock::new();
+    HEAP_HANDLES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_heap_handle(tag: i64, ptr: usize) {
+    if !is_heap_tag(tag) {
+        return;
+    }
+    let payload = ptr & (PAYLOAD_MASK as usize);
+    heap_handles()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((tag, payload));
+}
+
+fn is_registered_heap_handle(v: i64) -> bool {
+    let tag = tag_of(v);
+    if !is_heap_tag(tag) {
+        return false;
+    }
+    let payload = payload_of(v) as usize;
+    heap_handles()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&(tag, payload))
+}
+
 // ============================================================
 // Tagging / untagging helpers
 // ============================================================
@@ -49,6 +90,7 @@ pub(crate) fn payload_of(v: i64) -> i64 {
 
 #[inline]
 pub(crate) fn make_tagged(tag: i64, ptr: usize) -> i64 {
+    register_heap_handle(tag, ptr);
     (tag << TAG_SHIFT) | (ptr as i64 & PAYLOAD_MASK)
 }
 
@@ -154,7 +196,7 @@ pub(crate) extern "C-unwind" fn res_jit_float_cmp(a: i64, b: i64) -> i64 {
 }
 
 fn read_float(v: i64) -> f64 {
-    if tag_of(v) == TAG_FLOAT {
+    if tag_of(v) == TAG_FLOAT && is_registered_heap_handle(v) {
         let ptr = payload_of(v) as *const f64;
         unsafe { *ptr }
     } else {
@@ -196,7 +238,7 @@ pub(crate) extern "C-unwind" fn res_jit_value_to_string(v: i64) -> i64 {
 }
 
 fn read_string(v: i64) -> String {
-    if tag_of(v) == TAG_STRING {
+    if tag_of(v) == TAG_STRING && is_registered_heap_handle(v) {
         let ptr = payload_of(v) as *const String;
         unsafe { (*ptr).clone() }
     } else {
@@ -313,6 +355,9 @@ pub(crate) extern "C-unwind" fn res_jit_struct_set_field(
     field_len: i64,
     value: i64,
 ) -> i64 {
+    if tag_of(struct_v) != TAG_STRUCT || !is_registered_heap_handle(struct_v) {
+        return struct_v;
+    }
     let ptr = payload_of(struct_v) as *mut JitStruct;
     let field_name = read_raw_str(field_ptr, field_len);
     unsafe {
@@ -326,12 +371,18 @@ pub(crate) extern "C-unwind" fn res_jit_struct_get_field(
     field_ptr: i64,
     field_len: i64,
 ) -> i64 {
+    if tag_of(struct_v) != TAG_STRUCT || !is_registered_heap_handle(struct_v) {
+        return 0;
+    }
     let ptr = payload_of(struct_v) as *const JitStruct;
     let field_name = read_raw_str(field_ptr, field_len);
     unsafe { (*ptr).fields.get(&field_name).copied().unwrap_or(0) }
 }
 
 pub(crate) extern "C-unwind" fn res_jit_struct_get_name(struct_v: i64) -> i64 {
+    if tag_of(struct_v) != TAG_STRUCT || !is_registered_heap_handle(struct_v) {
+        return res_jit_alloc_string(0, 0);
+    }
     let ptr = payload_of(struct_v) as *const JitStruct;
     let name = unsafe { (*ptr).name.clone() };
     let boxed = Box::new(name);
@@ -357,7 +408,7 @@ pub(crate) extern "C-unwind" fn res_jit_enum_is_variant(
     variant_ptr: i64,
     variant_len: i64,
 ) -> i64 {
-    if tag_of(enum_v) != TAG_ENUM {
+    if tag_of(enum_v) != TAG_ENUM || !is_registered_heap_handle(enum_v) {
         return 0;
     }
     let ptr = payload_of(enum_v) as *const JitEnum;
@@ -367,7 +418,7 @@ pub(crate) extern "C-unwind" fn res_jit_enum_is_variant(
 }
 
 pub(crate) extern "C-unwind" fn res_jit_enum_payload(enum_v: i64) -> i64 {
-    if tag_of(enum_v) != TAG_ENUM {
+    if tag_of(enum_v) != TAG_ENUM || !is_registered_heap_handle(enum_v) {
         return 0;
     }
     let ptr = payload_of(enum_v) as *const JitEnum;
@@ -375,7 +426,7 @@ pub(crate) extern "C-unwind" fn res_jit_enum_payload(enum_v: i64) -> i64 {
 }
 
 pub(crate) extern "C-unwind" fn res_jit_enum_variant_name(enum_v: i64) -> i64 {
-    if tag_of(enum_v) != TAG_ENUM {
+    if tag_of(enum_v) != TAG_ENUM || !is_registered_heap_handle(enum_v) {
         return res_jit_alloc_string(0, 0);
     }
     let ptr = payload_of(enum_v) as *const JitEnum;
@@ -394,6 +445,9 @@ pub(crate) extern "C-unwind" fn res_jit_alloc_map() -> i64 {
 }
 
 pub(crate) extern "C-unwind" fn res_jit_map_set(map_v: i64, key: i64, value: i64) -> i64 {
+    if tag_of(map_v) != TAG_MAP || !is_registered_heap_handle(map_v) {
+        return map_v;
+    }
     let ptr = payload_of(map_v) as *mut JitMap;
     unsafe {
         // Linear scan — maps are small in typical JIT use
@@ -407,6 +461,9 @@ pub(crate) extern "C-unwind" fn res_jit_map_set(map_v: i64, key: i64, value: i64
 }
 
 pub(crate) extern "C-unwind" fn res_jit_map_get(map_v: i64, key: i64) -> i64 {
+    if tag_of(map_v) != TAG_MAP || !is_registered_heap_handle(map_v) {
+        return 0;
+    }
     let ptr = payload_of(map_v) as *const JitMap;
     unsafe {
         (*ptr)
@@ -418,6 +475,9 @@ pub(crate) extern "C-unwind" fn res_jit_map_get(map_v: i64, key: i64) -> i64 {
 }
 
 pub(crate) extern "C-unwind" fn res_jit_map_len(map_v: i64) -> i64 {
+    if tag_of(map_v) != TAG_MAP || !is_registered_heap_handle(map_v) {
+        return 0;
+    }
     let ptr = payload_of(map_v) as *const JitMap;
     unsafe { (*ptr).len() as i64 }
 }
@@ -478,11 +538,9 @@ pub(crate) extern "C-unwind" fn res_jit_value_ne(a: i64, b: i64) -> i64 {
 /// Convert a tagged JIT value to its display string.
 ///
 /// TAG_INT = 0 means raw i64 values with zero in their top 4 bits display
-/// as integers directly.  For negative integers (whose top 4 bits are
-/// nonzero), `tag_of` may return a "fake" tag.  We guard against this by
-/// checking that heap-tag payloads look like plausible aligned pointers
-/// before dereferencing them.  If the pointer check fails, the value is
-/// treated as a raw integer.
+/// as integers directly. For any other tag, the value is treated as a heap
+/// object only when its tag and payload were registered by this runtime;
+/// aligned integer bit patterns are not pointer provenance.
 pub(crate) fn jit_value_display(v: i64) -> String {
     let tag = tag_of(v);
 
@@ -500,16 +558,13 @@ pub(crate) fn jit_value_display(v: i64) -> String {
         };
     }
 
-    // For heap-backed tags we need a plausible pointer in the payload.
-    let ptr_val = payload_of(v) as usize;
-    let is_plausible_ptr =
-        ptr_val > 0x1000 && ptr_val.is_multiple_of(std::mem::align_of::<usize>());
-
-    if !is_plausible_ptr {
-        // Top bits are nonzero but the payload is not a valid pointer —
-        // this is a negative raw integer.
+    // Heap-backed tags require a handle issued by this runtime. This rejects
+    // raw integers whose high bits happen to look like a heap tag.
+    if !is_registered_heap_handle(v) {
         return format!("{v}");
     }
+
+    let ptr_val = payload_of(v) as usize;
 
     match tag {
         TAG_FLOAT => {
@@ -575,20 +630,14 @@ pub(crate) fn jit_value_display(v: i64) -> String {
 }
 
 /// Check whether a tagged value is effectively a raw integer.
-/// TAG_INT = 0 covers non-negative values; negative integers have
-/// nonzero top bits that look like a tag but don't point to a valid
-/// heap object.
+/// A value is a raw integer unless it is a boolean or a registered heap
+/// handle. This avoids interpreting an aligned integer payload as a pointer.
 fn is_raw_int(v: i64) -> bool {
     let tag = tag_of(v);
-    if tag == TAG_INT {
-        return true;
-    }
     if tag == TAG_BOOL {
         return false;
     }
-    // Heap tags require a plausible aligned pointer in the payload.
-    let ptr_val = payload_of(v) as usize;
-    !(ptr_val > 0x1000 && ptr_val.is_multiple_of(std::mem::align_of::<usize>()))
+    !is_registered_heap_handle(v)
 }
 
 pub(crate) fn jit_values_equal(a: i64, b: i64) -> bool {
@@ -845,5 +894,57 @@ mod tests {
         let v = res_jit_alloc_string(0, 0);
         assert_eq!(tag_of(v), TAG_STRING);
         assert_eq!(jit_value_display(v), "");
+    }
+
+    #[test]
+    fn forged_heap_tags_are_treated_as_raw_integers() {
+        // These values have aligned payloads that satisfy the old heuristic,
+        // but were never returned by a JIT allocation shim. They must not be
+        // dereferenced as pointers.
+        let forged_float = (TAG_FLOAT << TAG_SHIFT) | 0x2000;
+        let forged_string = (TAG_STRING << TAG_SHIFT) | 0x2000;
+        let forged_struct = (TAG_STRUCT << TAG_SHIFT) | 0x2000;
+        let forged_enum = (TAG_ENUM << TAG_SHIFT) | 0x2000;
+        let forged_map = (TAG_MAP << TAG_SHIFT) | 0x2000;
+
+        for forged in [
+            forged_float,
+            forged_string,
+            forged_struct,
+            forged_enum,
+            forged_map,
+        ] {
+            assert!(!is_registered_heap_handle(forged));
+            assert_eq!(jit_value_display(forged), forged.to_string());
+        }
+        assert_eq!(res_jit_value_eq(forged_float, forged_float), 1);
+        assert_eq!(
+            res_jit_string_len(forged_string),
+            forged_string.to_string().len() as i64
+        );
+        assert_eq!(res_jit_struct_get_field(forged_struct, 0, 0), 0);
+        assert_eq!(
+            jit_value_display(res_jit_struct_get_name(forged_struct)),
+            ""
+        );
+        assert_eq!(res_jit_enum_payload(forged_enum), 0);
+        assert_eq!(
+            jit_value_display(res_jit_enum_variant_name(forged_enum)),
+            ""
+        );
+        assert_eq!(res_jit_map_len(forged_map), 0);
+    }
+
+    #[test]
+    fn runtime_heap_handles_remain_registered_by_tag() {
+        let float = res_jit_alloc_float(1.5f64.to_bits() as i64);
+        let string = res_jit_alloc_string("ok".as_ptr() as i64, 2);
+        let map = res_jit_alloc_map();
+
+        assert!(is_registered_heap_handle(float));
+        assert!(is_registered_heap_handle(string));
+        assert!(is_registered_heap_handle(map));
+        assert_eq!(jit_value_display(float), "1.5");
+        assert_eq!(jit_value_display(string), "ok");
     }
 }
