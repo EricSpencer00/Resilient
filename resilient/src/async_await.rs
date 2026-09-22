@@ -73,7 +73,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 // Strings. Only the first leak (`leaks[0]`) makes it
                 // into the error message. Same shape as RES-1439 /
                 // RES-1441.
-                let mut leaks: Vec<&str> = Vec::new();
+                let mut leaks: Vec<String> = Vec::new();
                 walk_async_calls(body, &async_fns, &mut leaks);
                 if !leaks.is_empty() {
                     return Err(format!(
@@ -88,29 +88,45 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut Vec<&'a str>) {
-    match node {
-        // Nested functions execute in their own effect context. Keep the
-        // existing boundary: their calls are checked when that function is
-        // visited as a top-level declaration, not as part of its enclosing
-        // caller.
-        Node::Function { .. } | Node::FunctionLiteral { .. } => return,
-        Node::CallExpression { function, .. } => {
+fn walk_async_calls(node: &Node, async_fns: &HashSet<String>, out: &mut Vec<String>) {
+    // The shared walker is deliberately exhaustive, so collect subtrees that
+    // are effect boundaries before scanning for async calls.
+    let mut excluded: HashSet<*const Node> = HashSet::new();
+    crate::uniqueness_walk::visit(node, &mut |candidate| match candidate {
+        Node::Function { .. } | Node::FunctionLiteral { .. } => {
+            crate::uniqueness_walk::visit(candidate, &mut |nested| {
+                excluded.insert(nested as *const Node);
+            });
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if name == "block_on" {
-                    // explicit bridge — skip recursion into args here since they are awaited
-                    return;
-                }
-                if async_fns.contains(name) {
-                    out.push(name.as_str());
+                    for argument in arguments {
+                        crate::uniqueness_walk::visit(argument, &mut |nested| {
+                            excluded.insert(nested as *const Node);
+                        });
+                    }
                 }
             }
         }
         _ => {}
-    }
+    });
 
-    crate::uniqueness_walk::walk_children(node, &mut |child| {
-        walk_async_calls(child, async_fns, out)
+    crate::uniqueness_walk::visit(node, &mut |candidate| {
+        if excluded.contains(&(candidate as *const Node)) {
+            return;
+        }
+        if let Node::CallExpression { function, .. } = candidate {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                if async_fns.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
     });
 }
 
