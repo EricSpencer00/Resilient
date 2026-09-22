@@ -258,10 +258,7 @@ impl DmaDescriptor {
             });
         }
         if dest.checked_add(length).is_none() {
-            return Err(DmaError::DestRangeOverflow {
-                addr: dest,
-                length,
-            });
+            return Err(DmaError::DestRangeOverflow { addr: dest, length });
         }
         Ok(Self {
             source,
@@ -655,26 +652,14 @@ mod tests {
     fn descriptor_new_rejects_source_range_wrap() {
         let addr = usize::MAX - 3;
         let err = DmaDescriptor::new(addr, 0, 4, DmaWidth::Byte).unwrap_err();
-        assert_eq!(
-            err,
-            DmaError::SourceRangeOverflow {
-                addr,
-                length: 4,
-            }
-        );
+        assert_eq!(err, DmaError::SourceRangeOverflow { addr, length: 4 });
     }
 
     #[test]
     fn descriptor_new_rejects_destination_range_wrap() {
         let addr = usize::MAX - 3;
         let err = DmaDescriptor::new(0, addr, 4, DmaWidth::Byte).unwrap_err();
-        assert_eq!(
-            err,
-            DmaError::DestRangeOverflow {
-                addr,
-                length: 4,
-            }
-        );
+        assert_eq!(err, DmaError::DestRangeOverflow { addr, length: 4 });
     }
 
     #[test]
