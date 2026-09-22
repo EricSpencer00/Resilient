@@ -331,6 +331,22 @@ pub fn format_manifest_json(m: &Manifest) -> String {
         .unwrap_or_else(|_| "{}".to_string())
 }
 
+fn validate_manifest_cert_name(cert: &str) -> Result<(), String> {
+    if cert.is_empty()
+        || !cert.ends_with(".smt2")
+        || cert == "."
+        || cert == ".."
+        || cert.contains('/')
+        || cert.contains('\\')
+        || cert.contains(':')
+    {
+        return Err(format!(
+            "certificate path must be a single relative `.smt2` filename, got `{cert}`"
+        ));
+    }
+    Ok(())
+}
+
 /// RES-195: parse a `manifest.json` file's contents. Errors on
 /// missing required fields or type mismatches; tolerates (and
 /// ignores) extra fields so future schema versions don't break
@@ -373,8 +389,10 @@ pub fn parse_manifest_json(s: &str) -> Result<Manifest, String> {
         let cert = eobj
             .get("cert")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("obligation #{} missing `cert`", i))?
-            .to_string();
+            .ok_or_else(|| format!("obligation #{} missing `cert`", i))?;
+        validate_manifest_cert_name(cert)
+            .map_err(|e| format!("obligation #{} has invalid `cert`: {}", i, e))?;
+        let cert = cert.to_string();
         let sha256 = eobj
             .get("sha256")
             .and_then(|v| v.as_str())
