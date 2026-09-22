@@ -308,7 +308,7 @@ println(int_pow(5, 3));"#);
     fn int_pow_accepts_u32_max_exponent() {
         let result = super::builtin_int_pow(&[Value::Int(1), Value::Int(i64::from(u32::MAX))])
             .expect("u32::MAX is representable");
-        assert_eq!(result, Value::Int(1));
+        assert!(matches!(result, Value::Int(1)));
     }
 
     #[test]
