@@ -233,6 +233,9 @@ mod tests {
     use crate::Node;
     use crate::run_program;
     use crate::span::{Pos, Span, Spanned};
+    use crate::vm::OverflowMode;
+    use crate::{Interpreter, Value};
+    use std::collections::HashMap;
 
     fn run(src: &str) -> String {
         let r = run_program(src);
@@ -244,6 +247,26 @@ mod tests {
         let r = run_program(src);
         assert!(!r.ok, "expected error but program succeeded");
         r.errors.join("\n")
+    }
+
+    fn eval_const(src: &str, mode: OverflowMode) -> Result<Value, String> {
+        let (program, errors) = crate::parse(src);
+        assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+        let Node::Program(statements) = program else {
+            panic!("expected a program");
+        };
+        let Node::Const { value, .. } = &statements[0].node else {
+            panic!("expected a const declaration");
+        };
+        let mut evaluating = vec!["VALUE".to_string()];
+        Interpreter::eval_const_expr(value, &HashMap::new(), &mut evaluating, mode)
+    }
+
+    fn assert_const_int(result: Result<Value, String>, expected: i64) {
+        match result {
+            Ok(Value::Int(actual)) => assert_eq!(actual, expected),
+            other => panic!("expected integer constant, got {other:?}"),
+        }
     }
 
     fn pos(line: usize, column: usize) -> Pos {
@@ -520,6 +543,48 @@ println(to_string(a + b));
             err.contains("division") || err.contains("zero"),
             "expected division error, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn const_integer_arithmetic_obeys_overflow_mode() {
+        let max_plus_one = "const VALUE = 9223372036854775807 + 1;";
+        assert_const_int(eval_const(max_plus_one, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(eval_const(max_plus_one, OverflowMode::Saturate), i64::MAX);
+        assert!(
+            eval_const(max_plus_one, OverflowMode::Trap)
+                .unwrap_err()
+                .contains("integer overflow")
+        );
+
+        let min = "0 - 9223372036854775807 - 1";
+        let min_overflow = format!("const VALUE = -({min});");
+        assert_const_int(eval_const(&min_overflow, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(eval_const(&min_overflow, OverflowMode::Saturate), i64::MAX);
+        assert!(
+            eval_const(&min_overflow, OverflowMode::Trap)
+                .unwrap_err()
+                .contains("integer overflow")
+        );
+
+        let min_div_neg_one = format!("const VALUE = ({min}) / -1;");
+        assert_const_int(eval_const(&min_div_neg_one, OverflowMode::Wrap), i64::MIN);
+        assert_const_int(
+            eval_const(&min_div_neg_one, OverflowMode::Saturate),
+            i64::MAX,
+        );
+        assert!(
+            eval_const(&min_div_neg_one, OverflowMode::Trap)
+                .unwrap_err()
+                .contains("integer overflow")
+        );
+    }
+
+    #[test]
+    fn const_integer_shifts_reject_invalid_amounts_without_panicking() {
+        for src in ["const VALUE = 1 << -1;", "const VALUE = 1 << 64;"] {
+            let err = eval_const(src, OverflowMode::Wrap).unwrap_err();
+            assert!(err.contains("shift amount out of range"), "got: {err}");
+        }
     }
 
     #[test]
