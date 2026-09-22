@@ -479,12 +479,16 @@ fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, FnSignature>) -> Result
                 && let Some(signature) = sigs.get(&name)
             {
                 let label = format!("fn `{}`", name);
-                let lowered = resolve_with_defaults(
-                    &label,
-                    &signature.param_names,
-                    &signature.defaults,
-                    arguments,
-                )?;
+                let lowered = if signature.defaults.iter().all(|default| default.is_none()) {
+                    resolve(&label, &signature.param_names, arguments)?
+                } else {
+                    resolve_with_defaults(
+                        &label,
+                        &signature.param_names,
+                        &signature.defaults,
+                        arguments,
+                    )?
+                };
                 *arguments = lowered;
             }
             // Otherwise leave NamedArg nodes in place; the runtime
