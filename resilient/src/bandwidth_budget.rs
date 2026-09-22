@@ -224,6 +224,10 @@ mod tests {
                         value: i64::MAX,
                         span: crate::span::Span::default(),
                     },
+                    Node::IntegerLiteral {
+                        value: i64::MAX,
+                        span: crate::span::Span::default(),
+                    },
                 ],
                 span: crate::span::Span::default(),
             }],
