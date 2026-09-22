@@ -45,7 +45,7 @@ fn catch_accepts_failure_emitted_by_match_arm() {
         "match-arm failure should be catchable; stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stdout.contains("Type check passed") || stdout.is_empty(),
+        stdout.contains("Program executed successfully"),
         "strict typecheck should succeed; stdout={stdout} stderr={stderr}"
     );
 }
@@ -73,7 +73,7 @@ fn catch_accepts_failure_emitted_by_match_guard() {
         "match-guard failure should be catchable; stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stdout.contains("Type check passed") || stdout.is_empty(),
+        stdout.contains("Program executed successfully"),
         "strict typecheck should succeed; stdout={stdout} stderr={stderr}"
     );
 }
