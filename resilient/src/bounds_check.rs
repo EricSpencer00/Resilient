@@ -28,28 +28,29 @@
 
 use crate::Node;
 use crate::span::Span;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 
-/// RES-351: global flag set by the CLI when `--deny-unproven-bounds`
-/// is passed. The typechecker extension pass reads this once per
-/// program and converts unproven bounds into hard compile errors.
-///
-/// A process-global is used (rather than threading through the
-/// TypeChecker constructor) to keep the extension-point touch on
-/// `typechecker.rs` to a single line, per the feature-isolation
-/// pattern in CLAUDE.md.
-static DENY_UNPROVEN_BOUNDS: AtomicBool = AtomicBool::new(false);
+// RES-351: per-thread flag set by the CLI when `--deny-unproven-bounds`
+// is passed. The typechecker extension pass reads this once per
+// program and converts unproven bounds into hard compile errors.
+//
+// A thread-local flag keeps the extension-point touch on `typechecker.rs`
+// to a single line while preventing concurrent compiler tests from
+// leaking strict-mode state into one another.
+thread_local! {
+    static DENY_UNPROVEN_BOUNDS: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Enable `--deny-unproven-bounds` mode. Called from the `lib.rs` CLI
 /// dispatcher before `check_program_with_source` runs.
 pub fn set_deny_unproven_bounds(on: bool) {
-    DENY_UNPROVEN_BOUNDS.store(on, Ordering::Relaxed);
+    DENY_UNPROVEN_BOUNDS.with(|flag| flag.set(on));
 }
 
 /// True if the strict-deny flag is active for this process.
 fn deny_unproven_bounds() -> bool {
-    DENY_UNPROVEN_BOUNDS.load(Ordering::Relaxed)
+    DENY_UNPROVEN_BOUNDS.with(Cell::get)
 }
 
 /// Per-run counters populated by [`check_array_bounds`]. Exposed via
