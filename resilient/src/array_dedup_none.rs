@@ -9,30 +9,36 @@
 //! insertion order. `array_none` is the logical complement of `array_any`.
 
 use crate::{Interpreter, RResult, Value};
-use std::collections::HashSet;
-
 /// `array_dedup_by(arr, field)` — deduplicate an array of structs or maps,
 /// keeping the first element for each distinct value of `field`.
 pub(crate) fn builtin_array_dedup_by(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::String(field)] => {
-            let mut seen: HashSet<String> = HashSet::new();
+            let mut seen_values: Vec<&Value> = Vec::new();
+            let mut saw_absent = false;
             let mut out = Vec::new();
             for item in items {
-                let key_val = match item {
-                    Value::Struct { fields, .. } => fields
-                        .iter()
-                        .find(|(k, _)| k == field)
-                        .map(|(_, v)| v.to_string()),
-                    Value::Map(m) => m
-                        .get(&crate::MapKey::Str(field.to_string()))
-                        .map(|v| v.to_string()),
+                let field_value = match item {
+                    Value::Struct { fields, .. } => {
+                        fields.iter().find(|(k, _)| k == field).map(|(_, v)| v)
+                    }
+                    Value::Map(m) => m.get(&crate::MapKey::Str(field.clone())),
                     _ => None,
                 };
-                let key = key_val.unwrap_or_else(|| "__absent__".to_string());
-                if seen.insert(key) {
-                    out.push(item.clone());
+                let duplicate = match field_value {
+                    Some(value) => seen_values
+                        .iter()
+                        .any(|seen| crate::values_strict_eq(seen, value)),
+                    None => saw_absent,
+                };
+                if duplicate {
+                    continue;
                 }
+                match field_value {
+                    Some(value) => seen_values.push(value),
+                    None => saw_absent = true,
+                }
+                out.push(item.clone());
             }
             Ok(Value::Array(out))
         }
@@ -134,6 +140,46 @@ mod tests {
         } else {
             panic!("expected Array");
         }
+    }
+
+    #[test]
+    fn dedup_preserves_typed_values_and_missing_fields() {
+        let typed = Value::Array(vec![
+            make_struct(1, "integer"),
+            Value::Struct {
+                name: "Item".to_string(),
+                fields: vec![
+                    ("id".to_string(), Value::String("1".to_string())),
+                    ("name".to_string(), Value::String("string".to_string())),
+                ],
+            },
+        ]);
+        let typed_result =
+            builtin_array_dedup_by(&[typed, Value::String("id".to_string())]).unwrap();
+        let Value::Array(typed_items) = typed_result else {
+            panic!("expected Array");
+        };
+        assert_eq!(typed_items.len(), 2);
+
+        let missing = Value::Array(vec![
+            Value::Struct {
+                name: "Item".to_string(),
+                fields: vec![("name".to_string(), Value::String("missing".to_string()))],
+            },
+            Value::Struct {
+                name: "Item".to_string(),
+                fields: vec![
+                    ("id".to_string(), Value::String("__absent__".to_string())),
+                    ("name".to_string(), Value::String("present".to_string())),
+                ],
+            },
+        ]);
+        let missing_result =
+            builtin_array_dedup_by(&[missing, Value::String("id".to_string())]).unwrap();
+        let Value::Array(missing_items) = missing_result else {
+            panic!("expected Array");
+        };
+        assert_eq!(missing_items.len(), 2);
     }
 
     #[test]
