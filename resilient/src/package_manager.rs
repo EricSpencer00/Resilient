@@ -104,7 +104,7 @@ pub fn matches(constraint: &str, version: &str) -> bool {
         SemverRange::Exact => candidate == requested,
         SemverRange::Caret => {
             candidate >= requested
-                && caret_upper_bound(requested).map_or(true, |upper| candidate < upper)
+                && caret_upper_bound(requested).is_none_or(|upper| candidate < upper)
         }
         SemverRange::Tilde => {
             candidate >= requested && candidate.0 == requested.0 && candidate.1 == requested.1
