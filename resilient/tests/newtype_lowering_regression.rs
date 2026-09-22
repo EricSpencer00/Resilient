@@ -49,7 +49,7 @@ main();
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "2\n4\n",
+        "2\n4\nProgram executed successfully\n",
         "the reassigned and indexed newtype values must retain their payloads"
     );
 }
