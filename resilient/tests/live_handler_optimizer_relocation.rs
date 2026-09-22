@@ -4,11 +4,10 @@
 //! body. The tree-walker is the semantic oracle: the VM must retry from the
 //! same body start and preserve the observed result.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 fn run_source(tag: &str, vm: bool) -> std::process::Output {
-    let mut path = PathBuf::from(std::env::temp_dir());
+    let mut path = std::env::temp_dir();
     path.push(format!("res_4558_{tag}_{}.rz", std::process::id()));
     let source = r#"
         static let fails_left = 1;
