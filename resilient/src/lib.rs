@@ -105,6 +105,7 @@ mod iter_helpers;
 mod precision_math;
 // RES-1166: rounding builtins — round / trunc / round_to_int / trunc_to_int.
 // Pure leaf builtins; module-isolated.
+mod range_length;
 mod rounding;
 // RES-1154: set_is_empty / set_from_array / result_and / option_and.
 // Pure leaf builtins; module-isolated.
@@ -22014,11 +22015,13 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
                 inclusive,
             },
         ] => {
-            let count = if *inclusive {
-                (end - start + 1).max(0)
-            } else {
-                (end - start).max(0)
-            };
+            let count =
+                range_length::checked_range_len(*start, *end, *inclusive).ok_or_else(|| {
+                    format!(
+                        "len: range cardinality exceeds Int::MAX (start={}, end={}, inclusive={})",
+                        start, end, inclusive
+                    )
+                })?;
             Ok(Value::Int(count))
         }
         [other] => Err(format!(
