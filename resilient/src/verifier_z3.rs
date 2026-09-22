@@ -11,6 +11,7 @@
 //   - integer literals
 //   - identifiers (free or bound to a known integer in `bindings`)
 //   - +, -, *, /, %  on integers
+//   - scalar `match` expressions with integer literal / wildcard arms
 //   - ==, !=, <, >, <=, >=  comparisons
 //   - !, &&, ||  logical connectives
 //   - true, false
@@ -29,7 +30,7 @@
 //   - Z3Theory::Bv    — always use BV32
 //   - Z3Theory::Lia   — always use LIA (error if bitwise ops present)
 
-use crate::{ActorHandler, Node};
+use crate::{ActorHandler, Node, Pattern};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use z3::Sort;
@@ -2545,6 +2546,38 @@ pub(crate) fn translate_bool_pub<'c>(
     translate_bool(ctx, node, bindings)
 }
 
+/// Encode the conservative scalar-match subset used by the
+/// non-interference self-composition pass. Building the expression from the
+/// last arm backwards preserves first-match semantics while requiring a
+/// wildcard arm to cover every other integer value.
+fn translate_scalar_match_int<'c>(
+    ctx: &'c z3::Context,
+    scrutinee: &Node,
+    arms: &[(Pattern, Option<Node>, Node)],
+    bindings: &HashMap<String, i64>,
+) -> Option<Int<'c>> {
+    let scrutinee = translate_int(ctx, scrutinee, bindings)?;
+    let mut result = None;
+
+    for (pattern, guard, body) in arms.iter().rev() {
+        if guard.is_some() {
+            return None;
+        }
+        let value = translate_int(ctx, body, bindings)?;
+        match pattern {
+            Pattern::Wildcard => result = Some(value),
+            Pattern::Literal(Node::IntegerLiteral { value: literal, .. }) => {
+                let fallback = result?;
+                let condition = scrutinee._eq(&Int::from_i64(ctx, *literal));
+                result = Some(condition.ite(&value, &fallback));
+            }
+            _ => return None,
+        }
+    }
+
+    result
+}
+
 fn translate_bool<'c>(
     ctx: &'c z3::Context,
     node: &Node,
@@ -2678,6 +2711,9 @@ fn translate_int<'c>(
                 None
             }
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => translate_scalar_match_int(ctx, scrutinee, arms, bindings),
         _ => None,
     }
 }
@@ -5402,8 +5438,33 @@ fn ni_is_arith_fragment(node: &Node) -> bool {
         Node::InfixExpression { left, right, .. } => {
             ni_is_arith_fragment(left) && ni_is_arith_fragment(right)
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            !arms.is_empty()
+                && ni_is_arith_fragment(scrutinee)
+                && arms.iter().all(|(pattern, guard, body)| {
+                    guard.is_none()
+                        && ni_is_scalar_match_pattern(pattern)
+                        && ni_is_arith_fragment(body)
+                })
+                && arms
+                    .iter()
+                    .any(|(pattern, _, _)| matches!(pattern, Pattern::Wildcard))
+        }
         _ => false,
     }
+}
+
+/// The self-composition encoder deliberately handles only the scalar match
+/// subset that can be represented as a chain of integer equalities. Binding,
+/// range, enum, and guarded patterns remain advisory until their semantics are
+/// encoded explicitly.
+fn ni_is_scalar_match_pattern(pattern: &Pattern) -> bool {
+    matches!(
+        pattern,
+        Pattern::Wildcard | Pattern::Literal(Node::IntegerLiteral { .. })
+    )
 }
 
 /// Collect every identifier read in an arithmetic-fragment expression.
@@ -5416,6 +5477,14 @@ fn ni_collect_idents(node: &Node, out: &mut std::collections::HashSet<String>) {
         Node::InfixExpression { left, right, .. } => {
             ni_collect_idents(left, out);
             ni_collect_idents(right, out);
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            ni_collect_idents(scrutinee, out);
+            for (_, _, body) in arms {
+                ni_collect_idents(body, out);
+            }
         }
         _ => {}
     }
@@ -5458,6 +5527,24 @@ fn ni_rename_high(node: &Node, highs: &std::collections::HashSet<&str>) -> Node 
         } => Node::PrefixExpression {
             operator,
             right: Box::new(ni_rename_high(right, highs)),
+            span: *span,
+        },
+        Node::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Node::Match {
+            scrutinee: Box::new(ni_rename_high(scrutinee, highs)),
+            arms: arms
+                .iter()
+                .map(|(pattern, guard, body)| {
+                    (
+                        pattern.clone(),
+                        guard.as_ref().map(|guard| ni_rename_high(guard, highs)),
+                        ni_rename_high(body, highs),
+                    )
+                })
+                .collect(),
             span: *span,
         },
         other => other.clone(),
@@ -5588,6 +5675,38 @@ mod ni_selfcomp_tests {
         assert!(matches!(
             prove_noninterference(&e, &["b".to_string()]),
             NiOutcome::Leak { .. }
+        ));
+    }
+
+    #[test]
+    fn independent_when_scalar_match_arms_share_public_value() {
+        let e = return_expr(
+            "fn f(int low, int high) -> int { return match high { 0 => low, _ => low }; }\n",
+        );
+        assert_eq!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Independent
+        );
+    }
+
+    #[test]
+    fn leak_when_scalar_match_selects_different_values() {
+        let e = return_expr(
+            "fn f(int low, int high) -> int { return match high { 0 => low, _ => low + 1 }; }\n",
+        );
+        assert!(matches!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Leak { .. }
+        ));
+    }
+
+    #[test]
+    fn unsupported_scalar_match_pattern_stays_unknown() {
+        let e =
+            return_expr("fn f(int low, int high) -> int { return match high { value => low }; }\n");
+        assert!(matches!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Unknown(_)
         ));
     }
 }
