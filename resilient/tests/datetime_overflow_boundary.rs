@@ -15,7 +15,7 @@ struct DateTime {
 }
 
 let value = new DateTime {
-    year: -9223372036854775808,
+    year: -999999999,
     month: 1,
     day: 1,
     hour: 0,
