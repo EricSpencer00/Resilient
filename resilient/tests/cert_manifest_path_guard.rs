@@ -26,12 +26,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn write_manifest(dir: &Path, cert: &str, sha256: &str) {
+    let cert_json = serde_json::to_string(cert).expect("serialize certificate path");
     let manifest = format!(
         r#"{{
   "program": "test.rs",
   "obligations": [
     {{"fn": "foo", "kind": "ensures", "idx": 0,
-      "cert": "{cert}", "sha256": "{sha256}"}}
+      "cert": {cert_json}, "sha256": "{sha256}"}}
   ]
 }}"#
     );
