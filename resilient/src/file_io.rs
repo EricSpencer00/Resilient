@@ -50,6 +50,31 @@ type Backend = wasm_vfs::WasmFile;
 /// silently alias a freshly opened file.
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 
+// Keep the cap in the source integer domain so oversized values are rejected
+// before they can be narrowed to a target-specific `usize`.
+const MAX_FILE_READ_CHUNK: i64 = 10 * 1024 * 1024;
+
+fn checked_read_len(max: i64) -> Result<usize, String> {
+    if max < 0 {
+        return Err(format!(
+            "file_read_chunk: max_bytes must be non-negative, got {}",
+            max
+        ));
+    }
+    if max > MAX_FILE_READ_CHUNK {
+        return Err(format!(
+            "file_read_chunk: max_bytes {} too large (max {})",
+            max, MAX_FILE_READ_CHUNK
+        ));
+    }
+    usize::try_from(max).map_err(|_| {
+        format!(
+            "file_read_chunk: max_bytes {} is not representable on this target",
+            max
+        )
+    })
+}
+
 thread_local! {
     static REGISTRY: RefCell<HashMap<i64, Backend>> = RefCell::new(HashMap::new());
 }
@@ -166,13 +191,7 @@ pub(crate) fn builtin_file_read_chunk(args: &[Value]) -> RResult<Value> {
             ));
         }
     };
-    if max < 0 {
-        return Err(format!(
-            "file_read_chunk: max_bytes must be non-negative, got {}",
-            max
-        ));
-    }
-    let max_usize = max as usize;
+    let max_usize = checked_read_len(max)?;
     let result = REGISTRY.with(|r| -> Result<Vec<u8>, std::io::Error> {
         let mut reg = r.borrow_mut();
         let f = reg
