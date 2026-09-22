@@ -295,9 +295,7 @@ mod capacity_tests {
             Value::Int(1),
         ])
         .unwrap();
-        assert_eq!(
-            result,
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
-        );
+        assert!(matches!(result, Value::Array(values)
+            if matches!(values.as_slice(), [Value::Int(1), Value::Int(2), Value::Int(3)])));
     }
 }
