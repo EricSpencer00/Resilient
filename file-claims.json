@@ -84,14 +84,6 @@
       "branch": "res-4699-string-repeat-width",
       "claimed_at": "2026-09-20T20:41:14Z"
     },
-    "resilient/src/array_flatten_depth.rs": {
-      "branch": "res-4701-flatten-stack-safe",
-      "claimed_at": "2026-09-20T20:47:58Z"
-    },
-    "resilient/tests/array_flatten_depth_stack_safe.rs": {
-      "branch": "res-4701-flatten-stack-safe",
-      "claimed_at": "2026-09-20T20:47:58Z"
-    },
     "resilient/src/stdlib.rs": {
       "branch": "res-4702-range-boundary-main",
       "claimed_at": "2026-09-20T21:00:51Z"
