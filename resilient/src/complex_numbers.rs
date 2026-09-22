@@ -32,6 +32,34 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+/// Divide finite complex components without overflowing intermediate
+/// products. Scaling every component by the largest magnitude preserves the
+/// quotient while keeping the Smith-form division arithmetic in range.
+fn stable_complex_div(ar: f64, ai: f64, br: f64, bi: f64) -> (f64, f64) {
+    if [ar, ai, br, bi].iter().all(|v| v.is_finite()) {
+        let scale = ar.abs().max(ai.abs()).max(br.abs()).max(bi.abs());
+        if scale > 0.0 {
+            let ar = ar / scale;
+            let ai = ai / scale;
+            let br = br / scale;
+            let bi = bi / scale;
+            if br.abs() >= bi.abs() {
+                let ratio = bi / br;
+                let denom = br + ratio * bi;
+                return ((ar + ratio * ai) / denom, (ai - ratio * ar) / denom);
+            }
+            let ratio = br / bi;
+            let denom = bi + ratio * br;
+            return ((ar * ratio + ai) / denom, (ai * ratio - ar) / denom);
+        }
+    }
+
+    // Preserve the existing IEEE-754 behavior for non-finite inputs. The
+    // zero-denominator case is rejected by the caller before reaching here.
+    let denom = br * br + bi * bi;
+    ((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom)
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn to_f64(v: &Value, ctx: &str) -> RResult<f64> {
@@ -176,14 +204,11 @@ pub(crate) fn builtin_complex_div(args: &[Value]) -> RResult<Value> {
         [a, b] => {
             let (ar, ai) = unpack("complex_div", a)?;
             let (br, bi) = unpack("complex_div", b)?;
-            let denom = br * br + bi * bi;
-            if denom == 0.0 {
+            if br == 0.0 && bi == 0.0 {
                 return Err("complex_div: division by zero".to_string());
             }
-            Ok(pack(
-                (ar * br + ai * bi) / denom,
-                (ai * br - ar * bi) / denom,
-            ))
+            let (real, imag) = stable_complex_div(ar, ai, br, bi);
+            Ok(pack(real, imag))
         }
         _ => Err(format!(
             "complex_div: expected 2 arguments, got {}",
@@ -201,7 +226,7 @@ pub(crate) fn builtin_complex_abs(args: &[Value]) -> RResult<Value> {
     match args {
         [z] => {
             let (re, im) = unpack("complex_abs", z)?;
-            Ok(Value::Float((re * re + im * im).sqrt()))
+            Ok(Value::Float(re.hypot(im)))
         }
         _ => Err(format!(
             "complex_abs: expected 1 argument, got {}",
@@ -284,7 +309,7 @@ pub(crate) fn builtin_complex_ln(args: &[Value]) -> RResult<Value> {
     match args {
         [z] => {
             let (re, im) = unpack("complex_ln", z)?;
-            let r = (re * re + im * im).sqrt();
+            let r = re.hypot(im);
             if r == 0.0 {
                 return Err("complex_ln: logarithm of zero is undefined".to_string());
             }
@@ -306,7 +331,7 @@ pub(crate) fn builtin_complex_pow_real(args: &[Value]) -> RResult<Value> {
         [z, n_val] => {
             let (re, im) = unpack("complex_pow_real", z)?;
             let n = to_f64(n_val, "complex_pow_real: n")?;
-            let r = (re * re + im * im).sqrt();
+            let r = re.hypot(im);
             let theta = im.atan2(re);
             let rn = r.powf(n);
             Ok(pack(rn * (n * theta).cos(), rn * (n * theta).sin()))
@@ -325,7 +350,7 @@ pub(crate) fn builtin_complex_sqrt(args: &[Value]) -> RResult<Value> {
     match args {
         [z] => {
             let (re, im) = unpack("complex_sqrt", z)?;
-            let r = (re * re + im * im).sqrt();
+            let r = re.hypot(im);
             let new_r = r.sqrt();
             let theta = im.atan2(re) / 2.0;
             Ok(pack(new_r * theta.cos(), new_r * theta.sin()))
@@ -482,6 +507,19 @@ println(complex_imag(c));"#);
     }
 
     #[test]
+    fn complex_div_large_finite_operands_stays_finite() {
+        let r = run(
+            r#"let c = complex_div(complex(1e308, 1e308), complex(1e308, 1e308));
+println(complex_real(c));
+println(complex_imag(c));"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.trim().lines().collect();
+        assert!(approx(lines[0], 1.0), "re={}", lines[0]);
+        assert!(approx(lines[1], 0.0), "im={}", lines[1]);
+    }
+
+    #[test]
     fn complex_div_by_zero_errors() {
         let r = run(r#"complex_div(complex(1.0, 1.0), complex(0.0, 0.0));"#);
         assert!(!r.ok, "expected error for division by zero");
@@ -495,6 +533,15 @@ println(complex_imag(c));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let line = r.stdout.trim();
         assert!(approx(line, 5.0), "got {line}");
+    }
+
+    #[test]
+    fn complex_abs_large_finite_components_stays_finite() {
+        let r = run(r#"println(complex_abs(complex(1e308, 1e308)));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let magnitude = r.stdout.trim().parse::<f64>().expect("float output");
+        assert!(magnitude.is_finite(), "magnitude={magnitude}");
+        assert!((magnitude / 1e308 - 2.0_f64.sqrt()).abs() < 1e-15);
     }
 
     #[test]
