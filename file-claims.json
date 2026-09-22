@@ -196,10 +196,6 @@
       "branch": "res-4788-range-max-inclusive",
       "claimed_at": "2026-09-20T23:40:52Z"
     },
-    "resilient/src/recovery_checker.rs": {
-      "branch": "res-4795-recovery-checker-structured",
-      "claimed_at": "2026-09-21T00:07:19Z"
-    },
     "resilient/src/array_dedup_none.rs": {
       "branch": "res-4797-array-dedup-identity",
       "claimed_at": "2026-09-21T00:08:32Z"
