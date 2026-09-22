@@ -753,7 +753,7 @@ fn rewrite_node(
                 .iter()
                 .map(|i| rewrite_node(i, generic_fns, instantiations))
                 .collect(),
-            backoff: backoff.clone(),
+            backoff: *backoff,
             backoff_kind: *backoff_kind,
             timeout: timeout
                 .as_ref()
