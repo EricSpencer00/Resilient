@@ -396,6 +396,31 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
 const MAX_CALL_DEPTH: usize = 1024;
 const MAX_STRING_REPEAT: usize = 10_000_000;
 
+/// Validate a string repetition count before converting it to the target's
+/// pointer-sized representation or calculating the output length.
+fn checked_string_repeat_count(s: &str, n: i64) -> Result<usize, VmError> {
+    if n < 0 {
+        return Err(VmError::BuiltinCallFailed(format!(
+            "string repetition count must be >= 0, got {}",
+            n
+        )));
+    }
+    let count = usize::try_from(n).map_err(|_| {
+        VmError::BuiltinCallFailed(format!(
+            "string repetition count {} does not fit target usize",
+            n
+        ))
+    })?;
+    let total = s.len().saturating_mul(count);
+    if total > MAX_STRING_REPEAT {
+        return Err(VmError::BuiltinCallFailed(format!(
+            "string repeat: result length {} exceeds limit {}",
+            total, MAX_STRING_REPEAT
+        )));
+    }
+    Ok(count)
+}
+
 /// Validate the local window before a call path writes arguments into it.
 /// `Function` values are public and can come from cached or hand-built
 /// bytecode, so the compiler's normal arity invariant is not sufficient at
@@ -1150,20 +1175,8 @@ fn run_dispatch_loop(
                     }
                     (Value::String(ref s), Value::Int(n))
                     | (Value::Int(n), Value::String(ref s)) => {
-                        if n < 0 {
-                            return Err(VmError::BuiltinCallFailed(format!(
-                                "string repetition count must be >= 0, got {}",
-                                n
-                            )));
-                        }
-                        let total = s.len().saturating_mul(n as usize);
-                        if total > MAX_STRING_REPEAT {
-                            return Err(VmError::BuiltinCallFailed(format!(
-                                "string repeat: result length {} exceeds limit {}",
-                                total, MAX_STRING_REPEAT
-                            )));
-                        }
-                        stack.push(Value::String(s.repeat(n as usize)));
+                        let count = checked_string_repeat_count(s, n)?;
+                        stack.push(Value::String(s.repeat(count)));
                     }
                     // RES-3994: `impl Mul for T` operator overload (see Add above).
                     (a, b) => {
@@ -4266,20 +4279,8 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             state.stack.push(Value::Float(x * y));
         }
         (Value::String(ref s), Value::Int(n)) | (Value::Int(n), Value::String(ref s)) => {
-            if n < 0 {
-                return Err(VmError::BuiltinCallFailed(format!(
-                    "string repetition count must be >= 0, got {}",
-                    n
-                )));
-            }
-            let total = s.len().saturating_mul(n as usize);
-            if total > MAX_STRING_REPEAT {
-                return Err(VmError::BuiltinCallFailed(format!(
-                    "string repeat: result length {} exceeds limit {}",
-                    total, MAX_STRING_REPEAT
-                )));
-            }
-            state.stack.push(Value::String(s.repeat(n as usize)));
+            let count = checked_string_repeat_count(s, n)?;
+            state.stack.push(Value::String(s.repeat(count)));
         }
         // RES-3994: `impl Mul for T` operator overload (see h_add above).
         (a, b) => {
@@ -9588,6 +9589,47 @@ mod tests {
     fn res2534_string_repeat_ok_both_dispatch() {
         let src = r#""ab" * 3"#;
         assert_both_eq(src);
+    }
+
+    #[test]
+    fn res4699_string_repeat_rejects_negative_counts_in_both_dispatchers() {
+        let (match_result, direct_result) = run_both("\"x\" * -1;");
+        for result in [match_result, direct_result] {
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err.kind(),
+                    VmError::BuiltinCallFailed(message)
+                        if message.contains("repetition count must be >= 0")
+                ),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn res4699_string_repeat_rejects_narrow_target_overflow_before_repeat() {
+        let count = i64::from(u32::MAX) + 1;
+        let source = format!("\"x\" * {count};");
+        let (match_result, direct_result) = run_both(&source);
+        for result in [match_result, direct_result] {
+            let err = result.unwrap_err();
+            let message = match err.kind() {
+                VmError::BuiltinCallFailed(message) => message,
+                other => panic!("unexpected error: {other:?}"),
+            };
+            if usize::BITS == 32 {
+                assert!(
+                    message.contains("does not fit target usize"),
+                    "narrow target must reject the conversion: {message}"
+                );
+            } else {
+                assert!(
+                    message.contains("exceeds limit"),
+                    "wide target should reach the output cap: {message}"
+                );
+            }
+        }
     }
 
     // ── RES-2536: closure upvalue mutation ───────────────────────────────
