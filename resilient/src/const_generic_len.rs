@@ -192,6 +192,7 @@ fn find_return_literal_mismatch(node: &Node, want: usize) -> Option<(usize, Span
         Node::Block { stmts, .. } => stmts
             .iter()
             .find_map(|s| find_return_literal_mismatch(s, want)),
+        Node::ExpressionStatement { expr, .. } => find_return_literal_mismatch(expr.as_ref(), want),
         Node::IfStatement {
             consequence,
             alternative,
@@ -205,6 +206,25 @@ fn find_return_literal_mismatch(node: &Node, want: usize) -> Option<(usize, Span
         Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => {
             find_return_literal_mismatch(body.as_ref(), want)
         }
+        Node::Match { arms, .. } => arms
+            .iter()
+            .find_map(|(_, _, body)| find_return_literal_mismatch(body, want)),
+        Node::TryCatch { body, handlers, .. } => body
+            .iter()
+            .find_map(|stmt| find_return_literal_mismatch(stmt, want))
+            .or_else(|| {
+                handlers.iter().find_map(|(_, handler_body)| {
+                    handler_body
+                        .iter()
+                        .find_map(|stmt| find_return_literal_mismatch(stmt, want))
+                })
+            }),
+        Node::LiveBlock { body, .. }
+        | Node::UnsafeBlock { body, .. }
+        | Node::BenchBlock { body, .. } => find_return_literal_mismatch(body.as_ref(), want),
+        // A nested function's return annotation governs its own body;
+        // never attribute its literal returns to the enclosing function.
+        Node::Function { .. } | Node::FunctionLiteral { .. } => None,
         _ => None,
     }
 }
@@ -298,6 +318,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("3 element(s)"), "got: {err}");
+    }
+
+    #[test]
+    fn return_literal_in_match_arm_rejected() {
+        let err = typecheck(
+            "fn make(int tag) -> [int; 2] { match tag { 0 => { return [1, 2, 3]; }, _ => { return [4, 5]; } } }\nfn main() { make(0); }\nmain();\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("3 element(s)"), "got: {err}");
+        assert!(err.contains("`make` returns `[int; 2]`"), "got: {err}");
+    }
+
+    #[test]
+    fn return_literal_in_try_body_and_handler_is_checked() {
+        let err = typecheck(
+            "fn make() -> [int; 2] { try { return [1, 2, 3]; } catch Timeout { return [4, 5, 6]; } }\nfn main() { make(); }\nmain();\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("3 element(s)"), "got: {err}");
+    }
+
+    #[test]
+    fn nested_function_literal_returns_are_not_attributed_to_outer() {
+        typecheck(
+            "fn outer() -> [int; 2] { let inner = fn() -> [int; 3] { return [1, 2, 3]; }; return [4, 5]; }\nfn main() { outer(); }\nmain();\n",
+        )
+        .unwrap();
     }
 
     #[test]
