@@ -670,11 +670,11 @@ impl<'a> JsonParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        nesting_limit_error, serialize_value, serialize_value_pretty, JsonParser,
-        MAX_JSON_NESTING_DEPTH,
+        JsonParser, MAX_JSON_NESTING_DEPTH, nesting_limit_error, serialize_value,
+        serialize_value_pretty,
     };
-    use crate::run_program;
     use crate::Value;
+    use crate::run_program;
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
@@ -981,13 +981,17 @@ println(type_of(v));"#);
             serialize_value(&beyond_limit, 0).unwrap_err(),
             nesting_limit_error("to_json")
         );
-        assert!(serialize_value_pretty(&beyond_limit, 0)
-            .unwrap_err()
-            .contains("maximum nesting depth"));
+        assert!(
+            serialize_value_pretty(&beyond_limit, 0)
+                .unwrap_err()
+                .contains("maximum nesting depth")
+        );
 
         let deeply_wrapped = nested_option(MAX_JSON_NESTING_DEPTH + 1);
-        assert!(serialize_value(&deeply_wrapped, 0)
-            .unwrap_err()
-            .contains("maximum nesting depth"));
+        assert!(
+            serialize_value(&deeply_wrapped, 0)
+                .unwrap_err()
+                .contains("maximum nesting depth")
+        );
     }
 }
