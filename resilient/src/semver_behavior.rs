@@ -106,6 +106,16 @@ pub fn classify(old_program: &Node, new_program: &Node) -> SemverDecision {
                 }
                 reasons.push(format!("strengthened contract on `{function}`"));
             }
+            SemanticChange::FailsRemoved { function, variant } => {
+                kind = SemverKind::Major;
+                reasons.push(format!(
+                    "removed failure variant `{variant}` from `{function}`"
+                ));
+            }
+            SemanticChange::FailsAdded { function, variant } => {
+                kind = SemverKind::Major;
+                reasons.push(format!("added failure variant `{variant}` to `{function}`"));
+            }
         }
     }
 
@@ -172,6 +182,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     }
                     reasons.push(format!("strengthened contract on `{function}`"));
                 }
+                SemanticChange::FailsRemoved { function, variant } => {
+                    kind = SemverKind::Major;
+                    reasons.push(format!(
+                        "removed failure variant `{variant}` from `{function}`"
+                    ));
+                }
+                SemanticChange::FailsAdded { function, variant } => {
+                    kind = SemverKind::Major;
+                    reasons.push(format!("added failure variant `{variant}` to `{function}`"));
+                }
             }
         }
 
@@ -235,6 +255,22 @@ mod tests {
         let (p1, _) = parse(s1);
         let (p2, _) = parse(s2);
         assert_eq!(classify(&p1, &p2).kind, SemverKind::Patch);
+    }
+
+    #[test]
+    fn fails_variant_change_is_major() {
+        let s1 = r#"fn read_sensor(int addr) fails Timeout { return addr; }"#;
+        let s2 = r#"fn read_sensor(int addr) fails HardwareFault { return addr; }"#;
+        let (p1, _) = parse(s1);
+        let (p2, _) = parse(s2);
+        let decision = classify(&p1, &p2);
+        assert_eq!(decision.kind, SemverKind::Major);
+        assert!(
+            decision
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("failure variant"))
+        );
     }
 
     #[test]

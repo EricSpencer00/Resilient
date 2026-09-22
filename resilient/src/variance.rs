@@ -225,6 +225,9 @@ fn walk_type(
                 walk_type(ty, position, tp_set, vmap);
             }
         }
+        Type::TypedArray(inner) | Type::Option(inner) => {
+            walk_type(inner, position, tp_set, vmap);
+        }
         // Primitive and opaque types contain no type-parameter references.
         _ => {}
     }
@@ -355,6 +358,12 @@ fn parse_type_annotation(s: &str) -> Type {
         if elems.len() > 1 {
             return Type::Tuple(elems.into_iter().map(parse_type_annotation).collect());
         }
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("array<")
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        return Type::TypedArray(Box::new(parse_type_annotation(inner)));
     }
     match trimmed {
         "int" | "Int" | "Int64" => Type::Int,

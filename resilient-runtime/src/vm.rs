@@ -536,6 +536,11 @@ pub enum VmError {
     /// bound will eventually hit this rather than grow unbounded
     /// memory or panic.
     ClosureCapacityExceeded,
+    /// RES-4579 (D-E1 tail, closures): a `Value::Closure` referred to a
+    /// capture slab slot that has not been allocated by `MakeClosure`.
+    /// Rejecting the handle before reading the fixed arena keeps forged
+    /// bytecode from observing zero-initialized capture state as real data.
+    InvalidClosureHandle(u16),
     /// RES-4083 (D-E1 tail, packed locals slab): a new frame's
     /// locals window would run past the `Vm`'s shared `SLAB`
     /// capacity. The typed substitute for growing the packed pool —
@@ -773,6 +778,9 @@ impl<
         // table, matching the pre-slab behaviour exactly.
         if idx as usize >= LOCALS {
             return Err(VmError::LocalsOutOfBounds);
+        }
+        if CALLS == 0 {
+            return Err(VmError::CallStackOverflow);
         }
         let abs = self.frame_base[self.frame] + idx as usize;
         match self.locals.get_mut(abs) {
@@ -1078,6 +1086,9 @@ impl<
                         return Err(VmError::InvalidFunctionLayout(func_idx));
                     }
                     Self::validate_function_layout(func_idx, f, required_locals)?;
+                    if slab_idx as usize >= self.closure_top {
+                        return Err(VmError::InvalidClosureHandle(slab_idx));
+                    }
                     let captures = self
                         .closure_slab
                         .get(slab_idx as usize)
@@ -1199,6 +1210,15 @@ impl<
                 }
                 Instr::Return => {
                     let v = self.pop()?;
+                    // A malformed or hand-authored function can return
+                    // before its `ExitTry`. Those handlers belong to this
+                    // frame and must not remain visible to the caller (or
+                    // to a postcheck running before the frame is popped).
+                    while self.try_sp > 0
+                        && self.try_stack[self.try_sp - 1].call_depth >= self.frame
+                    {
+                        self.try_sp -= 1;
+                    }
                     // RES-4083 (D-E1 tail): `current_func` at this
                     // point still names the function whose body is
                     // returning (it's only reassigned below, to the
@@ -2779,6 +2799,33 @@ mod tests {
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::TypeMismatch("call closure"))
+        );
+    }
+
+    #[test]
+    fn forged_closure_handle_cannot_read_unallocated_capture_slot() {
+        let callee = [Instr::LoadLocal(0), Instr::Return];
+        let functions = [FunctionDef {
+            code: &callee,
+            arity: 0,
+            local_count: 1,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Closure {
+                func_idx: 0,
+                slab_idx: 0,
+            }),
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidClosureHandle(0))
         );
     }
 

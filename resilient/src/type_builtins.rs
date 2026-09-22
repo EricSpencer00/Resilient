@@ -6,7 +6,7 @@
 //! * `array_from_fn(n, fn)` — build an Array of `n` elements by calling
 //!   `fn(i)` for `i` in `0..(n-1)`.
 
-use crate::{Interpreter, Value};
+use crate::{Interpreter, Value, collection_extras::MAX_GENERATED_ELEMENTS};
 
 type RResult<T> = Result<T, String>;
 
@@ -157,8 +157,18 @@ pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) ->
         return Err(format!("array_from_fn: n must be >= 0, got {n}"));
     }
 
-    let mut out = Vec::with_capacity(n as usize);
-    for i in 0..n {
+    let n = usize::try_from(n)
+        .map_err(|_| "array_from_fn: n does not fit the target usize".to_string())?;
+    if n > MAX_GENERATED_ELEMENTS {
+        return Err(format!(
+            "array_from_fn: requested {n} elements exceeds the maximum of {MAX_GENERATED_ELEMENTS}"
+        ));
+    }
+    let count = i64::try_from(n)
+        .map_err(|_| "array_from_fn: n does not fit the integer callback index".to_string())?;
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..count {
         out.push(interp.apply_function(&f, vec![Value::Int(i)])?);
     }
     Ok(Value::Array(out))
@@ -310,5 +320,21 @@ println(arr[2]);"#,
 println(arr);"#,
         );
         assert!(!r.ok, "expected error for negative n");
+    }
+
+    #[test]
+    fn array_from_fn_rejects_oversized_count_before_callback() {
+        let r = run(
+            r#"let arr = array_from_fn(10000001, fn(int i) -> int { return i; });
+println(arr);"#,
+        );
+        assert!(!r.ok, "expected oversized count error");
+        assert!(
+            r.errors
+                .iter()
+                .any(|error| error.contains("exceeds the maximum")),
+            "errors: {:?}",
+            r.errors
+        );
     }
 }

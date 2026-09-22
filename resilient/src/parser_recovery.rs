@@ -53,25 +53,39 @@ pub(crate) fn starts_top_level_item(tok: &Token) -> bool {
     matches!(
         tok,
         Token::Function
+            | Token::HashLeftBracket
+            | Token::Pub
             | Token::Let
             | Token::Static
             | Token::Const
             | Token::Struct
             | Token::Impl
             | Token::Type
+            | Token::Newtype
             | Token::Region
             | Token::Actor
+            | Token::Supervisor
+            | Token::Trait
+            | Token::Enum
             | Token::Extern
             | Token::Use
+            | Token::Mod
+            | Token::Unsafe
             | Token::If
             | Token::While
             | Token::For
+            | Token::Loop
+            | Token::Break
+            | Token::Continue
             | Token::Return
+            | Token::Defer
             | Token::Assert
             | Token::Assume
             | Token::StaticAssert
             | Token::Live
             | Token::Try
+            | Token::Bench
+            | Token::Match
             | Token::At
     )
 }
@@ -116,9 +130,34 @@ mod tests {
     }
 
     #[test]
-    fn block_scope_includes_invariant() {
+    fn block_scope_includes_all_statement_starters() {
         assert!(starts_block_statement(&Token::Invariant));
-        // And every top-level starter remains valid in block scope.
+        // Keep recovery aligned with every keyword arm in parse_statement.
+        // These were previously skipped after a preceding syntax error,
+        // hiding the valid statement and any diagnostics it would produce.
+        let starters = [
+            Token::HashLeftBracket,
+            Token::Pub,
+            Token::Newtype,
+            Token::Supervisor,
+            Token::Trait,
+            Token::Enum,
+            Token::Unsafe,
+            Token::Mod,
+            Token::Loop,
+            Token::Break,
+            Token::Continue,
+            Token::Defer,
+            Token::Bench,
+            Token::Match,
+        ];
+        for token in starters {
+            assert!(
+                starts_block_statement(&token),
+                "missing recovery starter: {token:?}"
+            );
+        }
+        // And ordinary declaration/control-flow starters remain covered.
         assert!(starts_block_statement(&Token::Let));
         assert!(starts_block_statement(&Token::If));
     }

@@ -20,19 +20,29 @@
 
 use crate::{RResult, Value};
 
+fn positive_usize(name: &str, n: i64) -> RResult<usize> {
+    if n <= 0 {
+        return Err(format!("{name}: parameter must be positive, got {n}"));
+    }
+    usize::try_from(n)
+        .map_err(|_| format!("{name}: parameter {n} does not fit in the target usize"))
+}
+
+fn nonnegative_usize(name: &str, n: i64) -> RResult<usize> {
+    if n < 0 {
+        return Err(format!("{name}: parameter must be non-negative, got {n}"));
+    }
+    usize::try_from(n)
+        .map_err(|_| format!("{name}: parameter {n} does not fit in the target usize"))
+}
+
 /// `array_chunks(arr, n) -> Array[Array]` — split `arr` into
 /// non-overlapping sub-arrays of length `n`. If `len` is not divisible
 /// by `n`, the last chunk is shorter. `n` must be positive.
 pub(crate) fn builtin_array_chunks(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(n)] => {
-            if *n <= 0 {
-                return Err(format!(
-                    "array_chunks: chunk size must be positive, got {}",
-                    n
-                ));
-            }
-            let size = *n as usize;
+            let size = positive_usize("array_chunks", *n)?;
             let chunks: Vec<Value> = items
                 .chunks(size)
                 .map(|c| Value::Array(c.to_vec()))
@@ -57,13 +67,7 @@ pub(crate) fn builtin_array_chunks(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_chunks_exact(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(n)] => {
-            if *n <= 0 {
-                return Err(format!(
-                    "array_chunks_exact: chunk size must be positive, got {}",
-                    n
-                ));
-            }
-            let size = *n as usize;
+            let size = positive_usize("array_chunks_exact", *n)?;
             let chunks: Vec<Value> = items
                 .chunks_exact(size)
                 .map(|c| Value::Array(c.to_vec()))
@@ -87,10 +91,7 @@ pub(crate) fn builtin_array_chunks_exact(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_step(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(n)] => {
-            if *n <= 0 {
-                return Err(format!("array_step: stride must be positive, got {}", n));
-            }
-            let stride = *n as usize;
+            let stride = positive_usize("array_step", *n)?;
             let stepped: Vec<Value> = items.iter().step_by(stride).cloned().collect();
             Ok(Value::Array(stepped))
         }
@@ -113,17 +114,12 @@ pub(crate) fn builtin_array_step(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_rotate_left(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!(
-                    "array_rotate_left: count must be non-negative, got {}",
-                    n
-                ));
-            }
+            let count = nonnegative_usize("array_rotate_left", *n)?;
             if items.is_empty() {
                 return Ok(Value::Array(Vec::new()));
             }
             let len = items.len();
-            let shift = (*n as usize) % len;
+            let shift = count % len;
             let mut out = Vec::with_capacity(len);
             out.extend_from_slice(&items[shift..]);
             out.extend_from_slice(&items[..shift]);
@@ -146,17 +142,12 @@ pub(crate) fn builtin_array_rotate_left(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_rotate_right(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!(
-                    "array_rotate_right: count must be non-negative, got {}",
-                    n
-                ));
-            }
+            let count = nonnegative_usize("array_rotate_right", *n)?;
             if items.is_empty() {
                 return Ok(Value::Array(Vec::new()));
             }
             let len = items.len();
-            let shift = (*n as usize) % len;
+            let shift = count % len;
             // Right-by-shift = left-by-(len - shift).
             let split = len - shift;
             let mut out = Vec::with_capacity(len);
@@ -291,6 +282,27 @@ mod tests {
         assert!(err.contains("must be positive"));
         let err = builtin_array_step(&[ints(&[1, 2]), Value::Int(-3)]).unwrap_err();
         assert!(err.contains("must be positive"));
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn rejects_parameters_that_do_not_fit_target_usize() {
+        let too_large = Value::Int(i64::from(u32::MAX) + 1);
+        let values = [
+            (builtin_array_chunks, "array_chunks"),
+            (builtin_array_chunks_exact, "array_chunks_exact"),
+            (builtin_array_step, "array_step"),
+            (builtin_array_rotate_left, "array_rotate_left"),
+            (builtin_array_rotate_right, "array_rotate_right"),
+        ];
+
+        for (builtin, name) in values {
+            let err = builtin(&[ints(&[1, 2, 3]), too_large.clone()]).unwrap_err();
+            assert!(
+                err.contains("does not fit in the target usize"),
+                "{name} should reject a target-width overflow: {err}"
+            );
+        }
     }
 
     #[test]

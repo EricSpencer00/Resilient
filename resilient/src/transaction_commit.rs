@@ -99,6 +99,10 @@ enum PathClose {
 /// Returns the close status for `node` as a complete subtree.
 /// The caller receives a value that describes whether every exit is covered.
 fn all_paths_close(node: &Node, tx: &str) -> PathClose {
+    if is_close_stmt(node, tx) {
+        return PathClose::AlwaysCloses;
+    }
+
     match node {
         Node::Block { stmts, .. } => block_paths_close(stmts, tx),
         Node::IfStatement {
@@ -139,8 +143,80 @@ fn all_paths_close(node: &Node, tx: &str) -> PathClose {
                 PathClose::NeverCloses
             }
         }
-        Node::ReturnStatement { .. } => PathClose::NeverCloses,
+        Node::TryCatch { body, handlers, .. } => {
+            let mut branches = Vec::with_capacity(handlers.len() + 1);
+            branches.push(block_paths_close(body, tx));
+            branches.extend(
+                handlers
+                    .iter()
+                    .map(|(_, stmts)| block_paths_close(stmts, tx)),
+            );
+            merge_branches(branches)
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrutinee_status = all_paths_close(scrutinee, tx);
+            if scrutinee_status == PathClose::UnclosedExit {
+                return PathClose::UnclosedExit;
+            }
+            let arm_statuses = arms.iter().map(|(_, guard, body)| {
+                let body_status = all_paths_close(body, tx);
+                guard.as_ref().map_or(body_status, |guard| {
+                    sequence_status(all_paths_close(guard, tx), body_status)
+                })
+            });
+            sequence_status(scrutinee_status, merge_branches(arm_statuses))
+        }
+        Node::ExpressionStatement { expr, .. }
+        | Node::LetStatement { value: expr, .. }
+        | Node::Assignment { value: expr, .. } => all_paths_close(expr, tx),
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            if all_paths_close(value, tx) == PathClose::AlwaysCloses {
+                PathClose::AlwaysCloses
+            } else {
+                PathClose::UnclosedExit
+            }
+        }
+        Node::ReturnStatement { .. } => PathClose::UnclosedExit,
         _ => PathClose::NeverCloses,
+    }
+}
+
+/// Merge alternative control-flow branches. A branch that returns before
+/// closing is always a hard failure; a mixture of closed and fall-through
+/// branches is not fully covered either.
+fn merge_branches(branches: impl IntoIterator<Item = PathClose>) -> PathClose {
+    let mut saw_branch = false;
+    let mut all_closed = true;
+    for status in branches {
+        saw_branch = true;
+        if status != PathClose::AlwaysCloses {
+            all_closed = false;
+        }
+        if status == PathClose::UnclosedExit {
+            return PathClose::UnclosedExit;
+        }
+    }
+    if saw_branch && all_closed {
+        PathClose::AlwaysCloses
+    } else if saw_branch {
+        PathClose::UnclosedExit
+    } else {
+        PathClose::NeverCloses
+    }
+}
+
+/// Compose two sequential pieces of control flow. A close in the prefix
+/// covers everything that follows; otherwise the suffix determines whether
+/// the path is covered.
+fn sequence_status(prefix: PathClose, suffix: PathClose) -> PathClose {
+    match prefix {
+        PathClose::AlwaysCloses => PathClose::AlwaysCloses,
+        PathClose::UnclosedExit => PathClose::UnclosedExit,
+        PathClose::NeverCloses => suffix,
     }
 }
 
@@ -195,6 +271,49 @@ fn block_paths_close(stmts: &[Node], tx: &str) -> PathClose {
                     return PathClose::UnclosedExit;
                 }
             }
+            Node::TryCatch { body, handlers, .. } => {
+                let mut all_closed = true;
+                for stmts in std::iter::once(body).chain(handlers.iter().map(|(_, stmts)| stmts)) {
+                    match block_paths_close(stmts, tx) {
+                        PathClose::AlwaysCloses => {}
+                        PathClose::NeverCloses => all_closed = false,
+                        PathClose::UnclosedExit => return PathClose::UnclosedExit,
+                    }
+                }
+                if all_closed {
+                    closed = true;
+                }
+            }
+            Node::Match {
+                scrutinee, arms, ..
+            } => match all_paths_close(scrutinee, tx) {
+                PathClose::AlwaysCloses => closed = true,
+                PathClose::UnclosedExit => return PathClose::UnclosedExit,
+                PathClose::NeverCloses => {
+                    let mut all_closed = true;
+                    for (_, guard, arm_body) in arms {
+                        let arm_status = all_paths_close(arm_body, tx);
+                        let arm_status = guard.as_ref().map_or(arm_status, |guard| {
+                            sequence_status(all_paths_close(guard, tx), arm_status)
+                        });
+                        match arm_status {
+                            PathClose::AlwaysCloses => {}
+                            PathClose::NeverCloses => all_closed = false,
+                            PathClose::UnclosedExit => return PathClose::UnclosedExit,
+                        }
+                    }
+                    if all_closed && !arms.is_empty() {
+                        closed = true;
+                    }
+                }
+            },
+            Node::ExpressionStatement { expr, .. }
+            | Node::LetStatement { value: expr, .. }
+            | Node::Assignment { value: expr, .. } => match all_paths_close(expr, tx) {
+                PathClose::AlwaysCloses => closed = true,
+                PathClose::UnclosedExit => return PathClose::UnclosedExit,
+                PathClose::NeverCloses => {}
+            },
             Node::Block { stmts: inner, .. } => {
                 let inner_result = block_paths_close(inner, tx);
                 if inner_result == PathClose::UnclosedExit {
@@ -262,6 +381,20 @@ fn has_return(node: &Node) -> bool {
             ..
         } => has_return(consequence) || alternative.as_ref().is_some_and(|a| has_return(a)),
         Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => has_return(body),
+        Node::TryCatch { body, handlers, .. } => {
+            body.iter().any(has_return)
+                || handlers
+                    .iter()
+                    .any(|(_, stmts)| stmts.iter().any(has_return))
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            has_return(scrutinee)
+                || arms.iter().any(|(_, guard, body)| {
+                    guard.as_ref().is_some_and(has_return) || has_return(body)
+                })
+        }
         _ => false,
     }
 }
@@ -389,5 +522,95 @@ fn save(Transaction tx, bool ok) {
             panic!()
         };
         assert_eq!(all_paths_close(body, "tx"), PathClose::UnclosedExit);
+    }
+
+    fn function_body(src: &str) -> Node {
+        let (prog, _) = parse(src);
+        let Node::Program(mut stmts) = prog else {
+            panic!()
+        };
+        let stmt = stmts.remove(0);
+        let Node::Function { body, .. } = stmt.node else {
+            panic!()
+        };
+        *body
+    }
+
+    #[test]
+    fn path_analysis_try_body_return_is_unclosed() {
+        let body = function_body(
+            r#"
+fn save(Transaction tx) {
+    try {
+        return;
+    } catch Timeout {
+        commit(tx);
+    }
+}
+"#,
+        );
+        assert_eq!(all_paths_close(&body, "tx"), PathClose::UnclosedExit);
+    }
+
+    #[test]
+    fn path_analysis_catch_return_is_unclosed() {
+        let body = function_body(
+            r#"
+fn save(Transaction tx) {
+    try {
+        commit(tx);
+    } catch Timeout {
+        return;
+    }
+}
+"#,
+        );
+        assert_eq!(all_paths_close(&body, "tx"), PathClose::UnclosedExit);
+    }
+
+    #[test]
+    fn path_analysis_try_and_catch_both_close() {
+        let body = function_body(
+            r#"
+fn save(Transaction tx) {
+    try {
+        commit(tx);
+    } catch Timeout {
+        rollback(tx);
+    }
+}
+"#,
+        );
+        assert_eq!(all_paths_close(&body, "tx"), PathClose::AlwaysCloses);
+    }
+
+    #[test]
+    fn path_analysis_match_arm_return_is_unclosed() {
+        let body = function_body(
+            r#"
+fn save(Transaction tx, int value) {
+    match value {
+        0 => { return; }
+        _ => { commit(tx); }
+    }
+}
+"#,
+        );
+        assert_eq!(all_paths_close(&body, "tx"), PathClose::UnclosedExit);
+    }
+
+    #[test]
+    fn path_analysis_match_arms_both_close() {
+        let body = function_body(
+            r#"
+fn save(Transaction tx, int value) {
+    match value {
+        0 => commit(tx),
+        _ => rollback(tx),
+    }
+}
+"#,
+        );
+        assert_eq!(all_paths_close(&body, "tx"), PathClose::AlwaysCloses);
     }
 }

@@ -11,6 +11,7 @@
 //   - integer literals
 //   - identifiers (free or bound to a known integer in `bindings`)
 //   - +, -, *, /, %  on integers
+//   - scalar `match` expressions with integer literal / wildcard arms
 //   - ==, !=, <, >, <=, >=  comparisons
 //   - !, &&, ||  logical connectives
 //   - true, false
@@ -29,7 +30,7 @@
 //   - Z3Theory::Bv    — always use BV32
 //   - Z3Theory::Lia   — always use LIA (error if bitwise ops present)
 
-use crate::{ActorHandler, Node};
+use crate::{ActorHandler, Node, Pattern};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use z3::Sort;
@@ -412,12 +413,10 @@ pub fn prove_with_timeout(
 /// information can only weaken the assumption set, never make an
 /// unsound verdict sound.
 ///
-/// Return shape matches `prove_with_timeout`. The
-/// certificate-generation path does NOT yet embed the axioms in the
-/// emitted SMT-LIB2 because the re-verifier would need the same
-/// axioms to reproduce the proof; callers that need re-verifiable
-/// certificates for trusted-axiom-assisted proofs should persist
-/// the axiom list alongside the certificate. Tracked as a follow-up.
+/// Return shape matches `prove_with_timeout`. The certificate-generation
+/// path embeds every successfully translated axiom in the emitted SMT-LIB2,
+/// so trusted-axiom-assisted proofs remain independently re-verifiable
+/// without out-of-band state.
 #[allow(dead_code)]
 pub fn prove_with_axioms_and_timeout(
     expr: &Node,
@@ -1274,18 +1273,23 @@ fn prove_with_axioms_and_timeout_in(
     // for the tuple element.
     let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
+    let axiom_len_args = collect_owned_len_args(axioms);
     // RES-1651: lift the zero constant out of the per-arg map closure.
     // Z3 `Int::from_i64(ctx, 0)` allocates a new AST node each call —
     // sharing one across all `len_X >= 0` axioms saves N-1 constructions
     // per Z3 prove on the cache-miss path.
     let zero = Int::from_i64(ctx, 0);
-    let len_axioms: Vec<Bool<'_>> = len_args
-        .iter()
-        .map(|arg| {
+    let mut len_axioms: Vec<Bool<'_>> = Vec::with_capacity(len_args.len() + axiom_len_args.len());
+    for arg in &len_args {
+        let c = Int::new_const(ctx, format!("len_{}", arg));
+        len_axioms.push(c.ge(&zero));
+    }
+    for arg in &axiom_len_args {
+        if !len_args.contains(arg.as_str()) {
             let c = Int::new_const(ctx, format!("len_{}", arg));
-            c.ge(&zero)
-        })
-        .collect();
+            len_axioms.push(c.ge(&zero));
+        }
+    }
 
     // FFI Phase 1 Task 10: translate caller-supplied axioms. Each
     // axiom that successfully translates to a Z3 Bool is asserted
@@ -1348,10 +1352,7 @@ fn prove_with_axioms_and_timeout_in(
         // true).
         // RES-1893: single-pass collection of int idents + array args
         // (len_args already collected above before the solver phase).
-        let mut idents: BTreeSet<&str> = BTreeSet::new();
-        let mut arr_args: BTreeSet<&str> = BTreeSet::new();
-        let mut cert_len_args: BTreeSet<&str> = BTreeSet::new();
-        collect_cert_idents(expr, &mut idents, &mut arr_args, &mut cert_len_args);
+        let (idents, arr_args, cert_len_args) = collect_certificate_symbols(expr, axioms);
 
         // RES-1383: write the SMT-LIB cert via `writeln!` into `smt2`
         // directly — `String` implements `fmt::Write`, so the format
@@ -1373,7 +1374,7 @@ fn prove_with_axioms_and_timeout_in(
         // seen in the formula + emit its `>= 0` axiom so a
         // stock Z3 re-verifying the cert gets the same
         // context the prover used.
-        for arg in &len_args {
+        for arg in &cert_len_args {
             writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
         }
         // RES-408: declare arrays referenced via `a[i]` with the
@@ -1382,14 +1383,17 @@ fn prove_with_axioms_and_timeout_in(
         for arg in &arr_args {
             writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
         }
-        for arg in &len_args {
+        for arg in &cert_len_args {
             writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
+        }
+        for axiom in &user_axioms {
+            writeln!(&mut smt2, "(assert {})", axiom).unwrap();
         }
         // Bound identifiers: pin them to their concrete value with an
         // equality assertion. Free identifiers are left unconstrained
         // so the proof is universal over them.
         for name in &idents {
-            if let Some(v) = bindings.get(*name) {
+            if let Some(v) = bindings.get(name.as_str()) {
                 writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
             }
         }
@@ -1570,16 +1574,21 @@ fn prove_tautology_with_axioms_and_timeout_in(
     // for the tuple element.
     let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
+    let axiom_len_args = collect_owned_len_args(axioms);
     // RES-1651: lift the zero constant out of the per-arg map closure
     // (same shape as the verdict path above).
     let zero = Int::from_i64(ctx, 0);
-    let len_axioms: Vec<Bool<'_>> = len_args
-        .iter()
-        .map(|arg| {
+    let mut len_axioms: Vec<Bool<'_>> = Vec::with_capacity(len_args.len() + axiom_len_args.len());
+    for arg in &len_args {
+        let c = Int::new_const(ctx, format!("len_{}", arg));
+        len_axioms.push(c.ge(&zero));
+    }
+    for arg in &axiom_len_args {
+        if !len_args.contains(arg.as_str()) {
             let c = Int::new_const(ctx, format!("len_{}", arg));
-            c.ge(&zero)
-        })
-        .collect();
+            len_axioms.push(c.ge(&zero));
+        }
+    }
 
     let user_axioms: Vec<Bool<'_>> = axioms
         .iter()
@@ -1606,10 +1615,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
 
     // RES-1893: single-pass collection of int idents + array args
     // (len_args already collected above before the solver phase).
-    let mut idents: BTreeSet<&str> = BTreeSet::new();
-    let mut arr_args: BTreeSet<&str> = BTreeSet::new();
-    let mut cert_len_args: BTreeSet<&str> = BTreeSet::new();
-    collect_cert_idents(expr, &mut idents, &mut arr_args, &mut cert_len_args);
+    let (idents, arr_args, cert_len_args) = collect_certificate_symbols(expr, axioms);
 
     // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
     // cert builder above — eliminates the intermediate `format!`
@@ -1622,17 +1628,20 @@ fn prove_tautology_with_axioms_and_timeout_in(
     for name in &idents {
         writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
     }
-    for arg in &len_args {
+    for arg in &cert_len_args {
         writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
     }
     for arg in &arr_args {
         writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
     }
-    for arg in &len_args {
+    for arg in &cert_len_args {
         writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
     }
+    for axiom in &user_axioms {
+        writeln!(&mut smt2, "(assert {})", axiom).unwrap();
+    }
     for name in &idents {
-        if let Some(v) = bindings.get(*name) {
+        if let Some(v) = bindings.get(name.as_str()) {
             writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
         }
     }
@@ -2537,6 +2546,38 @@ pub(crate) fn translate_bool_pub<'c>(
     translate_bool(ctx, node, bindings)
 }
 
+/// Encode the conservative scalar-match subset used by the
+/// non-interference self-composition pass. Building the expression from the
+/// last arm backwards preserves first-match semantics while requiring a
+/// wildcard arm to cover every other integer value.
+fn translate_scalar_match_int<'c>(
+    ctx: &'c z3::Context,
+    scrutinee: &Node,
+    arms: &[(Pattern, Option<Node>, Node)],
+    bindings: &HashMap<String, i64>,
+) -> Option<Int<'c>> {
+    let scrutinee = translate_int(ctx, scrutinee, bindings)?;
+    let mut result = None;
+
+    for (pattern, guard, body) in arms.iter().rev() {
+        if guard.is_some() {
+            return None;
+        }
+        let value = translate_int(ctx, body, bindings)?;
+        match pattern {
+            Pattern::Wildcard => result = Some(value),
+            Pattern::Literal(Node::IntegerLiteral { value: literal, .. }) => {
+                let fallback = result?;
+                let condition = scrutinee._eq(&Int::from_i64(ctx, *literal));
+                result = Some(condition.ite(&value, &fallback));
+            }
+            _ => return None,
+        }
+    }
+
+    result
+}
+
 fn translate_bool<'c>(
     ctx: &'c z3::Context,
     node: &Node,
@@ -2670,6 +2711,9 @@ fn translate_int<'c>(
                 None
             }
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => translate_scalar_match_int(ctx, scrutinee, arms, bindings),
         _ => None,
     }
 }
@@ -2734,6 +2778,52 @@ fn collect_len_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
         }
         _ => {}
     }
+}
+
+/// Collect length symbols referenced by caller-supplied axioms. The solver
+/// and certificate builders keep the expression's borrowed fast path, while
+/// axiom nodes need owned names because they have independent lifetimes.
+fn collect_owned_len_args(axioms: &[Node]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for axiom in axioms {
+        let mut names = BTreeSet::new();
+        collect_len_args(axiom, &mut names);
+        out.extend(names.into_iter().map(str::to_owned));
+    }
+    out
+}
+
+/// Collect the symbols needed to make a proof certificate self-contained.
+/// The owned result lets one certificate combine symbols borrowed from the
+/// goal with symbols borrowed from independently owned axiom nodes.
+fn collect_certificate_symbols(
+    expr: &Node,
+    axioms: &[Node],
+) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+    let mut idents = BTreeSet::new();
+    let mut arr_args = BTreeSet::new();
+    let mut len_args = BTreeSet::new();
+
+    for node in std::iter::once(expr).chain(axioms.iter()) {
+        let mut node_idents = BTreeSet::new();
+        let mut node_arr_args = BTreeSet::new();
+        let mut node_len_args = BTreeSet::new();
+        collect_cert_idents(
+            node,
+            &mut node_idents,
+            &mut node_arr_args,
+            &mut node_len_args,
+        );
+        idents.extend(node_idents.into_iter().map(str::to_owned));
+        arr_args.extend(node_arr_args.into_iter().map(str::to_owned));
+        len_args.extend(node_len_args.into_iter().map(str::to_owned));
+
+        let mut all_len_args = BTreeSet::new();
+        collect_len_args(node, &mut all_len_args);
+        len_args.extend(all_len_args.into_iter().map(str::to_owned));
+    }
+
+    (idents, arr_args, len_args)
 }
 
 // ============================================================
@@ -3717,6 +3807,43 @@ mod tests {
         let axiom = infix(ident("r"), ">=", int(0));
         let (verdict, _cert, _cx, _t) = prove_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
         assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn axiom_certificate_contains_the_assumption_used_by_z3() {
+        let no_b = HashMap::new();
+        let goal = infix(ident("r"), ">=", int(0));
+        let axiom = infix(ident("r"), ">=", int(0));
+        let (verdict, cert, _cx, _timed_out) =
+            prove_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
+        assert_eq!(verdict, Some(true));
+        let smt2 = cert
+            .expect("axiom-assisted tautology must yield a certificate")
+            .smt2;
+        assert!(smt2.contains("(declare-const r Int)"));
+        assert!(
+            smt2.contains("(assert (>= r 0))"),
+            "certificate must retain the translated caller axiom"
+        );
+    }
+
+    #[test]
+    fn tautology_certificate_declares_symbols_used_only_by_axioms() {
+        let no_b = HashMap::new();
+        let goal = infix(ident("r"), ">=", int(0));
+        let axiom = infix(ident("r"), ">=", len_call("xs"));
+        let (proven, cert, _timed_out) =
+            prove_tautology_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
+        assert!(proven);
+        let smt2 = cert
+            .expect("axiom-assisted tautology must yield a certificate")
+            .smt2;
+        assert!(smt2.contains("(declare-const len_xs Int)"));
+        assert!(smt2.contains("(assert (>= len_xs 0))"));
+        assert!(
+            smt2.contains("(assert (>= r len_xs))"),
+            "certificate must include the axiom's len expression"
+        );
     }
 
     #[test]
@@ -5311,8 +5438,33 @@ fn ni_is_arith_fragment(node: &Node) -> bool {
         Node::InfixExpression { left, right, .. } => {
             ni_is_arith_fragment(left) && ni_is_arith_fragment(right)
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            !arms.is_empty()
+                && ni_is_arith_fragment(scrutinee)
+                && arms.iter().all(|(pattern, guard, body)| {
+                    guard.is_none()
+                        && ni_is_scalar_match_pattern(pattern)
+                        && ni_is_arith_fragment(body)
+                })
+                && arms
+                    .iter()
+                    .any(|(pattern, _, _)| matches!(pattern, Pattern::Wildcard))
+        }
         _ => false,
     }
+}
+
+/// The self-composition encoder deliberately handles only the scalar match
+/// subset that can be represented as a chain of integer equalities. Binding,
+/// range, enum, and guarded patterns remain advisory until their semantics are
+/// encoded explicitly.
+fn ni_is_scalar_match_pattern(pattern: &Pattern) -> bool {
+    matches!(
+        pattern,
+        Pattern::Wildcard | Pattern::Literal(Node::IntegerLiteral { .. })
+    )
 }
 
 /// Collect every identifier read in an arithmetic-fragment expression.
@@ -5325,6 +5477,14 @@ fn ni_collect_idents(node: &Node, out: &mut std::collections::HashSet<String>) {
         Node::InfixExpression { left, right, .. } => {
             ni_collect_idents(left, out);
             ni_collect_idents(right, out);
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            ni_collect_idents(scrutinee, out);
+            for (_, _, body) in arms {
+                ni_collect_idents(body, out);
+            }
         }
         _ => {}
     }
@@ -5367,6 +5527,24 @@ fn ni_rename_high(node: &Node, highs: &std::collections::HashSet<&str>) -> Node 
         } => Node::PrefixExpression {
             operator,
             right: Box::new(ni_rename_high(right, highs)),
+            span: *span,
+        },
+        Node::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Node::Match {
+            scrutinee: Box::new(ni_rename_high(scrutinee, highs)),
+            arms: arms
+                .iter()
+                .map(|(pattern, guard, body)| {
+                    (
+                        pattern.clone(),
+                        guard.as_ref().map(|guard| ni_rename_high(guard, highs)),
+                        ni_rename_high(body, highs),
+                    )
+                })
+                .collect(),
             span: *span,
         },
         other => other.clone(),
@@ -5497,6 +5675,38 @@ mod ni_selfcomp_tests {
         assert!(matches!(
             prove_noninterference(&e, &["b".to_string()]),
             NiOutcome::Leak { .. }
+        ));
+    }
+
+    #[test]
+    fn independent_when_scalar_match_arms_share_public_value() {
+        let e = return_expr(
+            "fn f(int low, int high) -> int { return match high { 0 => low, _ => low }; }\n",
+        );
+        assert_eq!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Independent
+        );
+    }
+
+    #[test]
+    fn leak_when_scalar_match_selects_different_values() {
+        let e = return_expr(
+            "fn f(int low, int high) -> int { return match high { 0 => low, _ => low + 1 }; }\n",
+        );
+        assert!(matches!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Leak { .. }
+        ));
+    }
+
+    #[test]
+    fn unsupported_scalar_match_pattern_stays_unknown() {
+        let e =
+            return_expr("fn f(int low, int high) -> int { return match high { value => low }; }\n");
+        assert!(matches!(
+            prove_noninterference(&e, &["high".to_string()]),
+            NiOutcome::Unknown(_)
         ));
     }
 }

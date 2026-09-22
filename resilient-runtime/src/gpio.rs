@@ -184,11 +184,20 @@ pub unsafe trait GpioConfig {
 /// (e.g. [`Stm32f4`]); `MODE` is the typestate marker ([`Input`] or
 /// [`Output`]).
 ///
-/// The struct is `Copy` because it is just `(Port, u8)` — moving a
-/// pin handle would prevent natural patterns like passing the pin
-/// to a function and continuing to use it. The hardware state is
-/// the source of truth; the handle is a thin façade.
-#[derive(Debug, Clone, Copy)]
+/// The handle is intentionally not `Copy` or `Clone`: a typestate
+/// conversion consumes the only capability for that pin, so an old
+/// `Output` handle cannot survive an `into_input` transition and issue
+/// writes against the reconfigured hardware.
+///
+/// ```compile_fail
+/// use resilient_runtime::gpio::{GpioConfig, GpioPin, Output};
+///
+/// fn stale_output<CFG: GpioConfig>(output: GpioPin<CFG, Output>) {
+///     let _input = output.into_input();
+///     output.set_high();
+/// }
+/// ```
+#[derive(Debug)]
 pub struct GpioPin<CFG, MODE> {
     port: Port,
     pin: u8,

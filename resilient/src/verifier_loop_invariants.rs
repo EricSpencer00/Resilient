@@ -190,10 +190,37 @@ fn walk(
                 );
             }
         }
-        Node::ForInStatement { body, .. } => {
-            // RES-318 MVP: `for-in` invariants are not modeled yet.
-            // Recurse so nested while-loops still get verified.
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            invariants: pre_invariants,
+            span,
+            ..
+        } => {
+            // Recurse so nested loops still get verified before handling
+            // this loop's own invariant obligations.
             walk(body, bindings, tc, next_idx, timeout_ms, verbose);
+
+            let body_invs = crate::loop_invariants::collect_body_invariants(body);
+            if pre_invariants.is_empty() && body_invs.is_empty() {
+                return;
+            }
+
+            // Keep the model finite and auditable: only literal integer
+            // arrays are expanded. All other iterables retain the runtime
+            // check without receiving a static proof.
+            let Some(elements) = literal_int_array(iterable) else {
+                return;
+            };
+            let mut assigned: BTreeSet<&str> = BTreeSet::new();
+            collect_assigned_names(body, &mut assigned);
+            for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
+                try_prove_for_in_invariant(
+                    tc, inv, name, body, &elements, bindings, &assigned, span, next_idx,
+                    timeout_ms, verbose,
+                );
+            }
         }
         Node::LiveBlock { body, .. } => {
             walk(body, bindings, tc, next_idx, timeout_ms, verbose);
@@ -339,6 +366,109 @@ fn try_prove_invariant(
     }
 }
 
+/// Prove a loop invariant over a finite literal integer array. The base
+/// obligation is identical to a `while` invariant; each inductive obligation
+/// specializes the loop binding to one concrete element before asking the
+/// existing weakest-precondition prover to discharge the body.
+#[cfg(feature = "z3")]
+#[allow(clippy::too_many_arguments)]
+fn try_prove_for_in_invariant(
+    tc: &mut crate::typechecker::TypeChecker,
+    invariant: &Node,
+    loop_name: &str,
+    body: &Node,
+    elements: &[i64],
+    bindings: &HashMap<String, i64>,
+    assigned: &BTreeSet<&str>,
+    loop_span: &Span,
+    next_idx: &mut usize,
+    timeout_ms: u32,
+    verbose: bool,
+) {
+    let (base_proven, base_cert, _timed) =
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
+            invariant,
+            bindings,
+            &[],
+            timeout_ms,
+        );
+    if !base_proven {
+        return;
+    }
+
+    let mut step_bindings: HashMap<String, i64> = HashMap::with_capacity(bindings.len());
+    for (key, value) in bindings {
+        if key != loop_name && !assigned.contains(key.as_str()) {
+            step_bindings.insert(key.clone(), *value);
+        }
+    }
+    let wp = match weakest_precondition(body, invariant) {
+        Some(q) => q,
+        None => return,
+    };
+    let true_node = Node::BooleanLiteral {
+        value: true,
+        span: Span::default(),
+    };
+    let mut step_certs = Vec::with_capacity(elements.len());
+    for element in elements {
+        let specialized = substitute(
+            &wp,
+            loop_name,
+            &Node::IntegerLiteral {
+                value: *element,
+                span: Span::default(),
+            },
+        );
+        let goal = build_implication(invariant, &true_node, &specialized);
+        let (step_proven, step_cert, _timed) =
+            crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
+                &goal,
+                &step_bindings,
+                &[],
+                timeout_ms,
+            );
+        if !step_proven {
+            return;
+        }
+        if let Some(cert) = step_cert {
+            step_certs.push(cert.smt2);
+        }
+    }
+
+    const HEADER_MARGIN: usize = 128;
+    let step_bytes: usize = step_certs.iter().map(String::len).sum();
+    let mut smt2 = String::with_capacity(
+        HEADER_MARGIN + base_cert.as_ref().map_or(0, |cert| cert.smt2.len()) + step_bytes,
+    );
+    smt2.push_str("; RES-318 for-in loop-invariant proof certificate\n");
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        &mut smt2,
+        "; loop at line {}, col {}",
+        loop_span.start.line, loop_span.start.column
+    );
+    smt2.push_str("; ----- base case -----\n");
+    if let Some(cert) = base_cert {
+        smt2.push_str(&cert.smt2);
+    }
+    for (index, cert) in step_certs.iter().enumerate() {
+        let _ = writeln!(&mut smt2, "; ----- element {} inductive step -----", index);
+        smt2.push_str(cert);
+    }
+    let idx = *next_idx;
+    *next_idx += 1;
+    tc.push_loop_invariant_certificate(idx, smt2);
+
+    let inv_span = invariant_span(invariant).unwrap_or(loop_span);
+    if verbose {
+        eprintln!(
+            "-- invariant proven, runtime check elided at {}:{}",
+            inv_span.start.line, inv_span.start.column
+        );
+    }
+}
+
 /// `let NAME = INT_LITERAL` — extract the literal value.
 #[cfg(feature = "z3")]
 fn literal_int(node: &Node) -> Option<i64> {
@@ -354,6 +484,15 @@ fn literal_int(node: &Node) -> Option<i64> {
     } else {
         None
     }
+}
+
+/// Extract a finite integer array for the conservative `for-in` model.
+#[cfg(feature = "z3")]
+fn literal_int_array(node: &Node) -> Option<Vec<i64>> {
+    let Node::ArrayLiteral { items, .. } = node else {
+        return None;
+    };
+    items.iter().map(literal_int).collect()
 }
 
 /// Walk every assignment in `node` and accumulate the LHS names.
@@ -625,12 +764,36 @@ mod tests {
     }
 
     #[test]
-    fn for_in_loop_invariants_are_skipped_for_now() {
-        // `for-in` is out of scope for the MVP. The body still has
-        // a runtime check; the verifier does NOT attempt a proof.
+    fn for_in_literal_integer_invariant_is_proven() {
+        // A finite integer array can be checked one element at a time.
         let src = r#"
             let s = 0;
             for x in [1, 2, 3] invariant s >= 0 {
+                s = s + x;
+            }
+        "#;
+        let proven = run(src);
+        assert_eq!(proven, 1);
+    }
+
+    #[test]
+    fn for_in_literal_integer_invariant_counterexample_is_not_proven() {
+        let src = r#"
+            let s = 0;
+            for x in [1, 2, 3] invariant s <= 2 {
+                s = s + x;
+            }
+        "#;
+        let proven = run(src);
+        assert_eq!(proven, 0);
+    }
+
+    #[test]
+    fn for_in_non_literal_iterable_stays_unproven() {
+        let src = r#"
+            let values = [1, 2, 3];
+            let s = 0;
+            for x in values invariant s >= 0 {
                 s = s + x;
             }
         "#;

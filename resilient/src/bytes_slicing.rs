@@ -20,15 +20,22 @@
 
 use crate::{RResult, Value};
 
+fn clamped_count(name: &str, n: i64, len: usize) -> Result<usize, String> {
+    if n < 0 {
+        return Err(format!("{name}: count must be non-negative, got {n}"));
+    }
+    // A count wider than the target's usize is still larger than any
+    // materialized byte string, so preserve the documented clamp instead of
+    // truncating it on 32-bit targets.
+    Ok(usize::try_from(n).unwrap_or(usize::MAX).min(len))
+}
+
 /// `bytes_take(b, n) -> Bytes` — first `n` bytes of `b`.
 /// `n` must be non-negative; `n > len(b)` clamps to `len(b)`.
 pub(crate) fn builtin_bytes_take(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Bytes(b), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!("bytes_take: count must be non-negative, got {}", n));
-            }
-            let take = (*n as usize).min(b.len());
+            let take = clamped_count("bytes_take", *n, b.len())?;
             Ok(Value::Bytes(b[..take].to_vec()))
         }
         [Value::Bytes(_), other] => Err(format!("bytes_take: count must be Int, got {}", other)),
@@ -48,10 +55,7 @@ pub(crate) fn builtin_bytes_take(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_bytes_drop(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Bytes(b), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!("bytes_drop: count must be non-negative, got {}", n));
-            }
-            let drop = (*n as usize).min(b.len());
+            let drop = clamped_count("bytes_drop", *n, b.len())?;
             Ok(Value::Bytes(b[drop..].to_vec()))
         }
         [Value::Bytes(_), other] => Err(format!("bytes_drop: count must be Int, got {}", other)),
@@ -71,13 +75,7 @@ pub(crate) fn builtin_bytes_drop(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_bytes_take_last(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Bytes(b), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!(
-                    "bytes_take_last: count must be non-negative, got {}",
-                    n
-                ));
-            }
-            let take = (*n as usize).min(b.len());
+            let take = clamped_count("bytes_take_last", *n, b.len())?;
             let start = b.len() - take;
             Ok(Value::Bytes(b[start..].to_vec()))
         }
@@ -101,13 +99,7 @@ pub(crate) fn builtin_bytes_take_last(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_bytes_drop_last(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Bytes(b), Value::Int(n)] => {
-            if *n < 0 {
-                return Err(format!(
-                    "bytes_drop_last: count must be non-negative, got {}",
-                    n
-                ));
-            }
-            let drop = (*n as usize).min(b.len());
+            let drop = clamped_count("bytes_drop_last", *n, b.len())?;
             let end = b.len() - drop;
             Ok(Value::Bytes(b[..end].to_vec()))
         }

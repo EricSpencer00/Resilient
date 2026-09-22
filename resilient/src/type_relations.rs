@@ -94,6 +94,9 @@ pub(crate) fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type 
                 .collect(),
         ),
         Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, type_params))),
+        Type::TypedArray(inner) => {
+            Type::TypedArray(Box::new(substitute_type_params(inner, type_params)))
+        }
         other => other.clone(),
     }
 }
@@ -141,6 +144,11 @@ pub(crate) fn substitute_with_bindings(
                 .collect(),
         ),
         Type::Option(inner) => Type::Option(Box::new(substitute_with_bindings(
+            inner,
+            type_params,
+            bindings,
+        ))),
+        Type::TypedArray(inner) => Type::TypedArray(Box::new(substitute_with_bindings(
             inner,
             type_params,
             bindings,

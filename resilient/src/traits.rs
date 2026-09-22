@@ -1305,14 +1305,19 @@ fn method_signature_mismatch(
         }
     }
 
-    if let (Some(trait_type), Some(impl_type)) =
-        (trait_method.return_type.as_deref(), impl_return_type)
-        && normalize_type_spelling(trait_type) != normalize_type_spelling(impl_type)
-    {
-        return Some(format!(
-            "return type is `{}`; trait declares `{}`",
-            impl_type, trait_type
-        ));
+    if let Some(trait_type) = trait_method.return_type.as_deref() {
+        let Some(impl_type) = impl_return_type else {
+            return Some(format!(
+                "implementation omits a return type; trait declares `{}`",
+                trait_type
+            ));
+        };
+        if normalize_type_spelling(trait_type) != normalize_type_spelling(impl_type) {
+            return Some(format!(
+                "return type is `{}`; trait declares `{}`",
+                impl_type, trait_type
+            ));
+        }
     }
     None
 }

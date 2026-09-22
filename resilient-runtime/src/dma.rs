@@ -112,11 +112,11 @@ impl DmaWidth {
     }
 }
 
-/// Errors produced when constructing or extending a DMA chain. Every
-/// error carries enough context for a diagnostic; none of them are
-/// recoverable at runtime — a misconfigured descriptor is a programmer
-/// error and the right response is to fail the build (the typechecker
-/// can lift these to compile-time on literal inputs).
+/// Errors produced when constructing, extending, or starting a DMA
+/// chain. Every error carries enough context for a diagnostic; none
+/// of them are recoverable at runtime — a misconfigured descriptor is
+/// a programmer error and the right response is to fail the build
+/// (the typechecker can lift these to compile-time on literal inputs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaError {
     /// `source` address is not aligned for the selected width.
@@ -137,6 +137,9 @@ pub enum DmaError {
     /// The chain is already at capacity. Pick a larger `N` when
     /// constructing the [`DmaChain`].
     ChainFull { capacity: usize },
+    /// The populated chain moved after its self-referential links were
+    /// written. The stale links cannot be handed to DMA hardware.
+    ChainMoved { expected: usize, actual: usize },
 }
 
 /// Maximum bytes a single descriptor can transfer. Matches the
@@ -270,6 +273,8 @@ pub fn dma_descriptor_new(
 /// number of descriptors a single chain can hold. `len()` tracks
 /// how many are currently in use. Building a chain is push-only;
 /// once a descriptor is linked, its `next` field is immutable.
+/// Because those links point into the inline arena, a populated chain
+/// must not move before `start()`.
 ///
 /// # Why fixed N
 ///
@@ -284,6 +289,9 @@ pub struct DmaChain<const N: usize> {
     descriptors: [core::mem::MaybeUninit<DmaDescriptor>; N],
     /// Number of initialised descriptors at the head of `descriptors`.
     len: usize,
+    /// Address of the chain when its first raw link was written. Zero
+    /// means no self-referential link exists yet.
+    arena_address: usize,
 }
 
 impl<const N: usize> Default for DmaChain<N> {
@@ -304,7 +312,20 @@ impl<const N: usize> DmaChain<N> {
         Self {
             descriptors: [const { core::mem::MaybeUninit::uninit() }; N],
             len: 0,
+            arena_address: 0,
         }
+    }
+
+    #[inline]
+    fn movement_error(&self) -> Option<DmaError> {
+        if self.arena_address == 0 {
+            return None;
+        }
+        let actual = self as *const Self as usize;
+        (actual != self.arena_address).then_some(DmaError::ChainMoved {
+            expected: self.arena_address,
+            actual,
+        })
     }
 
     /// True iff `N` is a usable chain capacity. Const so the
@@ -338,14 +359,22 @@ impl<const N: usize> DmaChain<N> {
     ///
     /// # Errors
     ///
+    /// - [`DmaError::ChainMoved`] if a populated chain was moved after
+    ///   its first descriptor was appended.
     /// - [`DmaError::ChainFull`] if the chain already holds `N`
     ///   descriptors, or `N` is outside the valid capacity range.
     pub fn append(&mut self, desc: DmaDescriptor) -> Result<(), DmaError> {
+        if let Some(err) = self.movement_error() {
+            return Err(err);
+        }
         if !Self::is_valid_capacity() {
             return Err(DmaError::ChainFull { capacity: N });
         }
         if self.len >= N {
             return Err(DmaError::ChainFull { capacity: N });
+        }
+        if self.arena_address == 0 {
+            self.arena_address = self as *const Self as usize;
         }
         // Reset incoming descriptor's `next` to null — we own the
         // linking decision, not the caller. Otherwise a caller
@@ -404,9 +433,15 @@ impl<const N: usize> DmaChain<N> {
     /// Borrow the chain exclusively for a [`DmaTransfer`] handle ready
     /// to hand to the hardware. The borrow keeps the descriptor arena
     /// at a stable address and prevents mutation, movement, or drop
-    /// until the transfer is released.
+    /// until the transfer is released. If the populated chain moved
+    /// before this call, the returned transfer is inert and reports
+    /// [`DmaError::ChainMoved`].
     pub fn start(&mut self) -> DmaTransfer<'_, N> {
-        DmaTransfer { chain: self }
+        let start_error = self.movement_error();
+        DmaTransfer {
+            chain: self,
+            start_error,
+        }
     }
 }
 
@@ -432,19 +467,34 @@ pub fn dma_chain_append<const N: usize>(
 /// storage, defeating the linearity guarantee.
 pub struct DmaTransfer<'a, const N: usize> {
     chain: &'a mut DmaChain<N>,
+    start_error: Option<DmaError>,
 }
 
 impl<const N: usize> DmaTransfer<'_, N> {
+    /// Return the typed error that made this transfer inert, if any.
+    #[inline]
+    pub const fn error(&self) -> Option<DmaError> {
+        self.start_error
+    }
+
     /// Number of descriptors in the underlying chain.
     #[inline]
     pub const fn descriptor_count(&self) -> usize {
-        self.chain.len()
+        if self.start_error.is_some() {
+            0
+        } else {
+            self.chain.len()
+        }
     }
 
     /// Head pointer — hand this to the DMA controller's address
     /// register. Stays valid for the lifetime of `self`.
     pub fn head_ptr(&self) -> *const DmaDescriptor {
-        self.chain.head_ptr()
+        if self.start_error.is_some() {
+            ptr::null()
+        } else {
+            self.chain.head_ptr()
+        }
     }
 
     /// Total bytes the entire chain will transfer. Useful for
@@ -452,7 +502,7 @@ impl<const N: usize> DmaTransfer<'_, N> {
     /// chain matches the workload.
     pub fn total_bytes(&self) -> u64 {
         let mut total: u64 = 0;
-        for i in 0..self.chain.len() {
+        for i in 0..self.descriptor_count() {
             if let Some(d) = self.chain.get(i) {
                 total = total.saturating_add(d.length as u64);
             }
@@ -464,7 +514,11 @@ impl<const N: usize> DmaTransfer<'_, N> {
     /// the embedded path uses `head_ptr` and lets the hardware walk
     /// the chain.
     pub fn descriptor(&self, index: usize) -> Option<&DmaDescriptor> {
-        self.chain.get(index)
+        if self.start_error.is_some() {
+            None
+        } else {
+            self.chain.get(index)
+        }
     }
 }
 

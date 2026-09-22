@@ -109,6 +109,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Pass 1: collect trait declarations (name -> declared method names).
     // RES-1802-style pre-size: at most one entry per top-level TraitDecl.
     let mut trait_methods: HashMap<String, HashSet<String>> = HashMap::with_capacity(4);
+    // Keep the declared arity alongside the name set. Structural dyn-trait
+    // coercion must use the same method-shape boundary as explicit trait
+    // implementations; a matching name with a different call shape is not
+    // an implementation.
+    let mut trait_arities: HashMap<String, HashMap<String, usize>> = HashMap::with_capacity(4);
     // RES-4095: name -> declared method sigs, kept alongside the name-set
     // above so `check_object_safety_refs` can inspect `takes_self` /
     // `returns_self` without re-walking the program.
@@ -119,6 +124,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             trait_methods.insert(
                 name.clone(),
                 methods.iter().map(|m| m.name.clone()).collect(),
+            );
+            trait_arities.insert(
+                name.clone(),
+                methods
+                    .iter()
+                    .map(|m| (m.name.clone(), m.param_arity))
+                    .collect(),
             );
             trait_sigs.insert(name.clone(), methods);
         }
@@ -162,8 +174,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         if explicit_impls.contains(&(trait_name.to_string(), struct_name.to_string())) {
             return true;
         }
-        match (trait_methods.get(trait_name), type_methods.get(struct_name)) {
-            (Some(tm), Some(sm)) => tm.iter().all(|m| sm.contains_key(m)),
+        match (trait_arities.get(trait_name), type_methods.get(struct_name)) {
+            (Some(trait_methods), Some(type_methods)) => {
+                trait_methods.iter().all(|(method_name, trait_arity)| {
+                    type_methods
+                        .get(method_name)
+                        .is_some_and(|type_arity| type_arity == trait_arity)
+                })
+            }
             _ => false,
         }
     };
@@ -974,6 +992,32 @@ mod tests {
             main();
         "#;
         assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_structural_dyn_trait_coercion_when_method_arity_mismatches() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int radius, }
+            impl Circle {
+                fn area(self, int ignored) -> int { return self.radius; }
+            }
+            fn use_shape(dyn Shape value) -> int {
+                return value.area();
+            }
+            fn main() {
+                use_shape(new Circle { radius: 3 });
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(
+            err.contains("type `Circle` does not implement `Shape`"),
+            "{}",
+            err
+        );
     }
 
     #[test]

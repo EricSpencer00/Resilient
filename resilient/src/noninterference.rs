@@ -25,9 +25,10 @@
 //! ### Scope (slice 1)
 //! The body must be a single `return <expr>;` where `<expr>` is integer
 //! arithmetic over the parameters (`+ - * / %`, unary `-`, integer
-//! literals, parameter reads). `let`-binding inlining and richer bodies
-//! are follow-ups; anything outside the fragment is reported Unknown,
-//! never silently proven.
+//! literals, parameter reads), or a scalar `match` made from those
+//! expressions with integer-literal / wildcard arms and no guards.
+//! `let`-binding inlining and richer patterns remain follow-ups; anything
+//! outside the fragment is reported Unknown, never silently proven.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
