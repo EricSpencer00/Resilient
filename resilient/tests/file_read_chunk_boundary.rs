@@ -36,7 +36,7 @@ fn oversized_file_reads_fail_before_backend_access() {
     std::fs::write(&path, b"fixture").expect("write fixture");
     let result = run_read(
         &path,
-        "file_close(file);\nlet _ = unwrap(file_read_chunk(file, 10485761));",
+        "file_close(file);\nlet rejected = unwrap(file_read_chunk(file, 10485761));",
     );
     let _ = std::fs::remove_file(&path);
     assert!(!result.ok, "oversized read unexpectedly succeeded");
@@ -53,7 +53,7 @@ fn i64_max_read_is_rejected_before_narrowing() {
     std::fs::write(&path, b"fixture").expect("write fixture");
     let result = run_read(
         &path,
-        "let _ = unwrap(file_read_chunk(file, 9223372036854775807));",
+        "let rejected = unwrap(file_read_chunk(file, 9223372036854775807));",
     );
     let _ = std::fs::remove_file(&path);
 
@@ -69,7 +69,7 @@ fn i64_max_read_is_rejected_before_narrowing() {
 fn negative_read_keeps_existing_diagnostic() {
     let path = temp_path("negative");
     std::fs::write(&path, b"fixture").expect("write fixture");
-    let result = run_read(&path, "let _ = unwrap(file_read_chunk(file, -1));");
+    let result = run_read(&path, "let rejected = unwrap(file_read_chunk(file, -1));");
     let _ = std::fs::remove_file(&path);
 
     assert!(!result.ok, "negative read unexpectedly succeeded");
