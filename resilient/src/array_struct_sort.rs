@@ -42,7 +42,7 @@ fn sort_impl(args: &[Value], descending: bool, fname: &str) -> RResult<Value> {
             indexed.sort_by(|(_, a), (_, b)| {
                 let va = field_value(a, &field);
                 let vb = field_value(b, &field);
-                let ord = match (va, vb) {
+                match (va, vb) {
                     (Some(fa), Some(fb)) => {
                         let ord = cmp_values(fa, fb);
                         if descending { ord.reverse() } else { ord }
@@ -50,8 +50,7 @@ fn sort_impl(args: &[Value], descending: bool, fname: &str) -> RResult<Value> {
                     (Some(_), None) => Ordering::Less,
                     (None, Some(_)) => Ordering::Greater,
                     (None, None) => Ordering::Equal,
-                };
-                ord
+                }
             });
 
             Ok(Value::Array(indexed.into_iter().map(|(_, v)| v).collect()))
