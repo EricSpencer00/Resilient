@@ -24,11 +24,17 @@ static BACKEND_LOCK: AtomicBool = AtomicBool::new(false);
 struct BackendGuard;
 
 impl BackendGuard {
+    #[cfg(target_has_atomic = "8")]
     fn try_lock() -> Option<Self> {
         BACKEND_LOCK
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
             .map(|_| Self)
+    }
+
+    #[cfg(not(target_has_atomic = "8"))]
+    fn try_lock() -> Option<Self> {
+        Some(Self)
     }
 }
 
