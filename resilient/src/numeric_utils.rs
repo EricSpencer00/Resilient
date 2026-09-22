@@ -169,7 +169,9 @@ pub(crate) fn builtin_int_pow(args: &[Value]) -> RResult<Value> {
             if *exp < 0 {
                 return Err(format!("int_pow: exponent must be >= 0, got {exp}"));
             }
-            Ok(Value::Int(base.wrapping_pow(*exp as u32)))
+            let exp = u32::try_from(*exp)
+                .map_err(|_| format!("int_pow: exponent {exp} exceeds the supported u32 range"))?;
+            Ok(Value::Int(base.wrapping_pow(exp)))
         }
         [Value::Int(_), e] => Err(format!("int_pow: exponent must be an int, got {e}")),
         [b, _] => Err(format!("int_pow: base must be an int, got {b}")),
@@ -182,7 +184,7 @@ pub(crate) fn builtin_int_pow(args: &[Value]) -> RResult<Value> {
 
 #[cfg(test)]
 mod tests {
-    use crate::run_program;
+    use crate::{Value, run_program};
 
     fn run(src: &str) -> crate::RunResult {
         run_program(src)
@@ -300,5 +302,19 @@ println(int_pow(5, 3));"#);
     fn int_pow_negative_exp_errors() {
         let r = run(r#"println(int_pow(2, -1));"#);
         assert!(!r.ok, "expected error for negative exponent");
+    }
+
+    #[test]
+    fn int_pow_accepts_u32_max_exponent() {
+        let result = super::builtin_int_pow(&[Value::Int(1), Value::Int(i64::from(u32::MAX))])
+            .expect("u32::MAX is representable");
+        assert!(matches!(result, Value::Int(1)));
+    }
+
+    #[test]
+    fn int_pow_rejects_exponent_above_u32_max() {
+        let err = super::builtin_int_pow(&[Value::Int(1), Value::Int(i64::from(u32::MAX) + 1)])
+            .expect_err("exponents above u32::MAX must fail closed");
+        assert!(err.contains("u32"), "error should mention the width: {err}");
     }
 }
