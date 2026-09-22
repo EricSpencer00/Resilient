@@ -877,6 +877,7 @@ impl std::error::Error for CompileError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BackoffKind;
 
     #[test]
     fn call_foreign_opcode_roundtrips() {
