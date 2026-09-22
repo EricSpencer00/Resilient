@@ -108,10 +108,6 @@
       "branch": "res-4717-fixed-width-metadata",
       "claimed_at": "2026-09-20T21:33:46Z"
     },
-    "resilient/src/array_cumulative.rs": {
-      "branch": "res-4730-array-cumulative-no-staging",
-      "claimed_at": "2026-09-20T21:59:09Z"
-    },
     "resilient/src/bytecode.rs": {
       "branch": "res-4732-bytecode-patch-guard",
       "claimed_at": "2026-09-20T22:00:45Z"
