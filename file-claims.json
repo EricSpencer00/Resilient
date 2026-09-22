@@ -176,14 +176,6 @@
       "branch": "res-4777-datetime-overflow",
       "claimed_at": "2026-09-20T23:21:05Z"
     },
-    "resilient/src/array_struct_sort.rs": {
-      "branch": "res-4780-struct-sort-order",
-      "claimed_at": "2026-09-20T23:31:25Z"
-    },
-    "resilient/src/array_struct_sort_order_tests.rs": {
-      "branch": "res-4780-struct-sort-order",
-      "claimed_at": "2026-09-20T23:31:25Z"
-    },
     "resilient/src/array_stats.rs": {
       "branch": "res-4783-int-variance",
       "claimed_at": "2026-09-20T23:33:17Z"
