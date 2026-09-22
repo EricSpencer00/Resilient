@@ -404,6 +404,23 @@ pub(crate) fn builtin_udp_recv_from(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// `udp_close(sock: UdpSocket) -> bool`
+///
+/// Closes the UDP socket. Returns `true` if it existed.
+pub(crate) fn builtin_udp_close(args: &[Value]) -> RResult<Value> {
+    match args {
+        [handle] => {
+            let id = extract_handle_id(handle, "udp_close")?;
+            let existed = UDP_SOCKETS.with(|r| r.borrow_mut().remove(&id).is_some());
+            Ok(Value::Bool(existed))
+        }
+        _ => Err(format!(
+            "udp_close: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MAX_SOCKET_RECEIVE_BYTES, checked_read_len};
@@ -434,22 +451,5 @@ mod tests {
             checked_read_len("udp_recv_from", MAX_SOCKET_RECEIVE_BYTES),
             Ok(MAX_SOCKET_RECEIVE_BYTES as usize)
         );
-    }
-}
-
-/// `udp_close(sock: UdpSocket) -> bool`
-///
-/// Closes the UDP socket. Returns `true` if it existed.
-pub(crate) fn builtin_udp_close(args: &[Value]) -> RResult<Value> {
-    match args {
-        [handle] => {
-            let id = extract_handle_id(handle, "udp_close")?;
-            let existed = UDP_SOCKETS.with(|r| r.borrow_mut().remove(&id).is_some());
-            Ok(Value::Bool(existed))
-        }
-        _ => Err(format!(
-            "udp_close: expected 1 argument, got {}",
-            args.len()
-        )),
     }
 }
