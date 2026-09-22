@@ -557,6 +557,7 @@ fn walk(
     }
 }
 
+#[cfg(not(feature = "z3"))]
 fn merge_definite_consumption(
     bindings: &mut HashMap<String, LinearBinding>,
     left: &HashMap<String, LinearBinding>,
