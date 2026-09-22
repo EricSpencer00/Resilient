@@ -25,18 +25,41 @@ pub fn is_crash_only_certified(node: &Node) -> bool {
         Node::Function { body, .. } => body,
         _ => return false,
     };
-    let stmts = match body.as_ref() {
-        Node::Block { stmts, .. } => stmts,
-        _ => return false,
-    };
-    for s in stmts {
-        if let Node::ReturnStatement { value: Some(e), .. } = s {
-            if !is_safe_return(e) {
-                return false;
-            }
+    all_returns_are_safe(body)
+}
+
+fn all_returns_are_safe(node: &Node) -> bool {
+    match node {
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => is_safe_return(value),
+        Node::ReturnStatement { value: None, .. } => true,
+        Node::Block { stmts, .. } => stmts.iter().all(all_returns_are_safe),
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            all_returns_are_safe(consequence)
+                && alternative.as_deref().is_none_or(all_returns_are_safe)
         }
+        Node::WhileStatement { body, .. }
+        | Node::ForInStatement { body, .. }
+        | Node::LiveBlock { body, .. } => all_returns_are_safe(body),
+        Node::TryCatch { body, handlers, .. } => {
+            body.iter().all(all_returns_are_safe)
+                && handlers
+                    .iter()
+                    .all(|(_, handler_body)| handler_body.iter().all(all_returns_are_safe))
+        }
+        Node::Match { arms, .. } => arms
+            .iter()
+            .all(|(_, _, arm_body)| all_returns_are_safe(arm_body)),
+        // A nested function returns to its own caller, not to the
+        // certified function. Its certificate is checked independently.
+        Node::Function { .. } | Node::FunctionLiteral { .. } => true,
+        _ => true,
     }
-    true
 }
 
 fn is_safe_return(node: &Node) -> bool {
@@ -127,6 +150,52 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn unsafe_return_nested_in_conditional_fails_certification() {
+        let src = r#"
+            fn risky_branch(int x) {
+                if x > 0 {
+                    return x;
+                } else {
+                    return Ok(x);
+                }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        if let Node::Program(stmts) = &prog {
+            let function = stmts.iter().find_map(|s| match &s.node {
+                Node::Function { name, .. } if name == "risky_branch" => Some(&s.node),
+                _ => None,
+            });
+            assert!(!is_crash_only_certified(
+                function.expect("function should parse")
+            ));
+        }
+    }
+
+    #[test]
+    fn unsafe_return_nested_in_try_handler_fails_certification() {
+        let src = r#"
+            fn risky_handler() {
+                try {
+                    return Ok(1);
+                } catch Timeout {
+                    return 1;
+                }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        if let Node::Program(stmts) = &prog {
+            let function = stmts.iter().find_map(|s| match &s.node {
+                Node::Function { name, .. } if name == "risky_handler" => Some(&s.node),
+                _ => None,
+            });
+            assert!(!is_crash_only_certified(
+                function.expect("function should parse")
+            ));
         }
     }
 

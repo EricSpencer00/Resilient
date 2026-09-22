@@ -34,52 +34,37 @@ const ALLOCATING_BUILTINS: &[&str] = &[
 ];
 
 pub fn body_allocates(node: &Node) -> Option<String> {
-    match node {
-        Node::ArrayLiteral { .. } => Some("array literal".to_string()),
-        Node::MapLiteral { .. } => Some("map literal".to_string()),
-        Node::SetLiteral { .. } => Some("set literal".to_string()),
-        Node::InterpolatedString { .. } => Some("string interpolation".to_string()),
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if ALLOCATING_BUILTINS.contains(&name.as_str()) {
-                    return Some(format!("builtin `{name}`"));
-                }
-            }
-            for a in arguments {
-                if let Some(r) = body_allocates(a) {
-                    return Some(r);
-                }
-            }
-            None
+    body_allocates_with_calls(node, &HashSet::new(), &HashSet::new())
+}
+
+fn body_allocates_with_calls(
+    node: &Node,
+    known_functions: &HashSet<String>,
+    no_alloc_functions: &HashSet<String>,
+) -> Option<String> {
+    let mut reason = None;
+    crate::uniqueness_walk::visit(node, &mut |current| {
+        if reason.is_some() {
+            return;
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                if let Some(r) = body_allocates(s) {
-                    return Some(r);
+        match current {
+            Node::ArrayLiteral { .. } => reason = Some("array literal".to_string()),
+            Node::MapLiteral { .. } => reason = Some("map literal".to_string()),
+            Node::SetLiteral { .. } => reason = Some("set literal".to_string()),
+            Node::InterpolatedString { .. } => reason = Some("string interpolation".to_string()),
+            Node::CallExpression { function, .. } => {
+                if let Node::Identifier { name, .. } = function.as_ref() {
+                    if ALLOCATING_BUILTINS.contains(&name.as_str()) {
+                        reason = Some(format!("builtin `{name}`"));
+                    } else if known_functions.contains(name) && !no_alloc_functions.contains(name) {
+                        reason = Some(format!("call to uncertified function `{name}`"));
+                    }
                 }
             }
-            None
+            _ => {}
         }
-        Node::ReturnStatement { value: Some(e), .. } => body_allocates(e),
-        Node::LetStatement { value, .. } | Node::Assignment { value, .. } => body_allocates(value),
-        Node::ExpressionStatement { expr, .. } => body_allocates(expr),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => body_allocates(condition)
-            .or_else(|| body_allocates(consequence))
-            .or_else(|| alternative.as_ref().and_then(|a| body_allocates(a))),
-        Node::WhileStatement {
-            condition, body, ..
-        } => body_allocates(condition).or_else(|| body_allocates(body)),
-        _ => None,
-    }
+    });
+    reason
 }
 
 pub fn collect_no_alloc_fns() -> HashSet<String> {
@@ -97,10 +82,17 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    let known_functions: HashSet<String> = stmts
+        .iter()
+        .filter_map(|s| match &s.node {
+            Node::Function { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if no_alloc.contains(name) {
-                if let Some(reason) = body_allocates(body) {
+                if let Some(reason) = body_allocates_with_calls(body, &known_functions, &no_alloc) {
                     return Err(format!(
                         "{}:0:0: error: `{}` is `#[no_alloc]` but allocates via {}",
                         source_path, name, reason

@@ -39,6 +39,18 @@ fn unsupported(builtin: &str) -> String {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_DIR_LIST_ENTRIES: usize = 100_000;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn allow_dir_entry(retained: usize) -> Result<(), ()> {
+    if retained < MAX_DIR_LIST_ENTRIES {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
 /// `file_exists(path: string) -> bool`
 ///
 /// Returns true if anything (file, directory, symlink) exists at `path`.
@@ -176,12 +188,15 @@ pub(crate) fn builtin_dir_list(args: &[Value]) -> RResult<Value> {
         #[cfg(not(target_arch = "wasm32"))]
         [Value::String(path)] => match std::fs::read_dir(path.as_str()) {
             Ok(entries) => {
-                let mut names: Vec<String> = entries
-                    .filter_map(|e| {
-                        e.ok()
-                            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    })
-                    .collect();
+                let mut names = Vec::new();
+                for entry in entries.filter_map(|e| e.ok()) {
+                    if allow_dir_entry(names.len()).is_err() {
+                        return Ok(err(format!(
+                            "dir_list: directory contains more than {MAX_DIR_LIST_ENTRIES} entries"
+                        )));
+                    }
+                    names.push(entry.file_name().to_string_lossy().into_owned());
+                }
                 names.sort();
                 let arr = Value::Array(names.into_iter().map(Value::String).collect());
                 Ok(ok(arr))
@@ -233,5 +248,20 @@ mod wasm_tests {
     fn dir_list_errs_on_wasm32() {
         let r = builtin_dir_list(&[Value::String("/anything".to_string())]).unwrap();
         assert!(matches!(r, Value::Result { ok: false, .. }));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_entry_budget_accepts_last_allowed_entry() {
+        assert!(allow_dir_entry(MAX_DIR_LIST_ENTRIES - 1).is_ok());
+    }
+
+    #[test]
+    fn directory_entry_budget_rejects_first_over_budget_entry() {
+        assert!(allow_dir_entry(MAX_DIR_LIST_ENTRIES).is_err());
     }
 }

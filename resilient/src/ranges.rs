@@ -177,11 +177,49 @@ fn format_err(span: &span::Span, source_path: &str, msg: &str) -> String {
 /// Iterator over the integer values produced by a range. `inclusive`
 /// includes `hi`; `!inclusive` is the standard half-open `[lo, hi)`.
 /// Empty when `lo > hi`.
+///
+/// A native `Range<i64>` cannot represent the exclusive endpoint after
+/// `i64::MAX`, so inclusive ranges track their terminal value directly.
+struct IntRangeIter {
+    current: i64,
+    end: i64,
+    inclusive: bool,
+    done: bool,
+}
+
+impl IntRangeIter {
+    fn new(lo: i64, hi: i64, inclusive: bool) -> Self {
+        let done = lo > hi || (!inclusive && lo >= hi);
+        Self {
+            current: lo,
+            end: hi,
+            inclusive,
+            done,
+        }
+    }
+}
+
+impl Iterator for IntRangeIter {
+    type Item = i64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        if self.current == self.end {
+            self.done = true;
+            return self.inclusive.then_some(self.current);
+        }
+
+        let value = self.current;
+        self.current += 1;
+        Some(value)
+    }
+}
+
 pub(crate) fn iterate_range(lo: i64, hi: i64, inclusive: bool) -> impl Iterator<Item = i64> {
-    let end = if inclusive { hi.saturating_add(1) } else { hi };
-    // `lo..end` is empty iff lo >= end, which is the right behaviour
-    // for both half-open (`lo > hi`) and inclusive (`lo > hi`) cases.
-    lo..end
+    IntRangeIter::new(lo, hi, inclusive)
 }
 
 /// Parse a required range upper bound, recording a diagnostic when the

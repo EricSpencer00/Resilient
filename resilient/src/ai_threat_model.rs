@@ -789,9 +789,27 @@ fn detect_copy_paste(node: &Node, ctx: &mut FnContext) {
     }
 }
 
+const MAX_COPY_PASTE_BLOCK_STATEMENTS: usize = 4096;
+const MAX_COPY_PASTE_SHAPES: usize = 10_000;
+
+fn bounded_shape_capacity(stmt_count: usize) -> Option<usize> {
+    if !(3..=MAX_COPY_PASTE_BLOCK_STATEMENTS).contains(&stmt_count) {
+        return None;
+    }
+    stmt_count.checked_mul(2)
+}
+
+fn record_copy_paste_shape(shape: String, out: &mut HashMap<String, u32>) {
+    if let Some(count) = out.get_mut(&shape) {
+        *count = count.saturating_add(1);
+    } else if out.len() < MAX_COPY_PASTE_SHAPES {
+        out.insert(shape, 1);
+    }
+}
+
 fn collect_block_shapes(node: &Node, out: &mut HashMap<String, u32>) {
     if let Node::Block { stmts, .. } = node {
-        if stmts.len() >= 3 {
+        if let Some(capacity) = bounded_shape_capacity(stmts.len()) {
             // RES-1986: build the shape key directly into a pre-sized
             // String instead of collecting a `Vec<&'static str>` just
             // to `.join("|")` it. The previous shape allocated one Vec
@@ -800,14 +818,14 @@ fn collect_block_shapes(node: &Node, out: &mut HashMap<String, u32>) {
             // Vec is per-block dead weight. Each tag is a single
             // character so `stmts.len() * 2` covers the tag + separator
             // pattern exactly.
-            let mut shape = String::with_capacity(stmts.len() * 2);
+            let mut shape = String::with_capacity(capacity);
             for (i, s) in stmts.iter().enumerate() {
                 if i > 0 {
                     shape.push('|');
                 }
                 shape.push_str(stmt_shape_tag(s));
             }
-            *out.entry(shape).or_insert(0) += 1;
+            record_copy_paste_shape(shape, out);
         }
         for s in stmts {
             collect_block_shapes(s, out);
@@ -1009,6 +1027,52 @@ mod tests {
             }"#,
         );
         assert!(!threats.iter().any(|t| t.kind == ThreatKind::MagicNumber));
+    }
+
+    #[test]
+    fn copy_paste_shape_capacity_is_bounded() {
+        assert_eq!(bounded_shape_capacity(3), Some(6));
+        assert_eq!(
+            bounded_shape_capacity(MAX_COPY_PASTE_BLOCK_STATEMENTS),
+            Some(MAX_COPY_PASTE_BLOCK_STATEMENTS * 2)
+        );
+        assert_eq!(
+            bounded_shape_capacity(MAX_COPY_PASTE_BLOCK_STATEMENTS + 1),
+            None
+        );
+    }
+
+    #[test]
+    fn copy_paste_shape_budget_keeps_existing_shapes() {
+        let mut shapes = HashMap::new();
+        for i in 0..MAX_COPY_PASTE_SHAPES {
+            record_copy_paste_shape(format!("shape-{i}"), &mut shapes);
+        }
+        record_copy_paste_shape("shape-over-budget".to_string(), &mut shapes);
+        record_copy_paste_shape("shape-0".to_string(), &mut shapes);
+
+        assert_eq!(shapes.len(), MAX_COPY_PASTE_SHAPES);
+        assert_eq!(shapes.get("shape-0"), Some(&2));
+        assert!(!shapes.contains_key("shape-over-budget"));
+    }
+
+    #[test]
+    fn copy_paste_detection_preserves_normal_blocks() {
+        let threats = analyze(
+            r#"fn repeated(bool ok) -> int {
+                if ok {
+                    let a = 1;
+                    let b = 2;
+                    let c = 3;
+                } else {
+                    let x = 4;
+                    let y = 5;
+                    let z = 6;
+                }
+                return 0;
+            }"#,
+        );
+        assert!(threats.iter().any(|t| t.kind == ThreatKind::CopyPasteBlock));
     }
 
     #[test]

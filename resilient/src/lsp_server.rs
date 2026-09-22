@@ -1487,6 +1487,7 @@ pub(crate) enum RenameSymbolKind {
 }
 
 const RENAME_WORKSPACE_SCAN_LIMIT: usize = 10_000;
+const WORKSPACE_INDEX_FILE_LIMIT: usize = 10_000;
 
 /// RES-2568: produce all `TextEdit`s needed to rename `old_name` →
 /// `new_name` inside a single document.
@@ -2206,7 +2207,9 @@ impl Backend {
             Err(_) => None,
         };
         let Some(root) = root else { return };
-        let files = walk_resilient_files(&root);
+        // RES-4844: keep a hostile or unexpectedly large workspace from
+        // forcing unbounded path retention before any file is indexed.
+        let (files, _truncated) = walk_resilient_files_capped(&root, WORKSPACE_INDEX_FILE_LIMIT);
         let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
         for path in files {
             if let Some(entries) = index_file(&path) {
@@ -4471,6 +4474,20 @@ mod tests {
             "dot-dirs must be skipped"
         );
         // Clean up.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn capped_workspace_walk_stops_before_retaining_over_budget_files() {
+        let root = tmp_workspace("walk_capped");
+        write_file(&root, "a.rz", "fn a() { return 0; }\n");
+        write_file(&root, "b.rz", "fn b() { return 0; }\n");
+        write_file(&root, "c.rz", "fn c() { return 0; }\n");
+
+        let (found, truncated) = walk_resilient_files_capped(&root, 2);
+        assert_eq!(found.len(), 2);
+        assert!(truncated, "the third file must trigger the scan budget");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

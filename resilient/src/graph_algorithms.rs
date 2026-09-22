@@ -151,13 +151,29 @@ pub(crate) fn builtin_graph_dfs(args: &[Value]) -> RResult<Value> {
     }
 }
 
-fn dfs_visit(adj: &[Vec<usize>], node: usize, visited: &mut Vec<bool>, order: &mut Vec<Value>) {
+fn dfs_visit(adj: &[Vec<usize>], node: usize, visited: &mut [bool], order: &mut Vec<Value>) {
+    // Keep the recursive traversal's preorder without letting user-controlled
+    // graph depth consume the host call stack.
+    let mut frames = Vec::with_capacity(adj.len());
     visited[node] = true;
     order.push(Value::Int(node as i64));
-    for &nb in &adj[node] {
-        if !visited[nb] {
-            dfs_visit(adj, nb, visited, order);
+    frames.push((node, 0usize));
+
+    while let Some((current, next_edge)) = frames.last_mut() {
+        if *next_edge == adj[*current].len() {
+            frames.pop();
+            continue;
         }
+
+        let neighbour = adj[*current][*next_edge];
+        *next_edge += 1;
+        if visited[neighbour] {
+            continue;
+        }
+
+        visited[neighbour] = true;
+        order.push(Value::Int(neighbour as i64));
+        frames.push((neighbour, 0));
     }
 }
 
@@ -693,6 +709,35 @@ let order = graph_dfs(adj, 0);
 println(len(order));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('4'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn dfs_deep_chain_uses_bounded_explicit_stack() {
+        const DEPTH: usize = 16_384;
+        let adj = (0..DEPTH)
+            .map(|node| {
+                if node + 1 == DEPTH {
+                    crate::Value::Array(Vec::new())
+                } else {
+                    crate::Value::Array(vec![crate::Value::Int((node + 1) as i64)])
+                }
+            })
+            .collect();
+
+        let result = super::builtin_graph_dfs(&[crate::Value::Array(adj), crate::Value::Int(0)])
+            .expect("deep graph should not exhaust the host call stack");
+
+        match result {
+            crate::Value::Array(nodes) => {
+                assert_eq!(nodes.len(), DEPTH);
+                assert!(matches!(nodes.first(), Some(crate::Value::Int(0))));
+                assert!(matches!(
+                    nodes.last(),
+                    Some(crate::Value::Int(value)) if *value == (DEPTH - 1) as i64
+                ));
+            }
+            other => panic!("expected DFS array, got {other:?}"),
+        }
     }
 
     // ── has_path ─────────────────────────────────────────────────────────────

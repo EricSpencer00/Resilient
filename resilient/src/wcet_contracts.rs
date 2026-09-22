@@ -78,6 +78,27 @@ pub fn estimate_wcet(node: &Node) -> u64 {
         }
         Node::WhileStatement { body, .. } => 100 * estimate_wcet(body),
         Node::ForInStatement { body, .. } => 100 * estimate_wcet(body),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            let arm_cost = arms
+                .iter()
+                .map(|(_, guard, body)| {
+                    guard.as_ref().map(estimate_wcet).unwrap_or(0) + estimate_wcet(body)
+                })
+                .max()
+                .unwrap_or(0);
+            estimate_wcet(scrutinee) + arm_cost
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            let try_cost = body.iter().map(estimate_wcet).sum::<u64>();
+            let handler_cost = handlers
+                .iter()
+                .map(|(_, stmts)| stmts.iter().map(estimate_wcet).sum::<u64>())
+                .max()
+                .unwrap_or(0);
+            try_cost + handler_cost
+        }
         Node::ReturnStatement { value: Some(e), .. } => 1 + estimate_wcet(e),
         Node::LetStatement { value, .. } | Node::Assignment { value, .. } => {
             1 + estimate_wcet(value)
@@ -193,5 +214,62 @@ mod tests {
         let (prog, _) = parse(src);
         let cost = estimate_wcet(&prog);
         assert!(cost > 0, "estimate_wcet should return positive cost");
+    }
+
+    #[test]
+    fn match_arm_cost_is_included_in_wcet() {
+        let src = r#"
+            fn classify(int x) {
+                return match x {
+                    0 => {
+                        let a = x;
+                        let b = x;
+                        let c = x;
+                        return a + b + c;
+                    },
+                    _ => 0,
+                };
+            }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        let Node::Program(stmts) = &prog else {
+            panic!("expected a program");
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!("expected a function");
+        };
+        assert!(
+            estimate_wcet(body) > 10,
+            "the expensive match arm must contribute to WCET"
+        );
+    }
+
+    #[test]
+    fn try_handler_cost_is_included_in_wcet() {
+        let src = r#"
+            fn risky(int x) fails Timeout { return x; }
+            fn caller(int x) {
+                try { risky(x); } catch Timeout {
+                    let a = x;
+                    let b = x;
+                    let c = x;
+                    let d = x;
+                    return a + b + c + d;
+                }
+            }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        let Node::Program(stmts) = &prog else {
+            panic!("expected a program");
+        };
+        let Node::Function { body, .. } = &stmts[1].node else {
+            panic!("expected caller function");
+        };
+        assert!(
+            estimate_wcet(body) > 10,
+            "the expensive catch handler must contribute to WCET"
+        );
     }
 }

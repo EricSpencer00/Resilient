@@ -133,9 +133,15 @@ fn preceding_is_provably_int(chunk: &Chunk, new_code: &[Op]) -> bool {
 /// Errors that the peephole optimizer can return.
 #[derive(Debug)]
 pub enum OptimizeError {
-    /// Reserved for future error paths. No longer constructed since
-    /// RES-2368 (`new_to_old` indexing replaced the lossy `find`
-    /// lookup that previously could fail).
+    /// The chunk contains a jump whose destination is outside the
+    /// code stream, so the optimizer cannot safely build its fixup
+    /// map.
+    InvalidJumpTarget {
+        pc: usize,
+        offset: i16,
+        code_len: usize,
+    },
+    /// Reserved for other internal error paths.
     #[allow(dead_code)]
     InternalError(&'static str),
 }
@@ -143,6 +149,14 @@ pub enum OptimizeError {
 impl std::fmt::Display for OptimizeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            OptimizeError::InvalidJumpTarget {
+                pc,
+                offset,
+                code_len,
+            } => write!(
+                f,
+                "peephole optimizer: jump at pc {pc} with offset {offset} targets outside code length {code_len}"
+            ),
             OptimizeError::InternalError(msg) => write!(f, "peephole optimizer: {}", msg),
         }
     }
@@ -157,16 +171,6 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     // Precompute the set of jump-target PCs so we can skip any
     // rule site whose interior is a jump destination.
     let targets = jump_targets(chunk);
-
-    // Capture each jump's ORIGINAL target PC before we mutate
-    // anything; we'll map these through the fixup table at the
-    // end to reconstruct offsets in the new layout.
-    let orig_targets: Vec<Option<usize>> = chunk
-        .code
-        .iter()
-        .enumerate()
-        .map(|(pc, op)| jump_target_pc(*op, pc))
-        .collect();
 
     // Rewrite pass. Build `new_code` + `new_line_info` + an
     // `old_pc → new_pc` map. Dropped instructions map to the
@@ -430,10 +434,19 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             continue;
         }
         let old_pc = new_to_old[new_pc];
-        let Some(old_target) = orig_targets[old_pc] else {
+        let Some(old_target) = checked_jump_target(chunk.code[old_pc], old_pc, chunk.code.len())?
+        else {
             continue; // not actually a jump (shouldn't happen)
         };
-        let new_target = old_to_new[old_target];
+        let new_target =
+            old_to_new
+                .get(old_target)
+                .copied()
+                .ok_or(OptimizeError::InvalidJumpTarget {
+                    pc: old_pc,
+                    offset: jump_offset(chunk.code[old_pc]).unwrap_or_default(),
+                    code_len: chunk.code.len(),
+                })?;
         // Compute offset relative to PC *after* the jump.
         let offset = (new_target as isize) - (new_pc as isize + 1);
         // Clamp: all offsets in realistic programs fit in i16. If
@@ -465,8 +478,33 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         entry.body_start_pc = old_to_new[entry.body_start_pc];
     }
 
+    // RES-4568: call-site columns are keyed by the pre-rewrite PC.
+    // Keep only entries whose call opcode survived and translate them
+    // through the same map as the instruction stream. Leaving the
+    // old keys in place makes VM stacktrace() fall back to column 0
+    // after any fold before a call.
+    let mut new_call_cols = std::collections::HashMap::with_capacity(chunk.call_cols.len());
+    for (old_pc, column) in chunk.call_cols.drain() {
+        let Some(&new_pc) = old_to_new.get(old_pc) else {
+            continue;
+        };
+        if new_pc == usize::MAX {
+            continue;
+        }
+        let Some(op) = new_code.get(new_pc) else {
+            continue;
+        };
+        if matches!(
+            op,
+            Op::Call(_) | Op::CallClosure { .. } | Op::CallMethod { .. } | Op::CallForeign(_)
+        ) {
+            new_call_cols.insert(new_pc, column);
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
+    chunk.call_cols = new_call_cols;
     Ok(())
 }
 
@@ -490,16 +528,36 @@ fn jump_targets(chunk: &Chunk) -> Vec<bool> {
 /// Extract the destination PC of a jump instruction at `pc`,
 /// or `None` for non-jump ops.
 fn jump_target_pc(op: Op, pc: usize) -> Option<usize> {
-    let offset = match op {
-        Op::Jump(o) | Op::JumpIfFalse(o) | Op::JumpIfTrue(o) => o,
-        _ => return None,
+    checked_jump_target(op, pc, usize::MAX).ok().flatten()
+}
+
+fn jump_offset(op: Op) -> Option<i16> {
+    match op {
+        Op::Jump(offset) | Op::JumpIfFalse(offset) | Op::JumpIfTrue(offset) => Some(offset),
+        _ => None,
+    }
+}
+
+/// Resolve a jump target without allowing malformed bytecode to reach
+/// the relinking map. A target equal to `code_len` is the valid
+/// fall-through sentinel; negative and past-end targets are rejected.
+fn checked_jump_target(op: Op, pc: usize, code_len: usize) -> Result<Option<usize>, OptimizeError> {
+    let Some(offset) = jump_offset(op) else {
+        return Ok(None);
     };
-    let pc_after = pc as isize + 1;
-    let target = pc_after + offset as isize;
-    if target < 0 {
-        None
+    let base = pc + 1;
+    let target = if offset >= 0 {
+        base.checked_add(offset as usize)
     } else {
-        Some(target as usize)
+        base.checked_sub((-i32::from(offset)) as usize)
+    };
+    match target {
+        Some(target) if target <= code_len => Ok(Some(target)),
+        _ => Err(OptimizeError::InvalidJumpTarget {
+            pc,
+            offset,
+            code_len,
+        }),
     }
 }
 
@@ -2128,5 +2186,34 @@ mod tests {
         assert!(matches!(chunk.code[0], Op::LoadLocal(0)));
         assert!(matches!(chunk.code[1], Op::Neg));
         assert!(matches!(chunk.code[2], Op::Return));
+    }
+
+    #[test]
+    fn rejects_surviving_jump_past_code_end_without_mutating_chunk() {
+        // The identity fold makes the optimizer enter its relinking
+        // path while the malformed jump remains live. Before the
+        // boundary check, old_to_new[old_target] panicked here.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Add,
+                Op::Jump(3), // pc 3 + 1 + 3 = 7, beyond code length 4
+            ],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1, 1],
+        );
+        let original_code = chunk.code.clone();
+
+        let err = optimize(&mut chunk).expect_err("invalid jump must fail closed");
+        assert!(matches!(
+            err,
+            OptimizeError::InvalidJumpTarget {
+                pc: 3,
+                offset: 3,
+                code_len: 4,
+            }
+        ));
+        assert_eq!(chunk.code, original_code);
     }
 }

@@ -179,6 +179,9 @@ pub enum DecodeError {
     InvalidTryHandlerReference(u16),
     /// A catch arm used by a code chunk points outside that chunk.
     InvalidHandlerTarget { target: u32, code_len: usize },
+    /// A function body accesses a local slot outside its declared
+    /// frame-local window.
+    InvalidLocalReference { index: u16, local_count: u16 },
 }
 
 struct Writer<'a> {
@@ -443,8 +446,15 @@ fn validate_code_references(
     code: &[Instr],
     function_count: usize,
     try_handlers: &[super::TryHandlerEntry],
+    local_count: Option<u16>,
 ) -> Result<(), DecodeError> {
     for instr in code {
+        if let Some(local_count) = local_count
+            && let Instr::LoadLocal(index) | Instr::StoreLocal(index) = *instr
+            && index >= local_count
+        {
+            return Err(DecodeError::InvalidLocalReference { index, local_count });
+        }
         match *instr {
             Instr::Jump(target) | Instr::JumpIfFalse(target) | Instr::JumpIfTrue(target) => {
                 if target as usize >= code.len() {
@@ -846,6 +856,7 @@ pub fn decode_program(
         &out_main[..main_count],
         func_count,
         &out_try_handlers[..try_count],
+        None,
     )?;
     for meta in out_func_meta.iter().take(func_count) {
         let start = meta.offset as usize;
@@ -855,7 +866,12 @@ pub fn decode_program(
         let code = out_func_code
             .get(start..end)
             .ok_or(DecodeError::TooManyFuncInstrs)?;
-        validate_code_references(code, func_count, &out_try_handlers[..try_count])?;
+        validate_code_references(
+            code,
+            func_count,
+            &out_try_handlers[..try_count],
+            Some(meta.local_count),
+        )?;
     }
 
     r.finish()?;
@@ -1715,6 +1731,31 @@ mod tests {
                 code_len: 2,
             })
         );
+    }
+
+    #[test]
+    fn program_decode_rejects_function_local_operands_out_of_range() {
+        for instruction in [Instr::LoadLocal(1), Instr::StoreLocal(1)] {
+            let function = [instruction, Instr::Return];
+            let functions = [EncodeFunctionDef {
+                code: &function,
+                arity: 0,
+                local_count: 1,
+                postcheck: None,
+                fails_variant: None,
+                capture_count: 0,
+            }];
+
+            let result = decode_program_for_test(&[], &functions, &[]);
+            assert_eq!(
+                result,
+                Err(DecodeError::InvalidLocalReference {
+                    index: 1,
+                    local_count: 1,
+                }),
+                "function-local operand should be rejected: {instruction:?}"
+            );
+        }
     }
 
     #[test]

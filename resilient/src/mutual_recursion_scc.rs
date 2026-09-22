@@ -47,6 +47,17 @@ impl CallGraph {
             .unwrap_or(false)
     }
 
+    /// Check a function body without descending into nested function scopes.
+    /// This is used by strict termination to inspect named nested functions
+    /// independently of the top-level call graph.
+    pub fn has_self_call_in_body(body: &Node, fn_name: &str) -> bool {
+        let mut graph = HashMap::from([(fn_name.to_string(), HashSet::new())]);
+        collect_called_functions(body, fn_name, &mut graph);
+        graph
+            .get(fn_name)
+            .is_some_and(|calls| calls.contains(fn_name))
+    }
+
     /// Find all strongly-connected components using Kosaraju's algorithm.
     pub fn find_sccs(&self) -> Vec<Vec<String>> {
         if self.graph.is_empty() {

@@ -143,6 +143,8 @@ unsafe impl RccConfig for Stm32f4Rcc {
 pub enum RccError {
     /// The peripheral is not supported by the configured chip.
     UnsupportedPeripheral,
+    /// The chip configuration returned a bit outside the 32-bit register.
+    InvalidBit(u32),
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +169,9 @@ pub enum RccError {
 pub fn enable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), RccError> {
     let addr = CFG::enable_register_addr(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
     let bit = CFG::enable_bit(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
+    if bit >= u32::BITS {
+        return Err(RccError::InvalidBit(bit));
+    }
     // SAFETY: addr is a valid 32-bit MMIO register per RccConfig's contract.
     unsafe {
         let ptr = addr as *mut u32;
@@ -184,6 +189,9 @@ pub fn enable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), R
 pub fn disable_peripheral<CFG: RccConfig>(peripheral: Peripheral) -> Result<(), RccError> {
     let addr = CFG::enable_register_addr(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
     let bit = CFG::enable_bit(peripheral).ok_or(RccError::UnsupportedPeripheral)?;
+    if bit >= u32::BITS {
+        return Err(RccError::InvalidBit(bit));
+    }
     // SAFETY: same as enable_peripheral.
     unsafe {
         let ptr = addr as *mut u32;
@@ -203,6 +211,9 @@ pub fn is_enabled<CFG: RccConfig>(peripheral: Peripheral) -> bool {
     ) else {
         return false;
     };
+    if bit >= u32::BITS {
+        return false;
+    }
     // SAFETY: same as enable_peripheral.
     unsafe {
         let ptr = addr as *const u32;
@@ -234,8 +245,8 @@ mod tests {
         }
 
         fn enable_bit(peripheral: Peripheral) -> Option<u32> {
-            // Use the same bit layout as Stm32f4Rcc so tests exercise the
-            // actual bit positions.
+            // Use the same bit layout as Stm32f4Rcc for valid cases, while
+            // keeping GpioH malformed for the invalid-index test below.
             let bit = match peripheral {
                 Peripheral::GpioA => 0,
                 Peripheral::GpioB => 1,
@@ -244,7 +255,9 @@ mod tests {
                 Peripheral::GpioE => 4,
                 Peripheral::GpioF => 5,
                 Peripheral::GpioG => 6,
-                Peripheral::GpioH => 7,
+                // Deliberately malformed so the invalid-index guard can be
+                // exercised without adding another test-only configuration.
+                Peripheral::GpioH => u32::BITS,
             };
             Some(bit)
         }
@@ -349,5 +362,20 @@ mod tests {
             is_enabled::<MockRcc>(Peripheral::GpioA),
             "is_enabled must return true after enable_peripheral"
         );
+    }
+
+    #[test]
+    fn invalid_bit_is_rejected_without_touching_register() {
+        reset_mock();
+        assert_eq!(
+            enable_peripheral::<MockRcc>(Peripheral::GpioH),
+            Err(RccError::InvalidBit(u32::BITS))
+        );
+        assert_eq!(
+            disable_peripheral::<MockRcc>(Peripheral::GpioH),
+            Err(RccError::InvalidBit(u32::BITS))
+        );
+        assert!(!is_enabled::<MockRcc>(Peripheral::GpioH));
+        assert_eq!(MOCK_AHB1ENR.load(Ordering::SeqCst), 0);
     }
 }
