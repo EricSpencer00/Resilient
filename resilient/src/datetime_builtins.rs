@@ -91,40 +91,119 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
-fn unix_to_datetime(epoch_secs: i64) -> (i64, i64, i64, i64, i64, i64) {
+fn unix_to_datetime(epoch_secs: i64) -> RResult<(i64, i64, i64, i64, i64, i64)> {
     let secs = epoch_secs;
     let hour = ((secs % 86400) / 3600 + 24) % 24;
     let minute = ((secs % 3600) / 60 + 60) % 60;
     let second = (secs % 60 + 60) % 60;
 
-    let mut days = secs.div_euclid(86400);
-    days += 719468; // shift epoch from 1970-01-01 to 0000-03-01
+    let days = secs
+        .div_euclid(86400)
+        .checked_add(719468)
+        .ok_or_else(|| "datetime_from_unix: calendar day offset overflow".to_string())?;
 
     let era = days.div_euclid(146097);
     let doe = days.rem_euclid(146097);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
+    let y = yoe
+        .checked_add(
+            era.checked_mul(400).ok_or_else(|| {
+                "datetime_from_unix: calendar year arithmetic overflow".to_string()
+            })?,
+        )
+        .ok_or_else(|| "datetime_from_unix: calendar year arithmetic overflow".to_string())?;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
+    let year = if m <= 2 {
+        y.checked_add(1)
+            .ok_or_else(|| "datetime_from_unix: calendar year arithmetic overflow".to_string())?
+    } else {
+        y
+    };
 
-    (year, m, d, hour, minute, second)
+    Ok((year, m, d, hour, minute, second))
 }
 
-fn datetime_to_unix_secs(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
+fn validate_datetime_components(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    min: i64,
+    sec: i64,
+    nanos: i64,
+) -> RResult<()> {
+    if !(1..=12).contains(&month) {
+        return Err(format!("datetime_to_unix: month out of range: {month}"));
+    }
+    let max_day = days_in_month(year, month);
+    if !(1..=max_day).contains(&day) {
+        return Err(format!(
+            "datetime_to_unix: day out of range: {day} (max {max_day} for {year}-{month:02})"
+        ));
+    }
+    if !(0..=23).contains(&hour) {
+        return Err(format!("datetime_to_unix: hour out of range: {hour}"));
+    }
+    if !(0..=59).contains(&min) {
+        return Err(format!("datetime_to_unix: minute out of range: {min}"));
+    }
+    if !(0..=59).contains(&sec) {
+        return Err(format!("datetime_to_unix: second out of range: {sec}"));
+    }
+    if !(0..1_000_000_000).contains(&nanos) {
+        return Err(format!(
+            "datetime_to_unix: nanosecond out of range: {nanos}"
+        ));
+    }
+    Ok(())
+}
+
+fn datetime_to_unix_secs(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    min: i64,
+    sec: i64,
+) -> RResult<i64> {
     let (y, m) = if month <= 2 {
-        (year - 1, month + 9)
+        (
+            year.checked_sub(1)
+                .ok_or_else(|| "datetime_to_unix: year arithmetic overflow".to_string())?,
+            month + 9,
+        )
     } else {
         (year, month - 3)
     };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    days * 86400 + hour * 3600 + min * 60 + sec
+    let doy = (153_i64
+        .checked_mul(m)
+        .and_then(|value| value.checked_add(2))
+        .ok_or_else(|| "datetime_to_unix: day arithmetic overflow".to_string())?
+        / 5)
+    .checked_add(day)
+    .and_then(|value| value.checked_sub(1))
+    .ok_or_else(|| "datetime_to_unix: day arithmetic overflow".to_string())?;
+    let doe = yoe
+        .checked_mul(365)
+        .and_then(|value| value.checked_add(yoe / 4))
+        .and_then(|value| value.checked_sub(yoe / 100))
+        .and_then(|value| value.checked_add(doy))
+        .ok_or_else(|| "datetime_to_unix: day arithmetic overflow".to_string())?;
+    let days = era
+        .checked_mul(146097)
+        .and_then(|value| value.checked_add(doe))
+        .and_then(|value| value.checked_sub(719468))
+        .ok_or_else(|| "datetime_to_unix: day arithmetic overflow".to_string())?;
+    days.checked_mul(86400)
+        .and_then(|value| value.checked_add(hour * 3600))
+        .and_then(|value| value.checked_add(min * 60))
+        .and_then(|value| value.checked_add(sec))
+        .ok_or_else(|| "datetime_to_unix: Unix timestamp arithmetic overflow".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -142,16 +221,17 @@ pub(crate) fn builtin_datetime_now(args: &[Value]) -> RResult<Value> {
     // non-panicking fixed-base clock on wasm32 (where `SystemTime::now()`
     // traps). Already saturating, so there is no clock-error path.
     let dur = crate::host_clock::wall_clock_since_epoch();
-    let epoch_secs = dur.as_secs() as i64;
+    let epoch_secs = i64::try_from(dur.as_secs())
+        .map_err(|_| "datetime_now: clock value exceeds supported Unix range".to_string())?;
     let nanos = dur.subsec_nanos() as i64;
-    let (year, month, day, hour, minute, second) = unix_to_datetime(epoch_secs);
+    let (year, month, day, hour, minute, second) = unix_to_datetime(epoch_secs)?;
     Ok(make_datetime(year, month, day, hour, minute, second, nanos))
 }
 
 pub(crate) fn builtin_datetime_from_unix(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(secs)] => {
-            let (year, month, day, hour, minute, second) = unix_to_datetime(*secs);
+            let (year, month, day, hour, minute, second) = unix_to_datetime(*secs)?;
             Ok(make_datetime(year, month, day, hour, minute, second, 0))
         }
         [other] => Err(format!(
@@ -168,10 +248,11 @@ pub(crate) fn builtin_datetime_from_unix(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_datetime_to_unix(args: &[Value]) -> RResult<Value> {
     match args {
         [dt] => {
-            let (year, month, day, hour, minute, second, _nanos) = extract_datetime(dt)?;
+            let (year, month, day, hour, minute, second, nanos) = extract_datetime(dt)?;
+            validate_datetime_components(year, month, day, hour, minute, second, nanos)?;
             Ok(Value::Int(datetime_to_unix_secs(
                 year, month, day, hour, minute, second,
-            )))
+            )?))
         }
         _ => Err(format!(
             "datetime_to_unix: expected 1 argument, got {}",
