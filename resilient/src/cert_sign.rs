@@ -88,7 +88,7 @@ fn compute_cert_payload_with_limits(
 
     let mut payload = Vec::new();
     for (i, p) in entries.iter().enumerate() {
-        let mut file = fs::File::open(p)
+        let file = fs::File::open(p)
             .map_err(|e| format!("could not read cert file {}: {}", p.display(), e))?;
         let declared_len = file
             .metadata()
