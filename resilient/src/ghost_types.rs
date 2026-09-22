@@ -81,43 +81,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 }
 
 fn walk_calls<'a>(node: &'a Node, ghosts: &HashSet<String>, out: &mut Vec<&'a str>) {
-    match node {
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if ghosts.contains(name) {
-                    out.push(name.as_str());
-                }
-            }
-            for a in arguments {
-                walk_calls(a, ghosts, out);
-            }
+    crate::uniqueness_walk::visit(node, &mut |node| {
+        if let Node::CallExpression { function, .. } = node
+            && let Node::Identifier { name, .. } = function.as_ref()
+            && ghosts.contains(name)
+        {
+            out.push(name.as_str());
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                walk_calls(s, ghosts, out);
-            }
-        }
-        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, ghosts, out),
-        Node::LetStatement { value, .. } => walk_calls(value, ghosts, out),
-        Node::ExpressionStatement { expr, .. } => walk_calls(expr, ghosts, out),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            walk_calls(condition, ghosts, out);
-            walk_calls(consequence, ghosts, out);
-            if let Some(e) = alternative {
-                walk_calls(e, ghosts, out);
-            }
-        }
-        _ => {}
-    }
+    });
 }
 
 #[cfg(test)]
