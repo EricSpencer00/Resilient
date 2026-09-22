@@ -36,10 +36,6 @@
       "branch": "res-4599-semver-caret-bounds",
       "claimed_at": "2026-09-20T15:31:47Z"
     },
-    "resilient/src/behavioral_fingerprint.rs": {
-      "branch": "res-4611-stable-fingerprints",
-      "claimed_at": "2026-09-20T16:00:32Z"
-    },
     "resilient/src/const_generic_len.rs": {
       "branch": "res-4618-fixed-array-return-paths",
       "claimed_at": "2026-09-20T16:16:40Z"
