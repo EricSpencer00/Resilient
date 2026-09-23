@@ -17011,6 +17011,24 @@ fn builtin_array_interleave(args: &[Value]) -> RResult<Value> {
     }
 }
 
+fn checked_array_intersperse_length(item_count: usize) -> RResult<usize> {
+    if item_count < 2 {
+        return Ok(item_count);
+    }
+
+    let output_len = item_count
+        .checked_mul(2)
+        .and_then(|length| length.checked_sub(1))
+        .ok_or_else(|| "array_intersperse: output length overflows usize".to_string())?;
+    let limit = crate::array_functional::MAX_GENERATED_ELEMENTS;
+    if output_len > limit {
+        return Err(format!(
+            "array_intersperse: output would exceed the maximum of {limit} elements"
+        ));
+    }
+    Ok(output_len)
+}
+
 /// RES-437: `array_intersperse(arr, x)` — insert `x` between every
 /// pair of adjacent elements. `[a, b, c]` ⇒ `[a, x, b, x, c]`.
 /// Empty or single-element arrays return a clone unchanged.
@@ -17020,7 +17038,10 @@ fn builtin_array_intersperse(args: &[Value]) -> RResult<Value> {
             if items.len() < 2 {
                 return Ok(Value::Array(items.clone()));
             }
-            let mut out = Vec::with_capacity(items.len() * 2 - 1);
+            let output_len = checked_array_intersperse_length(items.len())?;
+            let mut out = Vec::new();
+            out.try_reserve_exact(output_len)
+                .map_err(|_| "array_intersperse: unable to reserve result storage".to_string())?;
             for (i, v) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(sep.clone());
@@ -53910,6 +53931,31 @@ struct Counter { int value; }"#,
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    #[test]
+    fn array_intersperse_output_length_matches_interleaving_shape() {
+        assert_eq!(checked_array_intersperse_length(0).unwrap(), 0);
+        assert_eq!(checked_array_intersperse_length(1).unwrap(), 1);
+        assert_eq!(checked_array_intersperse_length(3).unwrap(), 5);
+    }
+
+    #[test]
+    fn array_intersperse_output_limit_rejects_first_oversized_shape() {
+        let limit = crate::array_functional::MAX_GENERATED_ELEMENTS;
+        let largest_input_len = limit / 2;
+        assert_eq!(
+            checked_array_intersperse_length(largest_input_len).unwrap(),
+            limit - 1
+        );
+        let error = checked_array_intersperse_length(largest_input_len + 1).unwrap_err();
+        assert!(error.contains("maximum"), "got: {error}");
+    }
+
+    #[test]
+    fn array_intersperse_output_length_overflow_is_typed() {
+        let error = checked_array_intersperse_length(usize::MAX).unwrap_err();
+        assert!(error.contains("overflows usize"), "got: {error}");
     }
 
     // ---------- RES-516: array_interleave ----------
