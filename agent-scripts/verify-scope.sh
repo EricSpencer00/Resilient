@@ -284,6 +284,15 @@ run_cargo() {
   fi
 }
 
+if [ -x "$REPO_ROOT/agent-scripts/test-reconcile-integration-squash-tree.sh" ]; then
+  if "$REPO_ROOT/agent-scripts/test-reconcile-integration-squash-tree.sh" >/tmp/agent-guardrail.log 2>&1; then
+    pass "integration squash-tree regression"
+  else
+    fail "integration squash-tree regression — see /tmp/agent-guardrail.log"
+    tail -40 /tmp/agent-guardrail.log | sed 's/^/       /'
+  fi
+fi
+
 if (( SKIP_FMT == 0 )); then
   # The repo has no top-level Cargo.toml, so `cargo fmt` from the
   # repo root cannot find a manifest. Point it at the workspace

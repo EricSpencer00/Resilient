@@ -57,6 +57,21 @@ if git merge-base --is-ancestor "$main_sha" "$int_sha"; then
   exit 0
 fi
 
+main_tree="$(git rev-parse --verify "$main_sha^{tree}")"
+int_tree="$(git rev-parse --verify "$int_sha^{tree}")"
+if [[ "$main_tree" == "$int_tree" ]]; then
+  echo "agents/integration diverged, but its tree is identical to main (squash-equivalent)"
+  if (( PUSH )); then
+    # The explicit lease prevents a concurrent agent from being overwritten.
+    git push \
+      "--force-with-lease=refs/heads/$INTEGRATION_BRANCH:$int_sha" \
+      "$REMOTE" "$main_sha:refs/heads/$INTEGRATION_BRANCH"
+  else
+    echo "(--no-push) would reconcile $INTEGRATION_BRANCH to $main_sha"
+  fi
+  exit 0
+fi
+
 cherry_report="$(git cherry "$main_sha" "$int_sha")"
 non_equivalent="$(awk '$1 != "-" { print }' <<< "$cherry_report")"
 
