@@ -17964,13 +17964,43 @@ fn builtin_array_join(args: &[Value]) -> RResult<Value> {
     }
 }
 
+fn checked_array_flatten_length(current_len: usize, additional_len: usize) -> RResult<usize> {
+    let output_len = current_len
+        .checked_add(additional_len)
+        .ok_or_else(|| "array_flatten: output length overflows usize".to_string())?;
+    let limit = crate::array_functional::MAX_GENERATED_ELEMENTS;
+    if output_len > limit {
+        return Err(format!(
+            "array_flatten: output would exceed the maximum of {limit} elements"
+        ));
+    }
+    Ok(output_len)
+}
+
 /// RES-423: `array_flatten(arr)` — concatenate the inner arrays of an
 /// array-of-arrays one level deep. Top-level non-array elements produce
 /// a typed error. Empty outer or inner arrays are fine.
 fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
+            let mut output_len = 0;
+            for v in items {
+                match v {
+                    Value::Array(inner) => {
+                        output_len = checked_array_flatten_length(output_len, inner.len())?;
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_flatten: expected array of arrays, got inner {}",
+                            other
+                        ));
+                    }
+                }
+            }
+
             let mut out: Vec<Value> = Vec::new();
+            out.try_reserve_exact(output_len)
+                .map_err(|_| "array_flatten: unable to reserve result storage".to_string())?;
             for v in items {
                 match v {
                     Value::Array(inner) => out.extend_from_slice(inner),
@@ -51730,6 +51760,20 @@ struct Counter { int value; }"#,
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
+    }
+
+    #[test]
+    fn array_flatten_output_limit_accepts_exact_boundary_and_rejects_one_more() {
+        let limit = crate::array_functional::MAX_GENERATED_ELEMENTS;
+        assert_eq!(checked_array_flatten_length(limit - 1, 1).unwrap(), limit);
+        let error = checked_array_flatten_length(limit, 1).unwrap_err();
+        assert!(error.contains("maximum"), "got: {error}");
+    }
+
+    #[test]
+    fn array_flatten_output_length_overflow_is_typed() {
+        let error = checked_array_flatten_length(usize::MAX, 1).unwrap_err();
+        assert!(error.contains("overflows usize"), "got: {error}");
     }
 
     // ---------- RES-424: array_join ----------
