@@ -1132,7 +1132,7 @@ fn regex_find(args: &[Value]) -> RResult<Value> {
             ));
         }
     };
-    let matches = simple_regex_find_all(&pattern, &text);
+    let matches = simple_regex_find_all(&pattern, &text)?;
     Ok(Value::Array(
         matches.into_iter().map(Value::String).collect(),
     ))
@@ -4792,19 +4792,42 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     text.contains(&pattern.replace(".*", ""))
 }
 
-fn simple_regex_find_all(pattern: &str, text: &str) -> Vec<String> {
+fn simple_regex_find_all(pattern: &str, text: &str) -> Result<Vec<String>, String> {
     // Simple: find all literal occurrences
     let search = pattern.replace(".*", "").replace(['.', '*', '+', '?'], "");
     if search.is_empty() {
-        return vec![text.to_string()];
+        return Ok(vec![text.to_string()]);
     }
+    let match_count = checked_regex_find_match_count(text.match_indices(search.as_str()))?;
     let mut results = Vec::new();
+    results
+        .try_reserve_exact(match_count)
+        .map_err(|_| "regex::find: unable to reserve result storage".to_string())?;
     let mut start = 0;
     while let Some(idx) = text[start..].find(&search) {
         results.push(search.clone());
         start += idx + search.len();
     }
-    results
+    Ok(results)
+}
+
+fn checked_regex_find_match_count<I>(matches: I) -> Result<usize, String>
+where
+    I: Iterator,
+{
+    let mut count = 0usize;
+    for _ in matches {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| "regex::find: match count overflow".to_string())?;
+        if count > crate::regex_builtins::MAX_FIND_ALL_MATCHES {
+            return Err(format!(
+                "regex::find: result would exceed {} matches",
+                crate::regex_builtins::MAX_FIND_ALL_MATCHES
+            ));
+        }
+    }
+    Ok(count)
 }
 
 fn simple_regex_replace(pattern: &str, replacement: &str, text: &str) -> String {
@@ -4987,6 +5010,32 @@ mod tests {
             Value::Bool(b) => assert_eq!(b, expected),
             _ => panic!("expected Bool value"),
         }
+    }
+
+    #[test]
+    fn regex_find_match_budget_accepts_limit_and_rejects_one_more() {
+        let limit = crate::regex_builtins::MAX_FIND_ALL_MATCHES;
+        assert_eq!(checked_regex_find_match_count(0..limit), Ok(limit));
+
+        let error = checked_regex_find_match_count(0..=limit)
+            .expect_err("the match count above the limit must be rejected");
+        assert_eq!(
+            error,
+            format!("regex::find: result would exceed {limit} matches")
+        );
+    }
+
+    #[test]
+    fn regex_find_preserves_match_and_empty_results() {
+        assert_eq!(
+            simple_regex_find_all("ab", "zabxab").unwrap(),
+            vec!["ab".to_string(), "ab".to_string()]
+        );
+        assert_eq!(
+            simple_regex_find_all(".*", "text").unwrap(),
+            vec!["text".to_string()]
+        );
+        assert!(simple_regex_find_all("z", "text").unwrap().is_empty());
     }
 
     #[test]
