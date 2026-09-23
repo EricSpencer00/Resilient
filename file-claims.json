@@ -211,6 +211,10 @@
     "agent-scripts/test-reconcile-integration-squash-tree.sh": {
       "branch": "res-4528-squash-tree-sync",
       "claimed_at": "2026-09-23T09:12:10Z"
+    },
+    "agent-scripts/verify-scope.sh": {
+      "branch": "res-4528-squash-tree-sync",
+      "claimed_at": "2026-09-23T09:15:29Z"
     }
   }
 }
