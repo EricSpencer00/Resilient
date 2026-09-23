@@ -41,8 +41,27 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+
+const MAX_PUBLISH_FILE_COUNT: usize = 10_000;
+const MAX_PUBLISH_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_PUBLISH_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+const USTAR_BLOCK_BYTES: u64 = 512;
+const USTAR_TRAILER_BYTES: u64 = USTAR_BLOCK_BYTES * 2;
+
+#[derive(Clone, Copy)]
+struct ArchiveLimits {
+    max_file_count: usize,
+    max_file_bytes: u64,
+    max_archive_bytes: u64,
+}
+
+const DEFAULT_ARCHIVE_LIMITS: ArchiveLimits = ArchiveLimits {
+    max_file_count: MAX_PUBLISH_FILE_COUNT,
+    max_file_bytes: MAX_PUBLISH_FILE_BYTES,
+    max_archive_bytes: MAX_PUBLISH_ARCHIVE_BYTES,
+};
 
 /// Manifest fields needed for publication. Mirrors the `[package]`
 /// keys `pkg init` writes today, plus `description` and `entry`
@@ -77,6 +96,10 @@ pub enum PkgPublishError {
         context: String,
         source: io::Error,
     },
+    ArchiveLimitExceeded {
+        resource: &'static str,
+        limit: u64,
+    },
     /// Caller invoked `pkg publish` without `--dry-run` while the
     /// registry endpoint is unconfigured. Returns the user back
     /// to a workable invocation.
@@ -102,6 +125,12 @@ impl std::fmt::Display for PkgPublishError {
                 field
             ),
             Self::Io { context, source } => write!(f, "{}: {}", context, source),
+            Self::ArchiveLimitExceeded { resource, limit } => {
+                write!(
+                    f,
+                    "package publish: {resource} exceeds configured limit ({limit})"
+                )
+            }
             Self::RegistryNotConfigured => write!(
                 f,
                 "no registry endpoint configured for `pkg publish`. \
@@ -206,28 +235,60 @@ pub fn read_publish_manifest(manifest_path: &Path) -> Result<PublishManifest, Pk
 /// Returns paths relative to `project_root`, sorted, so the tarball
 /// is deterministic across runs.
 pub fn collect_publishable_files(project_root: &Path) -> Result<Vec<PathBuf>, PkgPublishError> {
-    let ignore_patterns = read_gitignore_patterns(project_root);
+    collect_publishable_files_with_file_limit(project_root, MAX_PUBLISH_FILE_COUNT)
+}
+
+fn collect_publishable_files_with_file_limit(
+    project_root: &Path,
+    max_file_count: usize,
+) -> Result<Vec<PathBuf>, PkgPublishError> {
+    let ignore_patterns = read_gitignore_patterns(project_root)?;
     let mut out: Vec<PathBuf> = Vec::new();
-    walk(project_root, project_root, &ignore_patterns, &mut out).map_err(|e| {
-        PkgPublishError::Io {
-            context: format!("walking {}", project_root.display()),
-            source: e,
-        }
-    })?;
+    walk(
+        project_root,
+        project_root,
+        &ignore_patterns,
+        &mut out,
+        max_file_count,
+    )?;
     out.sort();
     Ok(out)
 }
 
-fn read_gitignore_patterns(project_root: &Path) -> Vec<String> {
+fn read_gitignore_patterns(project_root: &Path) -> Result<Vec<String>, PkgPublishError> {
     let path = project_root.join(".gitignore");
-    let Ok(contents) = fs::read_to_string(&path) else {
-        return Vec::new();
+    let mut file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(_) => return Ok(Vec::new()),
     };
-    contents
+    if let Ok(metadata) = file.metadata()
+        && metadata.len() > MAX_PUBLISH_FILE_BYTES
+    {
+        return Err(PkgPublishError::ArchiveLimitExceeded {
+            resource: "gitignore size",
+            limit: MAX_PUBLISH_FILE_BYTES,
+        });
+    }
+
+    let mut contents = String::new();
+    let bytes_read = {
+        let mut limited = (&mut file).take(MAX_PUBLISH_FILE_BYTES.saturating_add(1));
+        match limited.read_to_string(&mut contents) {
+            Ok(bytes_read) => bytes_read as u64,
+            Err(_) => return Ok(Vec::new()),
+        }
+    };
+    if bytes_read > MAX_PUBLISH_FILE_BYTES {
+        return Err(PkgPublishError::ArchiveLimitExceeded {
+            resource: "gitignore size",
+            limit: MAX_PUBLISH_FILE_BYTES,
+        });
+    }
+    Ok(contents
         .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect())
 }
 
 fn walk(
@@ -235,16 +296,23 @@ fn walk(
     dir: &Path,
     ignore_patterns: &[String],
     out: &mut Vec<PathBuf>,
-) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+    max_file_count: usize,
+) -> Result<(), PkgPublishError> {
+    let entries = fs::read_dir(dir).map_err(|source| PkgPublishError::Io {
+        context: format!("walking {}", dir.display()),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| PkgPublishError::Io {
+            context: format!("reading directory entry in {}", dir.display()),
+            source,
+        })?;
         let path = entry.path();
         let name = match path.file_name().and_then(|s| s.to_str()) {
             Some(n) => n,
             None => continue,
         };
-        // Skip hidden entries — keeps `.git`, `.cache`, `.DS_Store`
-        // etc. out of every archive.
+        // Skip hidden entries — keeps .git, .cache, and .DS_Store out of archives.
         if name.starts_with('.') {
             continue;
         }
@@ -256,8 +324,14 @@ fn walk(
             continue;
         }
         if path.is_dir() {
-            walk(root, &path, ignore_patterns, out)?;
+            walk(root, &path, ignore_patterns, out, max_file_count)?;
         } else if path.is_file() {
+            if out.len() >= max_file_count {
+                return Err(PkgPublishError::ArchiveLimitExceeded {
+                    resource: "publishable file count",
+                    limit: max_file_count as u64,
+                });
+            }
             out.push(rel);
         }
     }
@@ -267,9 +341,9 @@ fn walk(
 /// Test whether a relative path matches any of the simple gitignore
 /// patterns. Supported shapes:
 ///
-/// * `dir/`  — exclude any path whose first segment is `dir`.
+/// * `dir/` — exclude any path whose first segment is `dir`.
 /// * `*.ext` — exclude any path whose final segment ends in `.ext`.
-/// * `name`  — exclude any path with that exact final segment, or
+/// * `name` — exclude any path with that exact final segment, or
 ///   whose first segment matches `name` (treated as a directory).
 fn matches_ignore(rel: &Path, patterns: &[String]) -> bool {
     let s = rel.to_string_lossy();
@@ -308,32 +382,166 @@ pub fn make_tarball(
     manifest: &PublishManifest,
     files: &[PathBuf],
 ) -> Result<Vec<u8>, PkgPublishError> {
+    make_tarball_with_limits(project_root, manifest, files, DEFAULT_ARCHIVE_LIMITS)
+}
+
+fn make_tarball_with_limits(
+    project_root: &Path,
+    manifest: &PublishManifest,
+    files: &[PathBuf],
+    limits: ArchiveLimits,
+) -> Result<Vec<u8>, PkgPublishError> {
+    if files.len() > limits.max_file_count {
+        return Err(PkgPublishError::ArchiveLimitExceeded {
+            resource: "publishable file count",
+            limit: limits.max_file_count as u64,
+        });
+    }
+
     let prefix = format!("{}-{}", manifest.name, manifest.version);
-    let mut out: Vec<u8> = Vec::new();
+    let mut archive_size = USTAR_TRAILER_BYTES;
+    if archive_size > limits.max_archive_bytes {
+        return Err(PkgPublishError::ArchiveLimitExceeded {
+            resource: "archive size",
+            limit: limits.max_archive_bytes,
+        });
+    }
+
+    let mut entries = Vec::with_capacity(files.len());
     for rel in files {
         let abs = project_root.join(rel);
-        let body = fs::read(&abs).map_err(|e| PkgPublishError::Io {
-            context: format!("reading {}", abs.display()),
-            source: e,
-        })?;
         let archived_name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-        write_tar_entry(&mut out, &archived_name, &body).map_err(|e| PkgPublishError::Io {
-            context: format!("writing tar entry {}", archived_name),
-            source: e,
-        })?;
+        if archived_name.len() > 100 {
+            return Err(PkgPublishError::Io {
+                context: format!("writing tar entry {archived_name}"),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("path too long for ustar header: {archived_name}"),
+                ),
+            });
+        }
+        let file_size = fs::metadata(&abs)
+            .map_err(|source| PkgPublishError::Io {
+                context: format!("inspecting {}", abs.display()),
+                source,
+            })?
+            .len();
+        if file_size > limits.max_file_bytes {
+            return Err(PkgPublishError::ArchiveLimitExceeded {
+                resource: "file size",
+                limit: limits.max_file_bytes,
+            });
+        }
+        let padded_size = file_size
+            .checked_add(USTAR_BLOCK_BYTES - 1)
+            .and_then(|size| size.checked_div(USTAR_BLOCK_BYTES))
+            .and_then(|blocks| blocks.checked_mul(USTAR_BLOCK_BYTES));
+        let Some(entry_size) = padded_size.and_then(|size| USTAR_BLOCK_BYTES.checked_add(size))
+        else {
+            return Err(PkgPublishError::ArchiveLimitExceeded {
+                resource: "archive size",
+                limit: limits.max_archive_bytes,
+            });
+        };
+        let Some(next_archive_size) = archive_size.checked_add(entry_size) else {
+            return Err(PkgPublishError::ArchiveLimitExceeded {
+                resource: "archive size",
+                limit: limits.max_archive_bytes,
+            });
+        };
+        if next_archive_size > limits.max_archive_bytes {
+            return Err(PkgPublishError::ArchiveLimitExceeded {
+                resource: "archive size",
+                limit: limits.max_archive_bytes,
+            });
+        }
+        archive_size = next_archive_size;
+        entries.push((rel.clone(), archived_name, file_size));
     }
-    // Two trailing 512-byte zero blocks per the USTAR end-of-archive
-    // convention.
-    out.extend(std::iter::repeat_n(0u8, 1024));
+
+    let capacity = usize::try_from(archive_size).map_err(|_| PkgPublishError::Io {
+        context: "reserving package archive buffer".to_string(),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "archive size does not fit in memory on this target",
+        ),
+    })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity)
+        .map_err(|source| PkgPublishError::Io {
+            context: "reserving package archive buffer".to_string(),
+            source: io::Error::other(source),
+        })?;
+
+    for (rel, archived_name, expected_size) in entries {
+        let abs = project_root.join(&rel);
+        let mut file = fs::File::open(&abs).map_err(|source| PkgPublishError::Io {
+            context: format!("reading {}", abs.display()),
+            source,
+        })?;
+        let actual_size = file
+            .metadata()
+            .map_err(|source| PkgPublishError::Io {
+                context: format!("inspecting {}", abs.display()),
+                source,
+            })?
+            .len();
+        if actual_size != expected_size {
+            return Err(PkgPublishError::Io {
+                context: format!("reading {}", abs.display()),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "file size changed while packaging",
+                ),
+            });
+        }
+        write_tar_header(&mut out, &archived_name, expected_size).map_err(|source| {
+            PkgPublishError::Io {
+                context: format!("writing tar entry {archived_name}"),
+                source,
+            }
+        })?;
+        let copied = {
+            let mut limited = (&mut file).take(expected_size);
+            io::copy(&mut limited, &mut out).map_err(|source| PkgPublishError::Io {
+                context: format!("reading {}", abs.display()),
+                source,
+            })?
+        };
+        if copied != expected_size {
+            return Err(PkgPublishError::Io {
+                context: format!("reading {}", abs.display()),
+                source: io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "file ended before its inspected size",
+                ),
+            });
+        }
+        let mut extra = [0u8; 1];
+        if file
+            .read(&mut extra)
+            .map_err(|source| PkgPublishError::Io {
+                context: format!("reading {}", abs.display()),
+                source,
+            })?
+            != 0
+        {
+            return Err(PkgPublishError::Io {
+                context: format!("reading {}", abs.display()),
+                source: io::Error::new(io::ErrorKind::InvalidData, "file grew while packaging"),
+            });
+        }
+        let padding = (USTAR_BLOCK_BYTES - (expected_size % USTAR_BLOCK_BYTES)) % USTAR_BLOCK_BYTES;
+        out.extend(std::iter::repeat_n(0u8, padding as usize));
+    }
+    out.extend(std::iter::repeat_n(0u8, USTAR_TRAILER_BYTES as usize));
     Ok(out)
 }
 
-/// Append one regular-file entry to a USTAR archive in `buf`. The
-/// header is the classic 512-byte block; body is padded to the next
-/// 512-byte boundary.
-fn write_tar_entry(buf: &mut Vec<u8>, name: &str, body: &[u8]) -> io::Result<()> {
+/// Append one regular-file USTAR header to the archive buffer.
+fn write_tar_header(buf: &mut Vec<u8>, name: &str, body_len: u64) -> io::Result<()> {
     if name.len() > 100 {
-        // USTAR allows up to 255 with the `prefix` field; for our
+        // USTAR allows up to 255 with the prefix field; for our
         // packages the 100-byte cap is fine — surface a clear error
         // if anyone hits it.
         return Err(io::Error::new(
@@ -350,16 +558,16 @@ fn write_tar_entry(buf: &mut Vec<u8>, name: &str, body: &[u8]) -> io::Result<()>
     write_octal(&mut header[108..116], 0);
     write_octal(&mut header[116..124], 0);
     // size (12 bytes, octal).
-    write_octal(&mut header[124..136], body.len() as u64);
+    write_octal(&mut header[124..136], body_len);
     // mtime — fixed (epoch) for deterministic builds.
     write_octal(&mut header[136..148], 0);
-    // checksum field — written below after the rest of the header
-    // is filled. Initialize to 8 spaces per spec.
+    // checksum field — written below after the rest of the header is
+    // filled. Initialize to 8 spaces per spec.
     for b in &mut header[148..156] {
         *b = b' ';
     }
     header[156] = b'0'; // typeflag: '0' = regular file
-    // magic + version: "ustar\0" + "00"
+    // magic + version: USTAR uses the expected NUL-terminated magic.
     header[257..263].copy_from_slice(b"ustar\0");
     header[263..265].copy_from_slice(b"00");
     // uname / gname: "root"
@@ -373,9 +581,6 @@ fn write_tar_entry(buf: &mut Vec<u8>, name: &str, body: &[u8]) -> io::Result<()>
     header[154] = 0; // NUL terminator
     header[155] = b' '; // followed by space, per the standard
     buf.extend_from_slice(&header);
-    buf.extend_from_slice(body);
-    let pad = (512 - (body.len() % 512)) % 512;
-    buf.extend(std::iter::repeat_n(0u8, pad));
     Ok(())
 }
 
@@ -740,3 +945,7 @@ mod tests {
         assert!(s.contains("(no upload performed"));
     }
 }
+
+#[cfg(test)]
+#[path = "pkg_publish_budget_tests.rs"]
+mod archive_budget_tests;
