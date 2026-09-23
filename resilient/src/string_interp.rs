@@ -23,6 +23,12 @@
 
 use crate::{Interpreter, Lexer, Node, Parser, RResult, Value};
 
+/// Hard limit for the number of segments an interpolated string may create.
+/// Each live placeholder can contribute an expression and a literal segment,
+/// so the pre-allocation below must reject expansion before it asks the
+/// allocator for a large buffer.
+const MAX_INTERPOLATION_PARTS: usize = 10_000_000;
+
 // ---------- AST helpers ----------
 
 /// One segment of an interpolated string.
@@ -32,6 +38,34 @@ pub enum StringPart {
     Literal(String),
     /// A Resilient expression to be evaluated and stringified.
     Expr(Box<Node>),
+}
+
+fn count_live_interpolation_opens(raw: &str) -> usize {
+    let mut count = 0;
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&'{') => {
+                chars.next();
+            }
+            '{' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+fn interpolation_part_capacity(openings: usize) -> Result<usize, String> {
+    let capacity = openings
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| "string interpolation: part capacity overflow".to_string())?;
+    if capacity > MAX_INTERPOLATION_PARTS {
+        return Err(format!(
+            "string interpolation: part expansion exceeds {MAX_INTERPOLATION_PARTS} parts"
+        ));
+    }
+    Ok(capacity)
 }
 
 // ---------- Parser ----------
@@ -50,9 +84,10 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
 
     // RES-1792: pre-size to (placeholder-count * 2 + 1) — one Literal
     // per `{...}` placeholder plus a trailing Literal. Matches the
-    // typical 1-3-placeholder shape and is computed in O(N) via
-    // `matches`. Called for every interpolated string literal in source.
-    let mut parts: Vec<StringPart> = Vec::with_capacity(raw.matches('{').count() * 2 + 1);
+    // typical 1-3-placeholder shape and is computed in O(N). Reject
+    // excessive or overflowing expansion before allocating the vector.
+    let openings = count_live_interpolation_opens(raw);
+    let mut parts: Vec<StringPart> = Vec::with_capacity(interpolation_part_capacity(openings)?);
     // RES-1832: pre-size to 16 — most literal segments between
     // interpolation placeholders fit in 16 bytes without realloc.
     let mut literal_buf = String::with_capacity(16);
@@ -340,5 +375,22 @@ let y = 7;
         assert!(matches!(&parts[0], StringPart::Literal(s) if s == "Hello, "));
         assert!(matches!(&parts[1], StringPart::Expr(_)));
         assert!(matches!(&parts[2], StringPart::Literal(s) if s == "!"));
+    }
+
+    #[test]
+    fn interpolation_part_capacity_rejects_overflow_and_budget_excess() {
+        assert_eq!(interpolation_part_capacity(0), Ok(1));
+        assert_eq!(interpolation_part_capacity(4_999_999), Ok(9_999_999));
+        assert!(interpolation_part_capacity(5_000_000).is_err());
+        assert!(interpolation_part_capacity(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn escaped_braces_do_not_consume_interpolation_part_budget() {
+        let parts = parse_parts(r"\{\{\{")
+            .unwrap()
+            .expect("escaped braces are parts");
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(&parts[0], StringPart::Literal(s) if s == "{{{"));
     }
 }

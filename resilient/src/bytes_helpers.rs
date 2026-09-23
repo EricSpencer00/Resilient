@@ -35,6 +35,9 @@ pub(crate) fn builtin_bytes_repeat(args: &[Value]) -> RResult<Value> {
                     n
                 ));
             }
+            if b.is_empty() || *n == 0 {
+                return Ok(Value::Bytes(Vec::new()));
+            }
             let count = *n as usize;
             let total = b.len().saturating_mul(count);
             if total > MAX_BYTES_REPEAT {

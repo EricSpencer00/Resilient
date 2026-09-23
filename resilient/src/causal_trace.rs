@@ -18,7 +18,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::RwLock;
 
 #[derive(Debug, Clone)]
@@ -68,12 +68,25 @@ pub fn clear() {
 pub fn format_chain(target_actor: u64) -> String {
     let mut s = String::new();
     let snap = snapshot();
-    let chain: Vec<&TraceEntry> = snap.iter().filter(|e| e.to == target_actor).collect();
-    for e in chain.iter().rev() {
-        s.push_str(&format!(
-            "  actor[{}] received `{}` from actor[{}] at tick {}\n",
-            e.to, e.handler, e.from, e.tick
-        ));
+    let mut pending = vec![target_actor];
+    let mut visited = HashSet::new();
+
+    // Walk through senders after rendering the newest messages for each
+    // actor. The trace is bounded, but malformed input can still contain a
+    // cycle, so each actor is visited at most once.
+    while let Some(actor) = pending.pop() {
+        if !visited.insert(actor) {
+            continue;
+        }
+
+        let chain: Vec<&TraceEntry> = snap.iter().filter(|e| e.to == actor).collect();
+        for e in chain.iter().rev() {
+            s.push_str(&format!(
+                "  actor[{}] received `{}` from actor[{}] at tick {}\n",
+                e.to, e.handler, e.from, e.tick
+            ));
+            pending.push(e.from);
+        }
     }
     s
 }
@@ -171,6 +184,60 @@ mod tests {
         });
         let s = format_chain(3);
         assert!(s.contains("pong"));
+        clear();
+    }
+
+    #[test]
+    fn format_chain_follows_upstream_messages() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: "root".into(),
+            tick: 0,
+        });
+        record(TraceEntry {
+            from: 2,
+            to: 3,
+            handler: "leaf".into(),
+            tick: 1,
+        });
+
+        let rendered = format_chain(3);
+        let leaf = rendered.find("`leaf`").expect("leaf message missing");
+        let root = rendered.find("`root`").expect("root message missing");
+        assert!(
+            leaf < root,
+            "newest causal event should render first: {rendered}"
+        );
+        clear();
+    }
+
+    #[test]
+    fn format_chain_terminates_on_cycles() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: "forward".into(),
+            tick: 0,
+        });
+        record(TraceEntry {
+            from: 2,
+            to: 1,
+            handler: "backward".into(),
+            tick: 1,
+        });
+
+        let rendered = format_chain(2);
+        assert_eq!(
+            rendered.lines().count(),
+            2,
+            "cycle must not repeat: {rendered}"
+        );
+        assert!(rendered.contains("`forward`") && rendered.contains("`backward`"));
         clear();
     }
 

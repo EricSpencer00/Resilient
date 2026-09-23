@@ -613,6 +613,11 @@ impl Chunk {
     /// so it lands at `target_pc`. The op MUST already be a Jump or
     /// JumpIfFalse at `patch_idx`, and the offset must fit in `i16`.
     pub fn patch_jump(&mut self, patch_idx: usize, target_pc: usize) -> Result<(), CompileError> {
+        if patch_idx >= self.code.len() || target_pc > isize::MAX as usize {
+            return Err(CompileError::InternalError(
+                "patch_jump called with an invalid instruction index",
+            ));
+        }
         // Offset is relative to the PC *after* the jump.
         let pc_after = (patch_idx + 1) as isize;
         let offset = (target_pc as isize) - pc_after;
@@ -740,7 +745,12 @@ impl Chunk {
     /// RES-2544: patch a catch arm's handler PC after the handler body
     /// has been compiled and its start PC is known.
     pub fn patch_try_handler(&mut self, table_idx: u16, arm_idx: usize, handler_pc: usize) {
-        self.try_handlers[table_idx as usize].arms[arm_idx].handler_pc = handler_pc;
+        let Some(table) = self.try_handlers.get_mut(table_idx as usize) else {
+            return;
+        };
+        if let Some(arm) = table.arms.get_mut(arm_idx) {
+            arm.handler_pc = handler_pc;
+        }
     }
 
     /// RES-3995: register a `live { ... }` handler table entry. Returns
@@ -759,7 +769,9 @@ impl Chunk {
     /// RES-3995: patch a live-block handler's `body_start_pc` after the
     /// `EnterLive` op has been emitted.
     pub fn set_live_handler_body_start(&mut self, table_idx: u16, body_start_pc: usize) {
-        self.live_handlers[table_idx as usize].body_start_pc = body_start_pc;
+        if let Some(entry) = self.live_handlers.get_mut(table_idx as usize) {
+            entry.body_start_pc = body_start_pc;
+        }
     }
 }
 
@@ -865,6 +877,7 @@ impl std::error::Error for CompileError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BackoffKind;
 
     #[test]
     fn call_foreign_opcode_roundtrips() {
@@ -987,6 +1000,40 @@ mod tests {
         c.emit(Op::Add, 1); // index 0 — not a jump op
         let result = c.patch_jump(0, 1);
         assert!(result.is_err(), "patch_jump on non-jump op must return Err");
+    }
+
+    #[test]
+    fn patch_jump_with_invalid_index_returns_err() {
+        let mut c = Chunk::new();
+        assert!(matches!(
+            c.patch_jump(usize::MAX, 0),
+            Err(CompileError::InternalError(
+                "patch_jump called with an invalid instruction index"
+            ))
+        ));
+    }
+
+    #[test]
+    fn handler_patch_helpers_ignore_invalid_indices() {
+        let mut c = Chunk::new();
+        let try_idx = c.add_try_handler(Vec::new()).unwrap();
+        let live_idx = c
+            .add_live_handler(LiveHandlerEntry {
+                body_start_pc: 7,
+                max_retries: 0,
+                backoff: None,
+                backoff_kind: BackoffKind::default(),
+                timeout_ns: None,
+            })
+            .unwrap();
+
+        c.patch_try_handler(try_idx, usize::MAX, 99);
+        c.patch_try_handler(u16::MAX, 0, 99);
+        c.set_live_handler_body_start(u16::MAX, 99);
+        c.set_live_handler_body_start(live_idx, 11);
+
+        assert!(c.try_handlers[try_idx as usize].arms.is_empty());
+        assert_eq!(c.live_handlers[live_idx as usize].body_start_pc, 11);
     }
 
     #[test]

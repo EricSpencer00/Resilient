@@ -8,7 +8,7 @@
 
 use crate::{BufferStorage, BufferValue, RResult, Value};
 
-const MAX_BUFFER_ELEMENTS: i64 = 1_000_000_000;
+const MAX_BUFFER_ELEMENTS: i64 = 10_000_000;
 
 fn checked_len(name: &str, n: i64) -> Result<usize, String> {
     if n < 0 {

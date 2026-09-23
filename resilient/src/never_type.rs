@@ -74,10 +74,9 @@ fn check_node(node: &Node, source_path: &str, errors: &mut Vec<String>) {
     }
 }
 
-/// For a `-> !` function, check that the body does not contain a reachable
-/// `return` statement at the top level of the body block. Deeply-nested
-/// returns (inside conditionals) are allowed as a conservative heuristic —
-/// full divergence proof is out of scope.
+/// For a `-> !` function, check that no statement-bearing control-flow path
+/// contains a reachable `return`. Nested function declarations and literals
+/// are separate return scopes and are deliberately not descended into.
 fn check_never_fn_body(
     fn_name: &str,
     body: &Node,
@@ -91,8 +90,20 @@ fn check_never_fn_body(
     };
 
     for stmt in stmts {
-        if let Node::ReturnStatement { value, span } = stmt {
-            // A `return;` or `return VALUE;` in a `-> !` fn is always wrong.
+        reject_nested_returns(stmt, fn_name, source_path, errors);
+    }
+
+    // If the body is empty or contains no obvious divergence call, warn.
+    // (Advisory only — not an error, since we can't prove divergence.)
+    let _ = fn_span; // reserved for future divergence heuristic
+}
+
+/// Visit statement-bearing control-flow nodes without crossing a nested
+/// function boundary. A return inside a nested function is a return from that
+/// function, not from the enclosing `-> !` function.
+fn reject_nested_returns(node: &Node, fn_name: &str, source_path: &str, errors: &mut Vec<String>) {
+    match node {
+        Node::ReturnStatement { value, span } => {
             let loc = fmt_loc(source_path, *span);
             if value.is_some() {
                 errors.push(format!(
@@ -106,11 +117,50 @@ fn check_never_fn_body(
                 ));
             }
         }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                reject_nested_returns(stmt, fn_name, source_path, errors);
+            }
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            reject_nested_returns(consequence, fn_name, source_path, errors);
+            if let Some(alt) = alternative {
+                reject_nested_returns(alt, fn_name, source_path, errors);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            reject_nested_returns(expr, fn_name, source_path, errors);
+        }
+        Node::WhileStatement { body, .. }
+        | Node::ForInStatement { body, .. }
+        | Node::LiveBlock { body, .. }
+        | Node::UnsafeBlock { body, .. }
+        | Node::BenchBlock { body, .. } => {
+            reject_nested_returns(body, fn_name, source_path, errors);
+        }
+        Node::Match { arms, .. } => {
+            for (_, _, body) in arms {
+                reject_nested_returns(body, fn_name, source_path, errors);
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                reject_nested_returns(stmt, fn_name, source_path, errors);
+            }
+            for (_, handler_body) in handlers {
+                for stmt in handler_body {
+                    reject_nested_returns(stmt, fn_name, source_path, errors);
+                }
+            }
+        }
+        // Nested functions have independent return contracts.
+        Node::Function { .. } | Node::FunctionLiteral { .. } => {}
+        _ => {}
     }
-
-    // If the body is empty or contains no obvious divergence call, warn.
-    // (Advisory only — not an error, since we can't prove divergence.)
-    let _ = fn_span; // reserved for future divergence heuristic
 }
 
 fn fmt_loc(source_path: &str, span: Span) -> String {
@@ -194,6 +244,41 @@ mod tests {
             result.is_ok(),
             "regular fn should not be checked, got: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn nested_if_return_in_never_fn_errors() {
+        let src = "fn bad() -> ! { if true { return 42; } exit(1); }";
+        let prog = parse_src(src);
+        let result = super::check(&prog, "test.rz");
+        assert!(result.is_err(), "nested return must violate -> !");
+    }
+
+    #[test]
+    fn nested_match_and_try_returns_in_never_fn_error() {
+        let src = "fn bad(int x) -> ! { \
+            match x { 0 => { return; }, _ => { exit(1); } } \
+            try { exit(1); } catch Timeout { return; } \
+        }";
+        let prog = parse_src(src);
+        let result = super::check(&prog, "test.rz");
+        assert!(result.is_err(), "structured returns must violate -> !");
+        let err = result.unwrap_err();
+        assert!(
+            err.matches("never returns").count() >= 2,
+            "missing nested diagnostics: {err}"
+        );
+    }
+
+    #[test]
+    fn nested_function_return_does_not_invalidate_outer_never_fn() {
+        let src = "fn outer() -> ! { fn inner() -> int { return 1; } exit(1); }";
+        let prog = parse_src(src);
+        let result = super::check(&prog, "test.rz");
+        assert!(
+            result.is_ok(),
+            "nested function has its own return scope: {result:?}"
         );
     }
 }

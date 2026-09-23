@@ -140,88 +140,22 @@ fn collect_in_node(
     generic_fns: &HashMap<&str, &Node>,
     out: &mut HashMap<String, Vec<Vec<Type>>>,
 ) {
-    match node {
-        Node::Program(stmts) => {
-            for s in stmts {
-                collect_in_node(&s.node, generic_fns, out);
-            }
-        }
-        Node::Function {
-            body,
-            requires,
-            ensures,
-            recovers_to,
-            ..
-        } => {
-            collect_in_node(body, generic_fns, out);
-            for r in requires {
-                collect_in_node(r, generic_fns, out);
-            }
-            for e in ensures {
-                collect_in_node(e, generic_fns, out);
-            }
-            if let Some(r) = recovers_to {
-                collect_in_node(r, generic_fns, out);
-            }
-        }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                collect_in_node(s, generic_fns, out);
-            }
-        }
-        Node::CallExpression {
+    // Keep discovery in lockstep with the repository-wide AST walker. The
+    // previous hand-written match only descended through a small subset of
+    // expression nodes, so a literal generic call inside an array, tuple,
+    // map, match arm, or index expression was never eligible for lowering.
+    crate::uniqueness_walk::visit(node, &mut |nested| {
+        if let Node::CallExpression {
             function,
             arguments,
             ..
-        } => {
-            // Recurse into arguments first so nested generic calls are collected.
-            for arg in arguments {
-                collect_in_node(arg, generic_fns, out);
-            }
-            collect_in_node(function, generic_fns, out);
-            // Try to record this call site as an instantiation.
-            if let Node::Identifier { name, .. } = function.as_ref()
-                && let Some(type_args) = try_infer_call(name, arguments, generic_fns)
-            {
-                out.entry(name.clone()).or_default().push(type_args);
-            }
+        } = nested
+            && let Node::Identifier { name, .. } = function.as_ref()
+            && let Some(type_args) = try_infer_call(name, arguments, generic_fns)
+        {
+            out.entry(name.clone()).or_default().push(type_args);
         }
-        Node::LetStatement { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::StaticLet { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::Const { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::Assignment { value, .. } => collect_in_node(value, generic_fns, out),
-        Node::ReturnStatement { value: Some(v), .. } => collect_in_node(v, generic_fns, out),
-        Node::ReturnStatement { value: None, .. } => {}
-        Node::ExpressionStatement { expr, .. } => collect_in_node(expr, generic_fns, out),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            collect_in_node(condition, generic_fns, out);
-            collect_in_node(consequence, generic_fns, out);
-            if let Some(alt) = alternative {
-                collect_in_node(alt, generic_fns, out);
-            }
-        }
-        Node::WhileStatement {
-            condition, body, ..
-        } => {
-            collect_in_node(condition, generic_fns, out);
-            collect_in_node(body, generic_fns, out);
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            collect_in_node(iterable, generic_fns, out);
-            collect_in_node(body, generic_fns, out);
-        }
-        Node::InfixExpression { left, right, .. } => {
-            collect_in_node(left, generic_fns, out);
-            collect_in_node(right, generic_fns, out);
-        }
-        Node::PrefixExpression { right, .. } => collect_in_node(right, generic_fns, out),
-        _ => {}
-    }
+    });
 }
 
 /// Try to infer the concrete type arguments for a call to a generic function.
@@ -319,7 +253,13 @@ fn rewrite_node(
         } => Node::Function {
             name: name.clone(),
             parameters: parameters.clone(),
-            defaults: defaults.clone(),
+            defaults: defaults
+                .iter()
+                .map(|d| {
+                    d.as_ref()
+                        .map(|expr| Box::new(rewrite_node(expr, generic_fns, instantiations)))
+                })
+                .collect(),
             body: Box::new(rewrite_node(body, generic_fns, instantiations)),
             requires: requires
                 .iter()
@@ -495,6 +435,375 @@ fn rewrite_node(
         } => Node::PrefixExpression {
             operator,
             right: Box::new(rewrite_node(right, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::Assert {
+            condition,
+            message,
+            span,
+        } => Node::Assert {
+            condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
+            message: message
+                .as_ref()
+                .map(|m| Box::new(rewrite_node(m, generic_fns, instantiations))),
+            span: *span,
+        },
+        Node::Assume {
+            condition,
+            message,
+            span,
+        } => Node::Assume {
+            condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
+            message: message
+                .as_ref()
+                .map(|m| Box::new(rewrite_node(m, generic_fns, instantiations))),
+            span: *span,
+        },
+        Node::BreakWith { value, span } => Node::BreakWith {
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::DeferStatement { expr, span } => Node::DeferStatement {
+            expr: Box::new(rewrite_node(expr, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::InvariantStatement { expr, span } => Node::InvariantStatement {
+            expr: Box::new(rewrite_node(expr, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::FunctionLiteral {
+            parameters,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            return_type,
+            span,
+            explicit_effect,
+        } => Node::FunctionLiteral {
+            parameters: parameters.clone(),
+            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
+            requires: requires
+                .iter()
+                .map(|r| rewrite_node(r, generic_fns, instantiations))
+                .collect(),
+            ensures: ensures
+                .iter()
+                .map(|e| rewrite_node(e, generic_fns, instantiations))
+                .collect(),
+            recovers_to: recovers_to
+                .as_ref()
+                .map(|r| Box::new(rewrite_node(r, generic_fns, instantiations))),
+            return_type: return_type.clone(),
+            span: *span,
+            explicit_effect: *explicit_effect,
+        },
+        Node::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Node::Match {
+            scrutinee: Box::new(rewrite_node(scrutinee, generic_fns, instantiations)),
+            arms: arms
+                .iter()
+                .map(|(pattern, guard, body)| {
+                    (
+                        pattern.clone(),
+                        guard
+                            .as_ref()
+                            .map(|g| rewrite_node(g, generic_fns, instantiations)),
+                        rewrite_node(body, generic_fns, instantiations),
+                    )
+                })
+                .collect(),
+            span: *span,
+        },
+        Node::FieldAccess {
+            target,
+            field,
+            span,
+        } => Node::FieldAccess {
+            target: Box::new(rewrite_node(target, generic_fns, instantiations)),
+            field: field.clone(),
+            span: *span,
+        },
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            span,
+        } => Node::FieldAssignment {
+            target: Box::new(rewrite_node(target, generic_fns, instantiations)),
+            field: field.clone(),
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::ArrayLiteral { items, span } => Node::ArrayLiteral {
+            items: items
+                .iter()
+                .map(|item| rewrite_node(item, generic_fns, instantiations))
+                .collect(),
+            span: *span,
+        },
+        Node::TupleLiteral { items, span } => Node::TupleLiteral {
+            items: items
+                .iter()
+                .map(|item| rewrite_node(item, generic_fns, instantiations))
+                .collect(),
+            span: *span,
+        },
+        Node::MapLiteral { entries, span } => Node::MapLiteral {
+            entries: entries
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        rewrite_node(key, generic_fns, instantiations),
+                        rewrite_node(value, generic_fns, instantiations),
+                    )
+                })
+                .collect(),
+            span: *span,
+        },
+        Node::SetLiteral { items, span } => Node::SetLiteral {
+            items: items
+                .iter()
+                .map(|item| rewrite_node(item, generic_fns, instantiations))
+                .collect(),
+            span: *span,
+        },
+        Node::StructLiteral {
+            name,
+            fields,
+            base,
+            span,
+        } => Node::StructLiteral {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(field, value)| {
+                    (
+                        field.clone(),
+                        rewrite_node(value, generic_fns, instantiations),
+                    )
+                })
+                .collect(),
+            base: base
+                .as_ref()
+                .map(|b| Box::new(rewrite_node(b, generic_fns, instantiations))),
+            span: *span,
+        },
+        Node::LetDestructureStruct {
+            struct_name,
+            fields,
+            has_rest,
+            value,
+            span,
+        } => Node::LetDestructureStruct {
+            struct_name: struct_name.clone(),
+            fields: fields.clone(),
+            has_rest: *has_rest,
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::LetTupleDestructure { names, value, span } => Node::LetTupleDestructure {
+            names: names.clone(),
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::IndexExpression {
+            target,
+            index,
+            span,
+        } => Node::IndexExpression {
+            target: Box::new(rewrite_node(target, generic_fns, instantiations)),
+            index: Box::new(rewrite_node(index, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            span,
+        } => Node::Slice {
+            target: Box::new(rewrite_node(target, generic_fns, instantiations)),
+            lo: lo
+                .as_ref()
+                .map(|l| Box::new(rewrite_node(l, generic_fns, instantiations))),
+            hi: hi
+                .as_ref()
+                .map(|h| Box::new(rewrite_node(h, generic_fns, instantiations))),
+            inclusive: *inclusive,
+            span: *span,
+        },
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            span,
+        } => Node::IndexAssignment {
+            target: Box::new(rewrite_node(target, generic_fns, instantiations)),
+            index: Box::new(rewrite_node(index, generic_fns, instantiations)),
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::TryExpression { expr, span } => Node::TryExpression {
+            expr: Box::new(rewrite_node(expr, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::NewtypeConstruct {
+            type_name,
+            value,
+            span,
+        } => Node::NewtypeConstruct {
+            type_name: type_name.clone(),
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::NamedArg { name, value, span } => Node::NamedArg {
+            name: name.clone(),
+            value: Box::new(rewrite_node(value, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::OptionalChain {
+            object,
+            access,
+            span,
+        } => Node::OptionalChain {
+            object: Box::new(rewrite_node(object, generic_fns, instantiations)),
+            access: match access {
+                crate::ChainAccess::Field(field) => crate::ChainAccess::Field(field.clone()),
+                crate::ChainAccess::Method(name, args) => crate::ChainAccess::Method(
+                    name.clone(),
+                    args.iter()
+                        .map(|arg| rewrite_node(arg, generic_fns, instantiations))
+                        .collect(),
+                ),
+            },
+            span: *span,
+        },
+        Node::Range {
+            lo,
+            hi,
+            inclusive,
+            span,
+        } => Node::Range {
+            lo: Box::new(rewrite_node(lo, generic_fns, instantiations)),
+            hi: Box::new(rewrite_node(hi, generic_fns, instantiations)),
+            inclusive: *inclusive,
+            span: *span,
+        },
+        Node::TupleIndex { tuple, index, span } => Node::TupleIndex {
+            tuple: Box::new(rewrite_node(tuple, generic_fns, instantiations)),
+            index: *index,
+            span: *span,
+        },
+        Node::InterpolatedString { parts, span } => Node::InterpolatedString {
+            parts: parts
+                .iter()
+                .map(|part| match part {
+                    crate::string_interp::StringPart::Literal(text) => {
+                        crate::string_interp::StringPart::Literal(text.clone())
+                    }
+                    crate::string_interp::StringPart::Expr(expr) => {
+                        crate::string_interp::StringPart::Expr(Box::new(rewrite_node(
+                            expr,
+                            generic_fns,
+                            instantiations,
+                        )))
+                    }
+                })
+                .collect(),
+            span: *span,
+        },
+        Node::TryCatch {
+            span,
+            body,
+            handlers,
+        } => Node::TryCatch {
+            span: *span,
+            body: body
+                .iter()
+                .map(|stmt| rewrite_node(stmt, generic_fns, instantiations))
+                .collect(),
+            handlers: handlers
+                .iter()
+                .map(|(name, statements)| {
+                    (
+                        name.clone(),
+                        statements
+                            .iter()
+                            .map(|stmt| rewrite_node(stmt, generic_fns, instantiations))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        },
+        Node::LiveBlock {
+            body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            span,
+        } => Node::LiveBlock {
+            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
+            invariants: invariants
+                .iter()
+                .map(|i| rewrite_node(i, generic_fns, instantiations))
+                .collect(),
+            backoff: *backoff,
+            backoff_kind: *backoff_kind,
+            timeout: timeout
+                .as_ref()
+                .map(|t| Box::new(rewrite_node(t, generic_fns, instantiations))),
+            max_retries: *max_retries,
+            span: *span,
+        },
+        Node::Quantifier {
+            kind,
+            var,
+            range,
+            body,
+            span,
+        } => Node::Quantifier {
+            kind: *kind,
+            var: var.clone(),
+            range: match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    crate::quantifiers::QuantRange::Range {
+                        lo: Box::new(rewrite_node(lo, generic_fns, instantiations)),
+                        hi: Box::new(rewrite_node(hi, generic_fns, instantiations)),
+                    }
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    crate::quantifiers::QuantRange::Iterable(Box::new(rewrite_node(
+                        iterable,
+                        generic_fns,
+                        instantiations,
+                    )))
+                }
+            },
+            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::StaticAssert {
+            condition,
+            message,
+            span,
+        } => Node::StaticAssert {
+            condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
+            message: message.clone(),
+            span: *span,
+        },
+        Node::UnsafeBlock { body, span } => Node::UnsafeBlock {
+            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
+            span: *span,
+        },
+        Node::BenchBlock { name, body, span } => Node::BenchBlock {
+            name: name.clone(),
+            body: Box::new(rewrite_node(body, generic_fns, instantiations)),
             span: *span,
         },
         // Leaves and unsupported structural nodes: clone as-is.
@@ -755,5 +1064,42 @@ main();
             "call site not rewritten: {}",
             disasm
         );
+    }
+
+    #[test]
+    fn nested_expression_call_sites_are_rewritten() {
+        let src = r#"
+fn identity<T>(T x) -> T { return x; }
+fn main() {
+    let values = [identity(42), identity(43)];
+    let pair = (identity(1), identity(2));
+}
+main();
+"#;
+        let lowered = lower_src(src);
+        let mut call_targets = Vec::new();
+        crate::uniqueness_walk::visit(&lowered, &mut |node| {
+            if let Node::CallExpression { function, .. } = node
+                && let Node::Identifier { name, .. } = function.as_ref()
+            {
+                call_targets.push(name.clone());
+            }
+        });
+
+        assert_eq!(
+            call_targets
+                .iter()
+                .filter(|name| *name == "identity$Int")
+                .count(),
+            4
+        );
+        assert_eq!(
+            call_targets
+                .iter()
+                .filter(|name| *name == "identity")
+                .count(),
+            0
+        );
+        assert_eq!(count_fns_with_prefix(&lowered, "identity$Int"), 1);
     }
 }

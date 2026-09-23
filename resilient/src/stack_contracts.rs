@@ -89,64 +89,18 @@ pub fn collect() -> Vec<StackSpec> {
 
 /// Collect the set of user-defined function names called directly in `node`.
 fn direct_callees(node: &Node, out: &mut HashSet<String>) {
-    match node {
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                out.insert(name.clone());
-            }
-            for a in arguments {
-                direct_callees(a, out);
-            }
+    // Stack certification must be conservative: a call hidden in a
+    // match arm, handler, or composite expression is still a reachable
+    // frame even when a hand-written list of cases does not know about
+    // that AST variant. Reuse the complete shared visitor so new
+    // executable nodes cannot silently weaken a stack claim.
+    crate::uniqueness_walk::visit(node, &mut |child| {
+        if let Node::CallExpression { function, .. } = child
+            && let Node::Identifier { name, .. } = function.as_ref()
+        {
+            out.insert(name.clone());
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                direct_callees(s, out);
-            }
-        }
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            direct_callees(condition, out);
-            direct_callees(consequence, out);
-            if let Some(alt) = alternative {
-                direct_callees(alt, out);
-            }
-        }
-        Node::WhileStatement {
-            condition, body, ..
-        } => {
-            direct_callees(condition, out);
-            direct_callees(body, out);
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            direct_callees(iterable, out);
-            direct_callees(body, out);
-        }
-        Node::LetStatement { value, .. } | Node::Assignment { value, .. } => {
-            direct_callees(value, out);
-        }
-        Node::ExpressionStatement { expr, .. } => {
-            direct_callees(expr, out);
-        }
-        Node::ReturnStatement { value: Some(e), .. } => {
-            direct_callees(e, out);
-        }
-        Node::InfixExpression { left, right, .. } => {
-            direct_callees(left, out);
-            direct_callees(right, out);
-        }
-        Node::PrefixExpression { right, .. } => {
-            direct_callees(right, out);
-        }
-        _ => {}
-    }
+    });
 }
 
 // ---------------------------------------------------------------------------

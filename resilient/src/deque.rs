@@ -20,6 +20,11 @@ use crate::Value;
 
 type RResult<T> = Result<T, String>;
 
+fn checked_push_front_capacity(len: usize) -> RResult<usize> {
+    len.checked_add(1)
+        .ok_or_else(|| "deque_push_front: capacity overflow".to_string())
+}
+
 /// `deque_new() → []` — empty deque.
 pub(crate) fn builtin_deque_new(args: &[Value]) -> RResult<Value> {
     if !args.is_empty() {
@@ -35,7 +40,7 @@ pub(crate) fn builtin_deque_new(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_deque_push_front(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(dq), val] => {
-            let mut out = Vec::with_capacity(dq.len() + 1);
+            let mut out = Vec::with_capacity(checked_push_front_capacity(dq.len())?);
             out.push(val.clone());
             out.extend_from_slice(dq);
             Ok(Value::Array(out))
@@ -269,5 +274,28 @@ println(to_string(deque_len(dq)));
 "#);
         assert!(out.contains("true"), "got: {out:?}");
         assert!(out.contains("0"), "got: {out:?}");
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::{builtin_deque_push_front, checked_push_front_capacity};
+    use crate::Value;
+
+    #[test]
+    fn push_front_capacity_rejects_usize_max() {
+        let err = checked_push_front_capacity(usize::MAX).unwrap_err();
+        assert!(err.contains("capacity overflow"));
+    }
+
+    #[test]
+    fn push_front_keeps_new_value_before_existing_elements() {
+        let result = builtin_deque_push_front(&[
+            Value::Array(vec![Value::Int(2), Value::Int(3)]),
+            Value::Int(1),
+        ])
+        .unwrap();
+        assert!(matches!(result, Value::Array(values)
+            if matches!(values.as_slice(), [Value::Int(1), Value::Int(2), Value::Int(3)])));
     }
 }

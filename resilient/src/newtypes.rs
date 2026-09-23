@@ -70,6 +70,17 @@ pub fn lower_program(program: &mut Node) {
 
 fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
     match node {
+        Node::Program(statements) => {
+            for statement in statements.iter_mut() {
+                lower_node(&mut statement.node, newtypes);
+            }
+        }
+        Node::Extern { decls, .. } => {
+            for decl in decls.iter_mut() {
+                lower_nodes(&mut decl.requires, newtypes);
+                lower_nodes(&mut decl.ensures, newtypes);
+            }
+        }
         Node::CallExpression {
             function,
             arguments,
@@ -88,25 +99,61 @@ fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
                 };
                 return;
             }
-            // Not a newtype call — recurse into arguments.
+            lower_node(function, newtypes);
             for arg in arguments.iter_mut() {
                 lower_node(arg, newtypes);
             }
         }
-        Node::Function { body, .. } => {
+        Node::Function {
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for default in defaults.iter_mut().flatten() {
+                lower_node(default, newtypes);
+            }
             lower_node(body, newtypes);
+            lower_nodes(requires, newtypes);
+            lower_nodes(ensures, newtypes);
+            lower_optional(recovers_to, newtypes);
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            lower_node(body, newtypes);
+            lower_nodes(invariants, newtypes);
+            lower_optional(timeout, newtypes);
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            lower_node(condition, newtypes);
+            lower_optional(message, newtypes);
         }
         Node::Block { stmts, .. } => {
-            for stmt in stmts.iter_mut() {
-                lower_node(stmt, newtypes);
-            }
+            lower_nodes(stmts, newtypes);
         }
-        Node::LetStatement { value, .. } => {
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. } => {
             lower_node(value, newtypes);
         }
+        Node::BreakWith { value, .. } => lower_node(value, newtypes),
+        Node::DeferStatement { expr, .. } => lower_node(expr, newtypes),
         Node::ReturnStatement { value: Some(v), .. } => {
             lower_node(v, newtypes);
         }
+        Node::ReturnStatement { value: None, .. } => {}
         Node::ExpressionStatement { expr, .. } => {
             lower_node(expr, newtypes);
         }
@@ -123,14 +170,24 @@ fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
             lower_node(condition, newtypes);
             lower_node(body, newtypes);
+            lower_nodes(invariants, newtypes);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
             lower_node(iterable, newtypes);
             lower_node(body, newtypes);
+            lower_nodes(invariants, newtypes);
         }
         Node::InfixExpression { left, right, .. } => {
             lower_node(left, newtypes);
@@ -139,12 +196,180 @@ fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
         Node::PrefixExpression { right, .. } => {
             lower_node(right, newtypes);
         }
+        Node::TryExpression { expr, .. } => lower_node(expr, newtypes),
+        Node::OptionalChain { object, access, .. } => {
+            lower_node(object, newtypes);
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                lower_nodes(arguments, newtypes);
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            lower_node(body, newtypes);
+            lower_nodes(requires, newtypes);
+            lower_nodes(ensures, newtypes);
+            lower_optional(recovers_to, newtypes);
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            lower_node(scrutinee, newtypes);
+            for (_, guard, body) in arms.iter_mut() {
+                lower_optional_node(guard, newtypes);
+                lower_node(body, newtypes);
+            }
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            lower_node(value, newtypes)
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            for (_, value) in fields.iter_mut() {
+                lower_node(value, newtypes);
+            }
+            lower_optional(base, newtypes);
+        }
+        Node::FieldAccess { target, .. } => lower_node(target, newtypes),
+        Node::FieldAssignment { target, value, .. } => {
+            lower_node(target, newtypes);
+            lower_node(value, newtypes);
+        }
+        Node::ArrayLiteral { items, .. } | Node::SetLiteral { items, .. } => {
+            lower_nodes(items, newtypes);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            lower_node(target, newtypes);
+            lower_node(index, newtypes);
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            lower_node(target, newtypes);
+            lower_optional(lo, newtypes);
+            lower_optional(hi, newtypes);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            lower_node(target, newtypes);
+            lower_node(index, newtypes);
+            lower_node(value, newtypes);
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries.iter_mut() {
+                lower_node(key, newtypes);
+                lower_node(value, newtypes);
+            }
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            lower_nodes(methods, newtypes);
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            lower_node(state_init, newtypes);
+            lower_nodes(concurrent_ensures, newtypes);
+            for handler in handlers.iter_mut() {
+                lower_nodes(&mut handler.ensures, newtypes);
+                lower_node(&mut handler.body, newtypes);
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            for (_, _, initializer) in state_fields.iter_mut() {
+                lower_node(initializer, newtypes);
+            }
+            lower_nodes(always_clauses, newtypes);
+            for clause in eventually_clauses.iter_mut() {
+                lower_node(&mut clause.post, newtypes);
+            }
+            for handler in receive_handlers.iter_mut() {
+                lower_nodes(&mut handler.requires, newtypes);
+                lower_nodes(&mut handler.ensures, newtypes);
+                lower_node(&mut handler.body, newtypes);
+            }
+            for handler in handlers.iter_mut() {
+                lower_nodes(&mut handler.ensures, newtypes);
+                lower_node(&mut handler.body, newtypes);
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => lower_nodes(invariants, newtypes),
+        Node::TryCatch { body, handlers, .. } => {
+            lower_nodes(body, newtypes);
+            for (_, handler_body) in handlers.iter_mut() {
+                lower_nodes(handler_body, newtypes);
+            }
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    lower_node(lo, newtypes);
+                    lower_node(hi, newtypes);
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    lower_node(iterable, newtypes);
+                }
+            }
+            lower_node(body, newtypes);
+        }
+        Node::InvariantStatement { expr, .. } => lower_node(expr, newtypes),
+        Node::Range { lo, hi, .. } => {
+            lower_node(lo, newtypes);
+            lower_node(hi, newtypes);
+        }
+        Node::NamedArg { value, .. } => lower_node(value, newtypes),
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts.iter_mut() {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    lower_node(expr, newtypes);
+                }
+            }
+        }
+        Node::ModuleDecl { body, .. } => lower_nodes(body, newtypes),
         Node::NewtypeConstruct { value, .. } => {
             lower_node(value, newtypes);
         }
+        Node::TupleLiteral { items, .. } => lower_nodes(items, newtypes),
+        Node::TupleIndex { tuple, .. } => lower_node(tuple, newtypes),
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => {
+            lower_node(body, newtypes);
+        }
+        Node::StaticAssert { condition, .. } => lower_node(condition, newtypes),
         // All other nodes carry no sub-expressions that can contain a
         // newtype constructor, or are leaf nodes.
         _ => {}
+    }
+}
+
+fn lower_nodes(nodes: &mut [Node], newtypes: &HashMap<String, String>) {
+    for node in nodes {
+        lower_node(node, newtypes);
+    }
+}
+
+fn lower_optional(node: &mut Option<Box<Node>>, newtypes: &HashMap<String, String>) {
+    if let Some(node) = node {
+        lower_node(node, newtypes);
+    }
+}
+
+fn lower_optional_node(node: &mut Option<Node>, newtypes: &HashMap<String, String>) {
+    if let Some(node) = node {
+        lower_node(node, newtypes);
     }
 }
 

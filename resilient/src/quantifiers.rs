@@ -305,11 +305,18 @@ pub(crate) fn typecheck_quantifier(
             Type::Int
         }
         QuantRange::Iterable(expr) => {
-            let _ = tc.check_node(expr)?;
-            // Element type is not tracked yet (RES-053 / RES-055). Use
-            // `Any` so the body's references to `var` typecheck through
-            // until typed arrays land.
-            Type::Any
+            let iterable_ty = tc.check_node(expr)?;
+            match iterable_ty {
+                Type::Array | Type::Any => Type::Any,
+                Type::TypedArray(element_ty) => *element_ty,
+                Type::Bytes => Type::Int,
+                other => {
+                    return Err(format!(
+                        "quantifier iterable source must be array, bytes, or dynamic value, got {}",
+                        other
+                    ));
+                }
+            }
         }
     };
 

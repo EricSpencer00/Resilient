@@ -18,6 +18,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -40,6 +41,16 @@ pub enum SemanticChange {
         old_count: usize,
         new_count: usize,
         kind: ContractKind,
+    },
+    /// A checked-failure variant was removed from a function's contract.
+    FailsRemoved {
+        function: String,
+        variant: String,
+    },
+    /// A checked-failure variant was added to a function's contract.
+    FailsAdded {
+        function: String,
+        variant: String,
     },
 }
 
@@ -131,6 +142,23 @@ pub fn diff(
                     kind: ContractKind::Ensures,
                 });
             }
+
+            let old_fails: BTreeSet<&str> =
+                old_c.fails_variants.iter().map(String::as_str).collect();
+            let new_fails: BTreeSet<&str> =
+                new_c.fails_variants.iter().map(String::as_str).collect();
+            for variant in old_fails.difference(&new_fails) {
+                changes.push(SemanticChange::FailsRemoved {
+                    function: name.clone(),
+                    variant: (*variant).to_string(),
+                });
+            }
+            for variant in new_fails.difference(&old_fails) {
+                changes.push(SemanticChange::FailsAdded {
+                    function: name.clone(),
+                    variant: (*variant).to_string(),
+                });
+            }
         } else {
             changes.push(SemanticChange::Added(name.clone()));
         }
@@ -142,7 +170,9 @@ pub fn has_weakening(changes: &[SemanticChange]) -> bool {
     changes.iter().any(|c| {
         matches!(
             c,
-            SemanticChange::Weakened { .. } | SemanticChange::Removed(_)
+            SemanticChange::Weakened { .. }
+                | SemanticChange::FailsRemoved { .. }
+                | SemanticChange::Removed(_)
         )
     })
 }
@@ -234,6 +264,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     eprintln!(
                         "semantic-regression: `{function}` {kind_str} weakened \
                          ({old_count} → {new_count} clause(s))"
+                    );
+                }
+                SemanticChange::FailsRemoved { function, variant } => {
+                    eprintln!(
+                        "semantic-regression: `{function}` removed declared failure variant `{variant}`"
                     );
                 }
                 SemanticChange::Removed(name) => {
@@ -354,5 +389,64 @@ mod tests {
         // Same program → no weakening.
         let changes = diff(&contracts, &contracts);
         assert!(!has_weakening(&changes));
+    }
+
+    #[test]
+    fn removed_fails_variant_is_a_weakening() {
+        let old_src = r#"fn read_sensor(int addr) fails HardwareFault, Timeout { return addr; }"#;
+        let new_src = r#"fn read_sensor(int addr) fails HardwareFault { return addr; }"#;
+        let (old_program, _) = parse(old_src);
+        let (new_program, _) = parse(new_src);
+        let changes = diff(
+            &extract_contracts(&old_program),
+            &extract_contracts(&new_program),
+        );
+
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            SemanticChange::FailsRemoved { function, variant }
+                if function == "read_sensor" && variant == "Timeout"
+        )));
+        assert!(has_weakening(&changes));
+    }
+
+    #[test]
+    fn added_fails_variant_is_reported_as_a_strengthening() {
+        let old_src = r#"fn read_sensor(int addr) fails HardwareFault { return addr; }"#;
+        let new_src = r#"fn read_sensor(int addr) fails HardwareFault, Timeout { return addr; }"#;
+        let (old_program, _) = parse(old_src);
+        let (new_program, _) = parse(new_src);
+        let changes = diff(
+            &extract_contracts(&old_program),
+            &extract_contracts(&new_program),
+        );
+
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            SemanticChange::FailsAdded { function, variant }
+                if function == "read_sensor" && variant == "Timeout"
+        )));
+        assert!(!has_weakening(&changes));
+    }
+
+    #[test]
+    fn replacing_fails_variant_reports_removal_before_addition() {
+        let old_src = r#"fn read_sensor(int addr) fails Timeout { return addr; }"#;
+        let new_src = r#"fn read_sensor(int addr) fails HardwareFault { return addr; }"#;
+        let (old_program, _) = parse(old_src);
+        let (new_program, _) = parse(new_src);
+        let changes = diff(
+            &extract_contracts(&old_program),
+            &extract_contracts(&new_program),
+        );
+
+        assert!(matches!(
+            changes.as_slice(),
+            [
+                SemanticChange::FailsRemoved { variant: removed, .. },
+                SemanticChange::FailsAdded { variant: added, .. }
+            ] if removed == "Timeout" && added == "HardwareFault"
+        ));
+        assert!(has_weakening(&changes));
     }
 }

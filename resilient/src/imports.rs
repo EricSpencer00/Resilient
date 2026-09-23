@@ -29,10 +29,18 @@
 //! - If NO declarations have `pub` in a file, ALL are exported (legacy mode).
 
 use crate::span::Spanned;
-use crate::{Node, parse};
+use crate::{EnumPatternPayload, Node, Pattern, parse};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Maximum source size for one imported module.
+///
+/// Imports are compiler input, so the limit must be applied before the
+/// source text is materialized. Ten MiB is large enough for normal modules
+/// while keeping a single dependency from exhausting the compiler host.
+const MAX_IMPORTED_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Tracks pending standard library imports discovered during expansion.
 /// These are collected and returned so the caller can inject bindings
@@ -299,6 +307,379 @@ fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
     s
 }
 
+/// Qualify calls between declarations that were imported into a namespace.
+/// The imported declarations are renamed together, so their internal calls
+/// must follow the same namespace unless a nearer lexical binding shadows the
+/// declaration name.
+fn rewrite_namespaced_calls(
+    node: &mut Node,
+    namespace: &str,
+    imported_names: &HashSet<String>,
+    bound: &HashSet<String>,
+) {
+    match node {
+        Node::Function {
+            parameters,
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => rewrite_function_children(
+            parameters,
+            Some(defaults),
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            RewriteContext {
+                namespace,
+                imported_names,
+                bound,
+            },
+        ),
+        Node::FunctionLiteral {
+            parameters,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => rewrite_function_children(
+            parameters,
+            None,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            RewriteContext {
+                namespace,
+                imported_names,
+                bound,
+            },
+        ),
+        Node::Block { stmts, .. } => {
+            let mut scoped = bound.clone();
+            for stmt in stmts {
+                let introduced = introduced_bindings(stmt);
+                rewrite_namespaced_calls(stmt, namespace, imported_names, &scoped);
+                scoped.extend(introduced);
+            }
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let Node::Identifier { name, .. } = function.as_mut()
+                && imported_names.contains(name)
+                && !bound.contains(name)
+            {
+                *name = format!("{namespace}::{name}");
+            } else {
+                rewrite_namespaced_calls(function, namespace, imported_names, bound);
+            }
+            for argument in arguments {
+                rewrite_namespaced_calls(argument, namespace, imported_names, bound);
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. }
+        | Node::LetDestructureStruct { value, .. }
+        | Node::LetTupleDestructure { value, .. }
+        | Node::ExpressionStatement { expr: value, .. }
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        }
+        | Node::BreakWith { value, .. }
+        | Node::DeferStatement { expr: value, .. }
+        | Node::InvariantStatement { expr: value, .. }
+        | Node::NewtypeConstruct { value, .. }
+        | Node::BenchBlock { body: value, .. }
+        | Node::UnsafeBlock { body: value, .. } => {
+            rewrite_namespaced_calls(value, namespace, imported_names, bound);
+        }
+        Node::ReturnStatement { value: None, .. }
+        | Node::Break { .. }
+        | Node::Continue { .. }
+        | Node::BreakLabel { .. }
+        | Node::ContinueLabel { .. } => {}
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            rewrite_namespaced_calls(condition, namespace, imported_names, bound);
+            rewrite_namespaced_calls(consequence, namespace, imported_names, bound);
+            if let Some(alternative) = alternative {
+                rewrite_namespaced_calls(alternative, namespace, imported_names, bound);
+            }
+        }
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            rewrite_namespaced_calls(condition, namespace, imported_names, bound);
+            rewrite_namespaced_calls(body, namespace, imported_names, bound);
+            for invariant in invariants {
+                rewrite_namespaced_calls(invariant, namespace, imported_names, bound);
+            }
+        }
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            rewrite_namespaced_calls(iterable, namespace, imported_names, bound);
+            let mut loop_bound = bound.clone();
+            loop_bound.insert(name.clone());
+            rewrite_namespaced_calls(body, namespace, imported_names, &loop_bound);
+            for invariant in invariants {
+                rewrite_namespaced_calls(invariant, namespace, imported_names, &loop_bound);
+            }
+        }
+        Node::PrefixExpression { right, .. } | Node::TryExpression { expr: right, .. } => {
+            rewrite_namespaced_calls(right, namespace, imported_names, bound);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            rewrite_namespaced_calls(left, namespace, imported_names, bound);
+            rewrite_namespaced_calls(right, namespace, imported_names, bound);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            rewrite_namespaced_calls(target, namespace, imported_names, bound);
+            rewrite_namespaced_calls(index, namespace, imported_names, bound);
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            rewrite_namespaced_calls(target, namespace, imported_names, bound);
+            if let Some(lo) = lo {
+                rewrite_namespaced_calls(lo, namespace, imported_names, bound);
+            }
+            if let Some(hi) = hi {
+                rewrite_namespaced_calls(hi, namespace, imported_names, bound);
+            }
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            rewrite_namespaced_calls(target, namespace, imported_names, bound);
+            rewrite_namespaced_calls(index, namespace, imported_names, bound);
+            rewrite_namespaced_calls(value, namespace, imported_names, bound);
+        }
+        Node::FieldAccess { target, .. } => {
+            rewrite_namespaced_calls(target, namespace, imported_names, bound);
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            rewrite_namespaced_calls(target, namespace, imported_names, bound);
+            rewrite_namespaced_calls(value, namespace, imported_names, bound);
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                rewrite_namespaced_calls(item, namespace, imported_names, bound);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                rewrite_namespaced_calls(key, namespace, imported_names, bound);
+                rewrite_namespaced_calls(value, namespace, imported_names, bound);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                rewrite_namespaced_calls(base, namespace, imported_names, bound);
+            }
+            for (_, value) in fields {
+                rewrite_namespaced_calls(value, namespace, imported_names, bound);
+            }
+        }
+        Node::TupleIndex { tuple, .. } => {
+            rewrite_namespaced_calls(tuple, namespace, imported_names, bound);
+        }
+        Node::OptionalChain { object, access, .. } => {
+            rewrite_namespaced_calls(object, namespace, imported_names, bound);
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                for argument in arguments {
+                    rewrite_namespaced_calls(argument, namespace, imported_names, bound);
+                }
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            rewrite_namespaced_calls(scrutinee, namespace, imported_names, bound);
+            for (pattern, guard, body) in arms {
+                let mut arm_bound = bound.clone();
+                pattern_bindings(pattern, &mut arm_bound);
+                if let Some(guard) = guard {
+                    rewrite_namespaced_calls(guard, namespace, imported_names, &arm_bound);
+                }
+                rewrite_namespaced_calls(body, namespace, imported_names, &arm_bound);
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body {
+                rewrite_namespaced_calls(statement, namespace, imported_names, bound);
+            }
+            for (_, statements) in handlers {
+                for statement in statements {
+                    rewrite_namespaced_calls(statement, namespace, imported_names, bound);
+                }
+            }
+        }
+        Node::Quantifier {
+            range, var, body, ..
+        } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    rewrite_namespaced_calls(lo, namespace, imported_names, bound);
+                    rewrite_namespaced_calls(hi, namespace, imported_names, bound);
+                }
+                crate::quantifiers::QuantRange::Iterable(expr) => {
+                    rewrite_namespaced_calls(expr, namespace, imported_names, bound)
+                }
+            }
+            let mut quantifier_bound = bound.clone();
+            quantifier_bound.insert(var.clone());
+            rewrite_namespaced_calls(body, namespace, imported_names, &quantifier_bound);
+        }
+        Node::Range { lo, hi, .. } => {
+            rewrite_namespaced_calls(lo, namespace, imported_names, bound);
+            rewrite_namespaced_calls(hi, namespace, imported_names, bound);
+        }
+        Node::NamedArg { value, .. } => {
+            rewrite_namespaced_calls(value, namespace, imported_names, bound);
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            rewrite_namespaced_calls(condition, namespace, imported_names, bound);
+            if let Some(message) = message {
+                rewrite_namespaced_calls(message, namespace, imported_names, bound);
+            }
+        }
+        Node::StaticAssert { condition, .. } => {
+            rewrite_namespaced_calls(condition, namespace, imported_names, bound);
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            rewrite_namespaced_calls(body, namespace, imported_names, bound);
+            for invariant in invariants {
+                rewrite_namespaced_calls(invariant, namespace, imported_names, bound);
+            }
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                rewrite_namespaced_calls(method, namespace, imported_names, bound);
+            }
+        }
+        _ => {}
+    }
+}
+
+struct RewriteContext<'a> {
+    namespace: &'a str,
+    imported_names: &'a HashSet<String>,
+    bound: &'a HashSet<String>,
+}
+
+fn rewrite_function_children(
+    parameters: &[(String, String)],
+    mut defaults: Option<&mut Vec<Option<Box<Node>>>>,
+    body: &mut Node,
+    requires: &mut [Node],
+    ensures: &mut [Node],
+    recovers_to: &mut Option<Box<Node>>,
+    context: RewriteContext<'_>,
+) {
+    let mut scoped = context.bound.clone();
+    for (_, name) in parameters {
+        scoped.insert(name.clone());
+    }
+    if let Some(defaults) = defaults.as_mut() {
+        for default in defaults.iter_mut().flatten() {
+            rewrite_namespaced_calls(default, context.namespace, context.imported_names, &scoped);
+        }
+    }
+    rewrite_namespaced_calls(body, context.namespace, context.imported_names, &scoped);
+    for expr in requires.iter_mut().chain(ensures.iter_mut()) {
+        rewrite_namespaced_calls(expr, context.namespace, context.imported_names, &scoped);
+    }
+    if let Some(expr) = recovers_to {
+        rewrite_namespaced_calls(expr, context.namespace, context.imported_names, &scoped);
+    }
+}
+
+fn introduced_bindings(node: &Node) -> Vec<String> {
+    match node {
+        Node::LetStatement { name, .. }
+        | Node::StaticLet { name, .. }
+        | Node::Const { name, .. } => vec![name.clone()],
+        Node::LetDestructureStruct { fields, .. } => {
+            fields.iter().map(|(_, name)| name.clone()).collect()
+        }
+        Node::LetTupleDestructure { names, .. } => names.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn pattern_bindings(pattern: &Pattern, bound: &mut HashSet<String>) {
+    match pattern {
+        Pattern::Identifier(name) | Pattern::Bind(name, _) => {
+            bound.insert(name.clone());
+            if let Pattern::Bind(_, inner) = pattern {
+                pattern_bindings(inner, bound);
+            }
+        }
+        Pattern::Or(patterns)
+        | Pattern::Tuple(patterns)
+        | Pattern::TupleStruct {
+            fields: patterns, ..
+        } => {
+            for pattern in patterns {
+                pattern_bindings(pattern, bound);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, pattern) in fields {
+                pattern_bindings(pattern, bound);
+            }
+        }
+        Pattern::Some(inner) | Pattern::Ok(inner) | Pattern::Err(inner) => {
+            pattern_bindings(inner, bound);
+        }
+        Pattern::EnumVariant { payload, .. } => match payload {
+            EnumPatternPayload::None => {}
+            EnumPatternPayload::Named(fields) => {
+                for (_, pattern) in fields {
+                    pattern_bindings(pattern, bound);
+                }
+            }
+            EnumPatternPayload::Tuple(patterns) => {
+                for pattern in patterns {
+                    pattern_bindings(pattern, bound);
+                }
+            }
+        },
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } | Pattern::None => {}
+    }
+}
+
 /// Apply import/export filtering and push the surviving declarations
 /// into `expanded`.
 fn append_imported_stmts(
@@ -309,6 +690,14 @@ fn append_imported_stmts(
     namespace: Option<&str>,
 ) {
     let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
+    let imported_names: HashSet<String> = imported_stmts
+        .iter()
+        .filter(|s| {
+            !matches!(s.node, Node::Use { .. })
+                && (!has_any_pub || !is_exportable_decl(&s.node) || is_pub_decl(&s.node))
+        })
+        .filter_map(|s| decl_name(&s.node).map(str::to_owned))
+        .collect();
 
     for mut s in imported_stmts {
         if matches!(s.node, Node::Use { .. }) {
@@ -329,6 +718,7 @@ fn append_imported_stmts(
         }
 
         if let Some(ns) = namespace {
+            rewrite_namespaced_calls(&mut s.node, ns, &imported_names, &HashSet::new());
             s = rename_decl(s, ns);
         }
         if make_pub {
@@ -375,9 +765,38 @@ fn canonicalize_or_self(p: &Path) -> PathBuf {
     fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+fn import_size_error(path: &Path, size: u64) -> Option<String> {
+    (size > MAX_IMPORTED_SOURCE_BYTES).then(|| {
+        format!(
+            "import \"{}\" exceeds source size limit of {} bytes (got {})",
+            path.display(),
+            MAX_IMPORTED_SOURCE_BYTES,
+            size
+        )
+    })
+}
+
 fn load_and_parse(path: &Path) -> Result<Node, String> {
-    let src = fs::read_to_string(path)
+    let file = fs::File::open(path)
         .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
+    let file_size = file
+        .metadata()
+        .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?
+        .len();
+    if let Some(err) = import_size_error(path, file_size) {
+        return Err(err);
+    }
+
+    // The metadata check handles the normal case. `take` closes the TOCTOU
+    // gap if the file grows after metadata was read, so the fallback path is
+    // still bounded before any source text can exceed the same limit.
+    let mut src = String::new();
+    file.take(MAX_IMPORTED_SOURCE_BYTES + 1)
+        .read_to_string(&mut src)
+        .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
+    if let Some(err) = import_size_error(path, src.len() as u64) {
+        return Err(err);
+    }
     let (program, errors) = parse(&src);
     if !errors.is_empty() {
         return Err(format!(
@@ -401,6 +820,35 @@ mod tests {
 
     fn cleanup_temp_dir(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_size_budget_accepts_exact_boundary() {
+        assert!(import_size_error(Path::new("module.rz"), MAX_IMPORTED_SOURCE_BYTES).is_none());
+    }
+
+    #[test]
+    fn import_size_budget_rejects_first_byte_over_boundary() {
+        let err = import_size_error(Path::new("module.rz"), MAX_IMPORTED_SOURCE_BYTES + 1)
+            .expect("oversized imports must fail closed");
+        assert!(err.contains("module.rz"), "got: {err}");
+        assert!(err.contains("source size limit"), "got: {err}");
+    }
+
+    #[test]
+    fn oversized_import_is_rejected_before_reading_contents() {
+        let dir = make_temp_dir().join("oversized_import");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("huge.rz");
+        let file = fs::File::create(&path).expect("create sparse import");
+        file.set_len(MAX_IMPORTED_SOURCE_BYTES + 1)
+            .expect("grow sparse import");
+        drop(file);
+
+        let err = load_and_parse(&path).expect_err("oversized import must fail");
+        assert!(err.contains("huge.rz"), "got: {err}");
+        assert!(err.contains("source size limit"), "got: {err}");
+        cleanup_temp_dir(&dir);
     }
 
     /// RES-4115: default output stays byte-identical to the legacy
@@ -474,6 +922,78 @@ mod tests {
         } else {
             panic!("expected Program");
         }
+    }
+
+    #[test]
+    fn namespaced_import_rewrites_internal_calls_and_respects_local_bindings() {
+        let dir = make_temp_dir().join("namespaced_internal_calls");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(
+            dir.join("lib.rz"),
+            "pub fn helper() { return 7; }\n\
+             pub fn public() { return helper(); }\n\
+             pub fn shadow() { let helper = fn() { return 9; }; return helper(); }\n",
+        )
+        .unwrap();
+
+        let (mut program, errors) = crate::parse("use \"lib.rz\" as lib;\n");
+        assert!(errors.is_empty(), "parse failed: {errors:?}");
+        let mut loaded = HashSet::new();
+        expand_uses(&mut program, &dir, &mut loaded).expect("namespace expansion should succeed");
+
+        let statements = match &program {
+            Node::Program(statements) => statements,
+            _ => panic!("expected Program"),
+        };
+        let function_body = |name: &str| {
+            statements
+                .iter()
+                .find_map(|statement| match &statement.node {
+                    Node::Function {
+                        name: function_name,
+                        body,
+                        ..
+                    } if function_name == name => Some(body.as_ref()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing function {name}"))
+        };
+
+        let Node::Block { stmts, .. } = function_body("lib::public") else {
+            panic!("expected public function body block")
+        };
+        let Node::ReturnStatement {
+            value: Some(value), ..
+        } = &stmts[0]
+        else {
+            panic!("expected public return")
+        };
+        let Node::CallExpression { function, .. } = value.as_ref() else {
+            panic!("expected public call")
+        };
+        assert!(matches!(
+            function.as_ref(),
+            Node::Identifier { name, .. } if name == "lib::helper"
+        ));
+
+        let Node::Block { stmts, .. } = function_body("lib::shadow") else {
+            panic!("expected shadow function body block")
+        };
+        let Node::ReturnStatement {
+            value: Some(value), ..
+        } = &stmts[1]
+        else {
+            panic!("expected shadow return")
+        };
+        let Node::CallExpression { function, .. } = value.as_ref() else {
+            panic!("expected shadow call")
+        };
+        assert!(matches!(
+            function.as_ref(),
+            Node::Identifier { name, .. } if name == "helper"
+        ));
+
+        cleanup_temp_dir(&dir);
     }
 
     #[test]

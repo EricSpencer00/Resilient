@@ -34,10 +34,9 @@
 //! validates trait-bound annotations on generic functions. Because
 //! `merge_where_clause` has already folded the where bounds into
 //! `type_param_bounds`, no separate validation loop is needed here —
-//! the existing machinery handles it. This pass exists as the correct
-//! extension point in the pass pipeline and performs one additional
-//! check: it ensures every type parameter mentioned in the where clause
-//! actually exists on the function's type-parameter list.
+//! the existing machinery handles it. Unknown subjects are diagnosed while
+//! parsing, when the source context is still available; this pass remains
+//! the extension point for validations that need the completed program.
 
 use crate::{Node, Parser, Token};
 
@@ -150,9 +149,13 @@ pub(crate) fn merge_where_clause(
                 }
             }
         } else {
-            // Unknown type param — record a diagnostic; it will be properly
-            // re-surfaced by the check() pass with a better span.
-            // Don't error here: the parser pass should be permissive.
+            // A bound with no declared type-parameter subject cannot affect
+            // type checking, so accepting it would silently discard the
+            // author's constraint.
+            parser.record_error(format!(
+                "Unknown type parameter `{}` in where clause",
+                subject
+            ));
         }
 
         // Continue if there's a comma.
@@ -170,12 +173,11 @@ pub(crate) fn merge_where_clause(
 // Validation pass
 // ---------------------------------------------------------------------------
 
-/// Walks the program and validates that every `where` clause references
-/// known type parameters. The actual trait-existence and call-site bound
-/// checks are handled by `crate::traits::check` (which sees the already-
-/// merged bounds); this pass only reports the "unknown type param in where
-/// clause" diagnostic, which `traits::check` cannot produce because the
-/// parse merge has already happened.
+/// Walks generic functions so future whole-program `where` validations can
+/// run after parsing. Unknown type parameters are rejected by
+/// [`merge_where_clause`] while the parser still has the relevant subject.
+/// The actual trait-existence and call-site bound checks are handled by
+/// `crate::traits::check`.
 ///
 /// Returns `Ok(())` immediately if no generic functions exist (fast-reject).
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
@@ -192,15 +194,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Validate that every bound in every function's type_param_bounds refers
-    // to a trait that exists in the program. Since merge_where_clause already
-    // folded where-clause bounds into type_param_bounds, this check is
-    // redundant with traits::check — but we add it here so the pass
-    // participates in the extension-passes pipeline and can be extended
-    // independently (e.g. to validate T::AssocType projections per RES-779).
-    //
-    // Today: no additional validation beyond what traits::check covers.
-    // The pass intentionally stays as a hook.
+    // Today: no additional validation beyond what traits::check covers. The
+    // pass intentionally stays as a hook for checks that need the complete
+    // program rather than parser-local diagnostics.
     let _ = source_path; // reserved for future span-qualified diagnostics
     Ok(())
 }
@@ -459,6 +455,17 @@ mod tests {
         let (_, errs) = parse(src);
         // Should detect incomplete associated type
         assert!(!errs.is_empty(), "should handle incomplete associated type");
+    }
+
+    #[test]
+    fn rejects_unknown_type_parameter_in_where_clause() {
+        let src = "fn<T> f(T x) where U: Display { return x; }";
+        let (_, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|err| err.contains("Unknown type parameter `U`")),
+            "unknown where subject should produce a diagnostic: {errs:?}"
+        );
     }
 
     #[test]

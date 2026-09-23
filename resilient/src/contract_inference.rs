@@ -174,28 +174,47 @@ fn body_accesses_field(node: &Node, param: &str) -> bool {
 /// Detect `while ... < p`, `while ... <= p`, `for i in 0..p` — contexts
 /// where `p` serves as a loop bound and must be > 0 to be useful.
 fn body_uses_as_loop_bound(node: &Node, param: &str) -> bool {
-    crate::uniqueness_walk::any_node(node, |n| {
-        if let Node::WhileStatement { condition, .. } = n {
-            is_upper_bound_for(condition, param)
-        } else {
-            false
-        }
+    crate::uniqueness_walk::any_node(node, |n| match n {
+        Node::WhileStatement { condition, .. } => is_upper_bound_for(condition, param),
+        Node::ForInStatement { iterable, .. } => is_range_upper_bound(iterable, param),
+        _ => false,
     })
 }
 
-/// `expr < p` or `expr <= p` — `p` is the upper bound of the comparison.
+/// `expr < p`, `expr <= p`, `p > expr`, or `p >= expr` — `p` is the
+/// upper bound of the comparison regardless of operand orientation.
 fn is_upper_bound_for(node: &Node, param: &str) -> bool {
     if let Node::InfixExpression {
-        operator, right, ..
+        operator,
+        left,
+        right,
+        ..
     } = node
     {
-        if (*operator == "<" || *operator == "<=")
-            && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
-        {
-            return true;
-        }
+        let param_on_right = (*operator == "<" || *operator == "<=")
+            && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param);
+        let param_on_left = (*operator == ">" || *operator == ">=")
+            && matches!(left.as_ref(), Node::Identifier { name, .. } if name == param);
+        return param_on_right || param_on_left;
     }
     false
+}
+
+/// `for i in lo..p` / `for i in lo..=p` — `p` is the range's upper bound.
+/// The parser emits `Node::Range`; the infix form is accepted as a defensive
+/// compatibility path for ASTs produced by older parser clients.
+fn is_range_upper_bound(node: &Node, param: &str) -> bool {
+    match node {
+        Node::Range { hi, .. } => {
+            matches!(hi.as_ref(), Node::Identifier { name, .. } if name == param)
+        }
+        Node::InfixExpression {
+            operator, right, ..
+        } if (*operator == ".." || *operator == "..=") => {
+            matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
+        }
+        _ => false,
+    }
 }
 
 /// Detect `x << param` or `x >> param` — `param` is used as a shift amount,
@@ -980,6 +999,77 @@ fn sum_field(Foo f) -> int {
             f.requires.iter().any(|r| r.contains("n > 0")),
             "nested while i < n must trigger requires n > 0; got: {:?}",
             f.requires
+        );
+    }
+
+    #[test]
+    fn reversed_while_loop_bound_detected() {
+        let src = r#"fn reversed_bound(int n) {
+            let i = 0;
+            while n > i { i = i + 1; }
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "reversed_bound")
+            .expect("expected inferred contracts for reversed_bound");
+        assert!(
+            f.requires.iter().any(|r| r.contains("n > 0")),
+            "reversed while bound must trigger requires n > 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn exclusive_range_loop_bound_detected() {
+        let src = r#"fn range_bound(int n) {
+            for i in 0..n { let copy = i; }
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "range_bound")
+            .expect("expected inferred contracts for range_bound");
+        assert!(
+            f.requires.iter().any(|r| r.contains("n > 0")),
+            "exclusive range bound must trigger requires n > 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn inclusive_range_loop_bound_detected() {
+        let src = r#"fn inclusive_range_bound(int n) {
+            for i in 0..=n { let copy = i; }
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "inclusive_range_bound")
+            .expect("expected inferred contracts for inclusive_range_bound");
+        assert!(
+            f.requires.iter().any(|r| r.contains("n > 0")),
+            "inclusive range bound must trigger requires n > 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn range_lower_bound_does_not_infer_positive_upper_bound() {
+        let src = r#"fn lower_bound(int n) {
+            for i in n..10 { let copy = i; }
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let lower_bound = inferred.iter().find(|c| c.function_name == "lower_bound");
+        assert!(
+            lower_bound
+                .map(|f| !f.requires.iter().any(|r| r.contains("n > 0")))
+                .unwrap_or(true),
+            "range lower bound must not infer n > 0; got: {lower_bound:?}"
         );
     }
 }

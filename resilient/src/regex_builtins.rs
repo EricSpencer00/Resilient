@@ -3,14 +3,14 @@
 //! Provides `regex_match`, `regex_find`, `regex_find_all`,
 //! `regex_captures`, `regex_replace`, and `regex_replace_all`.
 //!
-//! Compiled regexes cached in process-wide LRU so repeated
-//! calls same pattern avoid re-compilation.
+//! Compiled regexes are cached in a bounded process-wide cache so repeated
+//! calls with the same pattern avoid re-compilation.
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
 use crate::span::Span;
 use crate::{Node, Value};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, RwLock};
 
 type RResult<T> = Result<T, String>;
@@ -30,8 +30,63 @@ const REGEX_BUILTINS: &[(&str, usize)] = &[
 
 const CACHE_CAPACITY: usize = 64;
 
-static REGEX_CACHE: LazyLock<RwLock<HashMap<String, Regex>>> =
-    LazyLock::new(|| RwLock::new(HashMap::with_capacity(CACHE_CAPACITY)));
+/// Maximum number of matches a single eager `regex_find_all` call may retain.
+pub(crate) const MAX_FIND_ALL_MATCHES: usize = 10_000_000;
+
+fn check_find_all_growth(current_len: usize) -> RResult<()> {
+    if current_len >= MAX_FIND_ALL_MATCHES {
+        return Err(format!(
+            "regex_find_all: result would exceed {MAX_FIND_ALL_MATCHES} matches"
+        ));
+    }
+    Ok(())
+}
+
+struct RegexCache {
+    entries: HashMap<String, Regex>,
+    order: VecDeque<String>,
+}
+
+impl RegexCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(CACHE_CAPACITY),
+            order: VecDeque::with_capacity(CACHE_CAPACITY),
+        }
+    }
+
+    fn get(&self, pattern: &str) -> Option<Regex> {
+        self.entries.get(pattern).cloned()
+    }
+
+    fn insert(&mut self, pattern: String, regex: Regex) {
+        if let Some(entry) = self.entries.get_mut(&pattern) {
+            *entry = regex;
+            return;
+        }
+
+        if self.entries.len() >= CACHE_CAPACITY {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+
+        self.order.push_back(pattern.clone());
+        self.entries.insert(pattern, regex);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, pattern: &str) -> bool {
+        self.entries.contains_key(pattern)
+    }
+}
+
+static REGEX_CACHE: LazyLock<RwLock<RegexCache>> = LazyLock::new(|| RwLock::new(RegexCache::new()));
 
 fn get_or_compile(pattern: &str) -> RResult<Regex> {
     if let Ok(cache) = REGEX_CACHE.read() {
@@ -42,9 +97,6 @@ fn get_or_compile(pattern: &str) -> RResult<Regex> {
 
     let re = Regex::new(pattern).map_err(|e| format!("invalid regex pattern: {e}"))?;
     if let Ok(mut cache) = REGEX_CACHE.write() {
-        if cache.len() >= CACHE_CAPACITY {
-            cache.clear();
-        }
         cache.insert(pattern.to_string(), re.clone());
     }
     Ok(re)
@@ -163,10 +215,11 @@ pub(crate) fn builtin_regex_find_all(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(text), Value::String(pattern)] => {
             let re = get_or_compile(pattern)?;
-            let matches: Vec<Value> = re
-                .find_iter(text)
-                .map(|m| Value::String(m.as_str().to_string()))
-                .collect();
+            let mut matches = Vec::new();
+            for m in re.find_iter(text) {
+                check_find_all_growth(matches.len())?;
+                matches.push(Value::String(m.as_str().to_string()));
+            }
             Ok(Value::Array(matches))
         }
         [a, b] => Err(format!(
@@ -397,6 +450,18 @@ mod tests {
     }
 
     #[test]
+    fn regex_find_all_rejects_growth_past_budget() {
+        let error = check_find_all_growth(MAX_FIND_ALL_MATCHES).expect_err("expected match cap");
+        assert!(error.contains("exceed"), "error: {error}");
+    }
+
+    #[test]
+    fn regex_find_all_accepts_last_budgeted_match() {
+        check_find_all_growth(MAX_FIND_ALL_MATCHES - 1)
+            .expect("the final match within the budget should be accepted");
+    }
+
+    #[test]
     fn regex_captures_with_groups() {
         let result =
             builtin_regex_captures(&[s("2024-01-15"), s(r"(\d{4})-(\d{2})-(\d{2})")]).unwrap();
@@ -453,6 +518,24 @@ mod tests {
         let _ = builtin_regex_match(&[s("test2"), s("^t")]).unwrap();
         let cache = REGEX_CACHE.read().unwrap();
         assert!(cache.contains_key("^t"));
+    }
+
+    #[test]
+    fn cache_churn_evicts_one_entry_without_clearing_retained_entries() {
+        let mut cache = RegexCache::new();
+        let regex = Regex::new(".*").unwrap();
+        for i in 0..CACHE_CAPACITY {
+            let pattern = format!("^p{i}$");
+            cache.insert(pattern, regex.clone());
+        }
+
+        assert_eq!(cache.len(), CACHE_CAPACITY);
+        cache.insert("^new$".to_string(), Regex::new(".*").unwrap());
+
+        assert_eq!(cache.len(), CACHE_CAPACITY);
+        assert!(!cache.contains_key("^p0$"));
+        assert!(cache.contains_key("^p1$"));
+        assert!(cache.contains_key("^new$"));
     }
 
     #[test]

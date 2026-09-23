@@ -49,26 +49,9 @@ pub fn collect() -> HashMap<String, LoopBoundSpec> {
 
 /// Walk the AST recursively to check if a node contains any while-loops.
 fn has_while_loop(node: &Node) -> bool {
-    match node {
-        Node::WhileStatement { .. } => true,
-        Node::Block { stmts, .. } => stmts.iter().any(has_while_loop),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            has_while_loop(consequence) || alternative.as_ref().is_some_and(|ab| has_while_loop(ab))
-        }
-        Node::ForInStatement { body, .. } => has_while_loop(body),
-        Node::ReturnStatement { value: Some(v), .. } => has_while_loop(v),
-        Node::LetStatement { value, .. } => has_while_loop(value),
-        Node::ExpressionStatement { expr, .. } => has_while_loop(expr),
-        Node::CallExpression { arguments, .. } => arguments.iter().any(has_while_loop),
-        Node::InfixExpression { left, right, .. } => has_while_loop(left) || has_while_loop(right),
-        Node::PrefixExpression { right, .. } => has_while_loop(right),
-        Node::ArrayLiteral { items, .. } => items.iter().any(has_while_loop),
-        _ => false,
-    }
+    crate::uniqueness_walk::any_node(node, |candidate| {
+        matches!(candidate, Node::WhileStatement { .. })
+    })
 }
 
 fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> String {
@@ -140,12 +123,14 @@ fn verify_loop_bounds(
             } = &stmt.node
             {
                 if name == fn_name {
+                    let initial_values = HashMap::new();
                     verify_while_loops_in_node(
                         body,
                         declared_bound,
                         source_path,
                         fn_name,
                         requires,
+                        &initial_values,
                     )?;
                     return Ok(());
                 }
@@ -162,53 +147,269 @@ fn verify_while_loops_in_node(
     source_path: &str,
     fn_name: &str,
     requires: &[Node],
+    known_initials: &HashMap<String, i64>,
 ) -> Result<(), String> {
     match node {
         Node::WhileStatement {
             condition,
             body,
+            invariants,
             span,
             ..
-        } => verify_one_while_loop(
-            condition,
-            body,
-            declared_bound,
-            source_path,
-            fn_name,
-            *span,
-            requires,
-        ),
+        } => {
+            verify_one_while_loop(
+                condition,
+                body,
+                declared_bound,
+                source_path,
+                fn_name,
+                *span,
+                requires,
+                known_initials,
+            )?;
+            verify_while_loops_in_node(
+                condition,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )?;
+            for invariant in invariants {
+                verify_while_loops_in_node(
+                    invariant,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    known_initials,
+                )?;
+            }
+            verify_while_loops_in_node(
+                body,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )
+        }
         Node::Block { stmts, .. } => {
-            for s in stmts {
-                verify_while_loops_in_node(s, declared_bound, source_path, fn_name, requires)?;
+            let mut known_initials = known_initials.clone();
+            for statement in stmts {
+                match statement {
+                    Node::LetStatement { name, value, .. }
+                    | Node::Assignment { name, value, .. } => {
+                        record_literal_initializer(&mut known_initials, name, value);
+                    }
+                    _ => {}
+                }
+                verify_while_loops_in_node(
+                    statement,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    &known_initials,
+                )?;
             }
             Ok(())
         }
         Node::IfStatement {
+            condition,
             consequence,
             alternative,
             ..
         } => {
+            verify_while_loops_in_node(
+                condition,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )?;
             verify_while_loops_in_node(
                 consequence,
                 declared_bound,
                 source_path,
                 fn_name,
                 requires,
+                known_initials,
             )?;
-            if let Some(ab) = alternative {
-                verify_while_loops_in_node(ab, declared_bound, source_path, fn_name, requires)?;
+            if let Some(alternative) = alternative {
+                verify_while_loops_in_node(
+                    alternative,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    known_initials,
+                )?;
             }
             Ok(())
         }
-        Node::ForInStatement { body, .. } => {
-            verify_while_loops_in_node(body, declared_bound, source_path, fn_name, requires)
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            verify_while_loops_in_node(
+                iterable,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )?;
+            for invariant in invariants {
+                verify_while_loops_in_node(
+                    invariant,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    known_initials,
+                )?;
+            }
+            verify_while_loops_in_node(
+                body,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )
         }
-        _ => Ok(()),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            verify_while_loops_in_node(
+                scrutinee,
+                declared_bound,
+                source_path,
+                fn_name,
+                requires,
+                known_initials,
+            )?;
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    verify_while_loops_in_node(
+                        guard,
+                        declared_bound,
+                        source_path,
+                        fn_name,
+                        requires,
+                        known_initials,
+                    )?;
+                }
+                verify_while_loops_in_node(
+                    body,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    known_initials,
+                )?;
+            }
+            Ok(())
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body {
+                verify_while_loops_in_node(
+                    statement,
+                    declared_bound,
+                    source_path,
+                    fn_name,
+                    requires,
+                    known_initials,
+                )?;
+            }
+            for (_, handler_body) in handlers {
+                for statement in handler_body {
+                    verify_while_loops_in_node(
+                        statement,
+                        declared_bound,
+                        source_path,
+                        fn_name,
+                        requires,
+                        known_initials,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        _ => {
+            let mut first_error = None;
+            crate::uniqueness_walk::visit(node, &mut |candidate| {
+                if first_error.is_some() {
+                    return;
+                }
+                if let Node::WhileStatement {
+                    condition,
+                    body,
+                    span,
+                    ..
+                } = candidate
+                {
+                    if let Err(error) = verify_one_while_loop(
+                        condition,
+                        body,
+                        declared_bound,
+                        source_path,
+                        fn_name,
+                        *span,
+                        requires,
+                        known_initials,
+                    ) {
+                        first_error = Some(error);
+                    }
+                }
+            });
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
     }
 }
 
 #[cfg(feature = "z3")]
+fn record_literal_initializer(known_initials: &mut HashMap<String, i64>, name: &str, value: &Node) {
+    if let Some(value) = literal_integer_value(value) {
+        known_initials.insert(name.to_string(), value);
+    } else {
+        known_initials.remove(name);
+    }
+}
+
+#[cfg(feature = "z3")]
+fn literal_integer_value(node: &Node) -> Option<i64> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator: "-",
+            right,
+            ..
+        } => match right.as_ref() {
+            Node::IntegerLiteral { value, .. } => value.checked_neg(),
+            _ => None,
+        },
+        Node::PrefixExpression {
+            operator: "+",
+            right,
+            ..
+        } => match right.as_ref() {
+            Node::IntegerLiteral { value, .. } => Some(*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(feature = "z3")]
+#[allow(clippy::too_many_arguments)]
 fn verify_one_while_loop(
     condition: &Node,
     body: &Node,
@@ -217,13 +418,14 @@ fn verify_one_while_loop(
     fn_name: &str,
     span: crate::span::Span,
     requires: &[Node],
+    known_initials: &HashMap<String, i64>,
 ) -> Result<(), String> {
     const LOOP_BOUND_TIMEOUT_MS: u32 = 1000;
     let line = span.start.line;
 
     // Try to match the simple monotonic-counter shape.
     let matched = extract_loop_bound_pattern(condition).and_then(|(counter_name, bound_expr)| {
-        extract_counter_increment_pattern(body, &counter_name)
+        extract_counter_increment_pattern(body, &counter_name, known_initials)
             .map(|(initial_value, step)| (counter_name, bound_expr, initial_value, step))
     });
 
@@ -297,7 +499,13 @@ fn extract_loop_bound_pattern(condition: &Node) -> Option<(String, Node)> {
 }
 
 #[cfg(feature = "z3")]
-fn extract_counter_increment_pattern(body: &Node, counter_name: &str) -> Option<(i64, u32)> {
+fn extract_counter_increment_pattern(
+    body: &Node,
+    counter_name: &str,
+    known_initials: &HashMap<String, i64>,
+) -> Option<(i64, u32)> {
+    let initial_value = known_initials.get(counter_name).copied()?;
+
     fn walk(node: &Node, counter_name: &str) -> Option<u32> {
         match node {
             Node::ExpressionStatement { expr, .. } => walk(expr, counter_name),
@@ -336,7 +544,7 @@ fn extract_counter_increment_pattern(body: &Node, counter_name: &str) -> Option<
             _ => None,
         }
     }
-    walk(body, counter_name).map(|step| (0, step))
+    walk(body, counter_name).map(|step| (initial_value, step))
 }
 
 #[cfg(feature = "z3")]
@@ -638,6 +846,43 @@ mod tests {
     }
 
     #[test]
+    fn has_while_loop_nested_in_match_arm() {
+        let src = "fn f(int x) { match x { 0 => { while true { break; } }, _ => {} } }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        if let Node::Program(stmts) = &prog {
+            if let Some(stmt) = stmts.first() {
+                if let Node::Function { body, .. } = &stmt.node {
+                    assert!(has_while_loop(body));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn require_contracts_rejects_loop_in_try_handler() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: String::new(),
+                line: 1,
+            },
+        );
+        let src = "fn f() { try { println(1); } catch Timeout { while true { break; } } }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("try-handler loop must need a bound");
+        assert!(
+            err.contains("`f`") && err.contains("requires #[loop_bound(N)]"),
+            "expected missing loop_bound error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
     fn no_while_loop() {
         let src = "fn f() { return 42; }";
         let (prog, _) = crate::parse(src);
@@ -695,6 +940,82 @@ mod tests {
         // warning, i.e. it is a real static proof, not a fallback.
         let result = check(&prog, "<test>");
         assert!(result.is_ok(), "check failed: {:?}", result);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    #[cfg(feature = "z3")]
+    fn z3_uses_nonzero_counter_initializer() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: "".into(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "offset_count",
+            crate::feature_attrs::AttrRecord {
+                name: "loop_bound".into(),
+                args: "10".into(),
+                line: 1,
+            },
+        );
+
+        let src = "fn offset_count(int n) requires n >= 10 requires n <= 20 {
+            let i = 10;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        check(&prog, "<test>").expect("the 10..20 loop needs at most 10 iterations");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    #[cfg(feature = "z3")]
+    fn z3_rejects_negative_counter_initializer_that_exceeds_bound() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: "".into(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "negative_count",
+            crate::feature_attrs::AttrRecord {
+                name: "loop_bound".into(),
+                args: "10".into(),
+                line: 1,
+            },
+        );
+
+        let src = "fn negative_count(int n) requires n == 10 {
+            let i = -1;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        let err = check(&prog, "<test>").expect_err("11 iterations must exceed the bound of 10");
+        assert!(
+            err.contains("error[loop_bound]") && err.contains("may exceed its declared bound"),
+            "expected loop_bound violation error, got: {err}"
+        );
         crate::feature_attrs::reset();
     }
 

@@ -346,6 +346,17 @@ fn collect_from_node<'a>(
             collect_from_node(iterable, fn_fails, out);
             collect_from_node(body, fn_fails, out);
         }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_from_node(scrutinee, fn_fails, out);
+            for (_, guard, arm_body) in arms {
+                if let Some(guard) = guard {
+                    collect_from_node(guard, fn_fails, out);
+                }
+                collect_from_node(arm_body, fn_fails, out);
+            }
+        }
         Node::TryCatch { body, handlers, .. } => {
             // Variants caught by inner try/catch do NOT propagate out
             // — the outer try should not see them unless some other

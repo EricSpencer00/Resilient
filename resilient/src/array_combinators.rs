@@ -17,6 +17,25 @@ use crate::{Interpreter, Value};
 
 type RResult<T> = Result<T, String>;
 
+const MAX_WINDOW_ELEMENTS: usize = 10_000_000;
+
+fn window_count_within_budget(array_len: usize, window_len: usize) -> RResult<usize> {
+    if array_len < window_len {
+        return Ok(0);
+    }
+
+    let window_count = array_len - window_len + 1;
+    let total_elements = window_count.checked_mul(window_len).ok_or_else(|| {
+        "array_windows: total expansion element count overflowed usize".to_string()
+    })?;
+    if total_elements > MAX_WINDOW_ELEMENTS {
+        return Err(format!(
+            "array_windows: total expansion would produce {total_elements} elements (max {MAX_WINDOW_ELEMENTS})"
+        ));
+    }
+    Ok(window_count)
+}
+
 /// `array_sort_by(arr, cmp) -> Array`
 ///
 /// Sorts `arr` using the comparator `cmp(a, b) -> int`. If the return value
@@ -296,12 +315,15 @@ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
     if n < 1 {
         return Err(format!("array_windows: window size must be >= 1, got {n}"));
     }
-    let n = n as usize;
-    if arr.len() < n {
+    let n = usize::try_from(n).map_err(|_| {
+        format!("array_windows: window size {n} cannot be represented on this target")
+    })?;
+    let window_count = window_count_within_budget(arr.len(), n)?;
+    if window_count == 0 {
         return Ok(Value::Array(vec![]));
     }
-    let mut out = Vec::with_capacity(arr.len() - n + 1);
-    for start in 0..=(arr.len() - n) {
+    let mut out = Vec::with_capacity(window_count);
+    for start in 0..window_count {
         out.push(Value::Array(arr[start..start + n].to_vec()));
     }
     Ok(Value::Array(out))
@@ -691,6 +713,24 @@ println(len(ws));"#);
         let r = run(r#"let ws = array_windows([1,2,3], 0);
 println(ws);"#);
         assert!(!r.ok, "expected error for window size 0");
+    }
+
+    #[test]
+    fn windows_reject_quadratic_expansion_before_allocation() {
+        let err = super::window_count_within_budget(6_325, 3_163).unwrap_err();
+        assert!(err.contains("max 10000000"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn windows_reject_expansion_arithmetic_overflow() {
+        let err = super::window_count_within_budget(usize::MAX, 2).unwrap_err();
+        assert!(err.contains("overflowed usize"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn windows_budget_preserves_small_and_empty_inputs() {
+        assert_eq!(super::window_count_within_budget(5, 3).unwrap(), 3);
+        assert_eq!(super::window_count_within_budget(2, 5).unwrap(), 0);
     }
 
     // ── array_take_while / array_drop_while ───────────────────────────────────

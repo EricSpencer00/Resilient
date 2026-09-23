@@ -9,7 +9,10 @@
 //! * `array_scan_fn(arr, init, f)` — running fold returning all intermediate results.
 //! * `array_flat_map_fn(arr, f)` — map then flatten (standalone, any callback).
 
-use crate::{Interpreter, Value};
+use crate::{
+    Interpreter, Value,
+    array_functional::{MAX_GENERATED_ELEMENTS, extend_flat_map_output},
+};
 
 type RResult<T> = Result<T, String>;
 
@@ -131,10 +134,12 @@ pub(crate) fn builtin_array_flat_map_fn(
             // consuming a cloned Vec. Pre-size `out` to `arr.len()` —
             // exact lower bound (each callback returns ≥ 0 elements);
             // saves the default 0→4 doubling for non-empty inputs.
-            let mut out = Vec::with_capacity(arr.len());
+            let mut out = Vec::with_capacity(arr.len().min(MAX_GENERATED_ELEMENTS));
             for (i, elem) in arr.iter().enumerate() {
                 match interp.apply_function(f, vec![elem.clone()])? {
-                    Value::Array(sub) => out.extend(sub),
+                    Value::Array(sub) => {
+                        extend_flat_map_output(&mut out, sub, "array_flat_map_fn")?
+                    }
                     other => {
                         return Err(format!(
                             "array_flat_map_fn: f must return Array; got {other} at index {i}"
@@ -199,6 +204,7 @@ pub(crate) fn builtin_array_apply_n(interp: &mut Interpreter, args: &[Value]) ->
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_GENERATED_ELEMENTS;
     use crate::run_program;
 
     fn run(src: &str) -> crate::RunResult {
@@ -338,6 +344,17 @@ println(array_flat_map_fn([1,2,3], f));"#);
 println(len(array_flat_map_fn([1,2,3], f)));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn array_flat_map_fn_growth_rejects_budget_boundary() {
+        let error = crate::array_functional::check_flat_map_growth(
+            MAX_GENERATED_ELEMENTS,
+            1,
+            "array_flat_map_fn",
+        )
+        .expect_err("expected flat-map growth budget error");
+        assert!(error.contains("exceed the maximum"), "error: {error}");
     }
 
     // ── array_apply_n ─────────────────────────────────────────────────────────

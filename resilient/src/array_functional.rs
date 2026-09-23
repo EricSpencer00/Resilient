@@ -15,6 +15,35 @@ use crate::{Interpreter, MapKey, Value};
 
 type RResult<T> = Result<T, String>;
 
+/// Maximum number of elements a single eager flat-map operation may retain.
+pub(crate) const MAX_GENERATED_ELEMENTS: usize = 10_000_000;
+
+pub(crate) fn check_flat_map_growth(
+    current_len: usize,
+    incoming_len: usize,
+    builtin: &str,
+) -> RResult<usize> {
+    let next_len = current_len.checked_add(incoming_len).ok_or_else(|| {
+        format!("{builtin}: output length overflows the target usize before extension")
+    })?;
+    if next_len > MAX_GENERATED_ELEMENTS {
+        return Err(format!(
+            "{builtin}: output would exceed the maximum of {MAX_GENERATED_ELEMENTS} elements"
+        ));
+    }
+    Ok(next_len)
+}
+
+pub(crate) fn extend_flat_map_output(
+    out: &mut Vec<Value>,
+    inner: Vec<Value>,
+    builtin: &str,
+) -> RResult<()> {
+    check_flat_map_growth(out.len(), inner.len(), builtin)?;
+    out.extend(inner);
+    Ok(())
+}
+
 /// `array_flat_map(arr, fn) -> Array`
 ///
 /// Applies `fn` to each element of `arr`; every call must return an Array.
@@ -42,11 +71,11 @@ pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -
         }
     };
 
-    let mut out: Vec<Value> = Vec::with_capacity(arr.len() * 2);
+    let mut out: Vec<Value> = Vec::with_capacity(arr.len().min(MAX_GENERATED_ELEMENTS));
     for elem in arr {
         let result = interp.apply_function(&f, vec![elem])?;
         match result {
-            Value::Array(inner) => out.extend(inner),
+            Value::Array(inner) => extend_flat_map_output(&mut out, inner, "array_flat_map")?,
             other => {
                 return Err(format!(
                     "array_flat_map: callback must return an Array, got {other}"
@@ -252,6 +281,7 @@ pub(crate) fn builtin_array_scan(interp: &mut Interpreter, args: &[Value]) -> RR
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_GENERATED_ELEMENTS, check_flat_map_growth};
     use crate::run_program;
 
     fn run(src: &str) -> crate::RunResult {
@@ -302,6 +332,20 @@ println(len(result));"#,
 println(result);"#,
         );
         assert!(!r.ok, "expected error for non-array callback return");
+    }
+
+    #[test]
+    fn flat_map_growth_rejects_budget_boundary() {
+        let error = check_flat_map_growth(MAX_GENERATED_ELEMENTS, 1, "array_flat_map")
+            .expect_err("expected flat-map growth budget error");
+        assert!(error.contains("exceed the maximum"), "error: {error}");
+    }
+
+    #[test]
+    fn flat_map_growth_rejects_length_overflow() {
+        let error = check_flat_map_growth(usize::MAX, 1, "array_flat_map")
+            .expect_err("expected checked length error");
+        assert!(error.contains("overflows"), "error: {error}");
     }
 
     // ── array_group_by ────────────────────────────────────────────────────────

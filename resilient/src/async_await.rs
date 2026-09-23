@@ -73,7 +73,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 // Strings. Only the first leak (`leaks[0]`) makes it
                 // into the error message. Same shape as RES-1439 /
                 // RES-1441.
-                let mut leaks: Vec<&str> = Vec::new();
+                let mut leaks: Vec<String> = Vec::new();
                 walk_async_calls(body, &async_fns, &mut leaks);
                 if !leaks.is_empty() {
                     return Err(format!(
@@ -88,8 +88,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut Vec<&'a str>) {
-    match node {
+fn walk_async_calls(node: &Node, async_fns: &HashSet<String>, out: &mut Vec<String>) {
+    // The shared walker is deliberately exhaustive, so collect subtrees that
+    // are effect boundaries before scanning for async calls.
+    let mut excluded: HashSet<*const Node> = HashSet::new();
+    crate::uniqueness_walk::visit(node, &mut |candidate| match candidate {
+        Node::Function { .. } | Node::FunctionLiteral { .. } => {
+            crate::uniqueness_walk::visit(candidate, &mut |nested| {
+                excluded.insert(nested as *const Node);
+            });
+        }
         Node::CallExpression {
             function,
             arguments,
@@ -97,27 +105,29 @@ fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut V
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if name == "block_on" {
-                    // explicit bridge — skip recursion into args here since they are awaited
-                    return;
+                    for argument in arguments {
+                        crate::uniqueness_walk::visit(argument, &mut |nested| {
+                            excluded.insert(nested as *const Node);
+                        });
+                    }
                 }
-                if async_fns.contains(name) {
-                    out.push(name.as_str());
-                }
-            }
-            for a in arguments {
-                walk_async_calls(a, async_fns, out);
             }
         }
-        Node::Block { stmts, .. } => {
-            for s in stmts {
-                walk_async_calls(s, async_fns, out);
-            }
-        }
-        Node::ReturnStatement { value: Some(e), .. } => walk_async_calls(e, async_fns, out),
-        Node::LetStatement { value, .. } => walk_async_calls(value, async_fns, out),
-        Node::ExpressionStatement { expr, .. } => walk_async_calls(expr, async_fns, out),
         _ => {}
-    }
+    });
+
+    crate::uniqueness_walk::visit(node, &mut |candidate| {
+        if excluded.contains(&(candidate as *const Node)) {
+            return;
+        }
+        if let Node::CallExpression { function, .. } = candidate {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                if async_fns.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -244,6 +254,58 @@ mod tests {
         "#;
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn structured_control_flow_from_sync_is_blocked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fetch",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn fetch(int x) -> int { return x; }
+            fn caller(int x) -> int {
+                if (x > 0) { return fetch(x); }
+                try {
+                    defer fetch(x);
+                } catch Timeout {
+                    return match x { 0 => fetch(x), _ => x, };
+                }
+                return x;
+            }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn nested_expression_async_call_from_sync_is_blocked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fetch",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn fetch(int x) -> int { return x; }
+            fn caller(int x) -> int { return (fetch(x) + 1) * (x + 2); }
+        "#;
+        let (prog, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        assert!(check(&prog, "test").is_err());
         crate::feature_attrs::reset();
     }
 }

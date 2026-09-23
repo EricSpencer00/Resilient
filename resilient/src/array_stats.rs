@@ -63,10 +63,14 @@ fn population_variance_int(name: &str, items: &[Value]) -> RResult<f64> {
     if items.is_empty() {
         return Err(format!("{}: empty array has no value", name));
     }
+    // Translate the samples by an exact integer reference before converting
+    // them to f64.  The variance is translation-invariant, while converting
+    // the original large-magnitude values directly can erase small deltas.
+    let base = i128::from(as_int(name, &items[0])?);
     let mut sum: f64 = 0.0;
     for v in items {
         let n = as_int(name, v)?;
-        sum += n as f64;
+        sum += (i128::from(n) - base) as f64;
     }
     let n_f = items.len() as f64;
     let mean = sum / n_f;
@@ -74,8 +78,8 @@ fn population_variance_int(name: &str, items: &[Value]) -> RResult<f64> {
     for v in items {
         // Validated by pass 1 — silently skip otherwise (unreachable).
         if let Value::Int(n) = v {
-            let x = *n as f64;
-            sumsq += (x - mean).powi(2);
+            let delta = (i128::from(*n) - base) as f64;
+            sumsq += (delta - mean).powi(2);
         }
     }
     Ok(sumsq / n_f)
@@ -276,6 +280,16 @@ mod tests {
     fn variance_int_single_element_is_zero() {
         let r = builtin_array_variance_int(&[ints(&[42])]).unwrap();
         assert_eq!(as_float(r), 0.0);
+    }
+
+    #[test]
+    fn variance_int_preserves_adjacent_large_values() {
+        let high = i64::MAX;
+        let arr = ints(&[high, high - 1]);
+        let variance = as_float(builtin_array_variance_int(std::slice::from_ref(&arr)).unwrap());
+        let stddev = as_float(builtin_array_stddev_int(&[arr]).unwrap());
+        assert_eq!(variance, 0.25);
+        assert_eq!(stddev, 0.5);
     }
 
     #[test]

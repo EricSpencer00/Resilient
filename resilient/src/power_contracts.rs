@@ -60,8 +60,12 @@ pub fn collect() -> Vec<PowerSpec> {
 }
 
 pub fn estimate_uj(node: &Node) -> f64 {
+    const NODE_COST: f64 = 0.001;
+
     match node {
-        Node::Block { stmts, .. } => stmts.iter().map(estimate_uj).sum::<f64>(),
+        Node::Block { stmts, .. } => stmts.iter().map(estimate_uj).sum(),
+        Node::Program(stmts) => stmts.iter().map(|stmt| estimate_uj(&stmt.node)).sum(),
+        Node::Function { body, .. } | Node::FunctionLiteral { body, .. } => estimate_uj(body),
         Node::CallExpression {
             function,
             arguments,
@@ -80,23 +84,170 @@ pub fn estimate_uj(node: &Node) -> f64 {
             } else {
                 1.0
             };
-            base + arguments.iter().map(estimate_uj).sum::<f64>()
+            let callee = match function.as_ref() {
+                Node::Identifier { .. } => 0.0,
+                other => estimate_uj(other),
+            };
+            base + callee + arguments.iter().map(estimate_uj).sum::<f64>()
         }
         Node::IfStatement {
+            condition,
             consequence,
             alternative,
             ..
-        } => estimate_uj(consequence)
-            .max(alternative.as_ref().map(|a| estimate_uj(a)).unwrap_or(0.0)),
-        Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => {
-            100.0 * estimate_uj(body)
+        } => {
+            estimate_uj(condition)
+                + estimate_uj(consequence).max(
+                    alternative
+                        .as_ref()
+                        .map(|branch| estimate_uj(branch))
+                        .unwrap_or(0.0),
+                )
         }
+        Node::WhileStatement {
+            condition, body, ..
+        }
+        | Node::ForInStatement {
+            iterable: condition,
+            body,
+            ..
+        } => 100.0 * (estimate_uj(condition) + estimate_uj(body)),
         Node::LetStatement { value, .. } | Node::Assignment { value, .. } => {
-            0.001 + estimate_uj(value)
+            NODE_COST + estimate_uj(value)
         }
+        Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::LetDestructureStruct { value, .. }
+        | Node::LetTupleDestructure { value, .. }
+        | Node::NewtypeConstruct { value, .. }
+        | Node::NamedArg { value, .. } => NODE_COST + estimate_uj(value),
         Node::ExpressionStatement { expr, .. } => estimate_uj(expr),
         Node::ReturnStatement { value: Some(e), .. } => estimate_uj(e),
-        _ => 0.001,
+        Node::ReturnStatement { value: None, .. }
+        | Node::Break { .. }
+        | Node::Continue { .. }
+        | Node::BreakLabel { .. }
+        | Node::ContinueLabel { .. } => NODE_COST,
+        Node::BreakWith { value, .. } | Node::DeferStatement { expr: value, .. } => {
+            NODE_COST + estimate_uj(value)
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            let arm_cost = arms
+                .iter()
+                .map(|(_, guard, body)| {
+                    guard.as_ref().map(estimate_uj).unwrap_or(0.0) + estimate_uj(body)
+                })
+                .fold(0.0, f64::max);
+            estimate_uj(scrutinee) + arm_cost
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            let handler_cost = handlers
+                .iter()
+                .map(|(_, statements)| statements.iter().map(estimate_uj).sum::<f64>())
+                .fold(0.0, f64::max);
+            body.iter().map(estimate_uj).sum::<f64>() + handler_cost
+        }
+        Node::TryExpression { expr, .. }
+        | Node::FieldAccess { target: expr, .. }
+        | Node::TupleIndex { tuple: expr, .. } => NODE_COST + estimate_uj(expr),
+        Node::FieldAssignment { target, value, .. }
+        | Node::IndexAssignment { target, value, .. } => {
+            NODE_COST + estimate_uj(target) + estimate_uj(value)
+        }
+        Node::IndexExpression { target, index, .. } => {
+            NODE_COST + estimate_uj(target) + estimate_uj(index)
+        }
+        Node::PrefixExpression { right, .. } => NODE_COST + estimate_uj(right),
+        Node::InfixExpression { left, right, .. } => {
+            NODE_COST + estimate_uj(left) + estimate_uj(right)
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            NODE_COST + items.iter().map(estimate_uj).sum::<f64>()
+        }
+        Node::MapLiteral { entries, .. } => {
+            NODE_COST
+                + entries
+                    .iter()
+                    .map(|(key, value)| estimate_uj(key) + estimate_uj(value))
+                    .sum::<f64>()
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            NODE_COST
+                + base.as_ref().map(|base| estimate_uj(base)).unwrap_or(0.0)
+                + fields
+                    .iter()
+                    .map(|(_, value)| estimate_uj(value))
+                    .sum::<f64>()
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            NODE_COST
+                + estimate_uj(target)
+                + lo.as_ref().map(|value| estimate_uj(value)).unwrap_or(0.0)
+                + hi.as_ref().map(|value| estimate_uj(value)).unwrap_or(0.0)
+        }
+        Node::Range { lo, hi, .. } => NODE_COST + estimate_uj(lo) + estimate_uj(hi),
+        Node::InterpolatedString { parts, .. } => {
+            NODE_COST
+                + parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        crate::string_interp::StringPart::Expr(expr) => Some(estimate_uj(expr)),
+                        crate::string_interp::StringPart::Literal(_) => None,
+                    })
+                    .sum::<f64>()
+        }
+        Node::OptionalChain { object, access, .. } => {
+            let args = match access {
+                crate::ChainAccess::Field(_) => 0.0,
+                crate::ChainAccess::Method(_, args) => args.iter().map(estimate_uj).sum(),
+            };
+            NODE_COST + estimate_uj(object) + args
+        }
+        Node::Quantifier { range, body, .. } => {
+            let range_cost = match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    estimate_uj(lo) + estimate_uj(hi)
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => estimate_uj(iterable),
+            };
+            NODE_COST + range_cost + 100.0 * estimate_uj(body)
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            NODE_COST
+                + estimate_uj(condition)
+                + message
+                    .as_ref()
+                    .map(|message| estimate_uj(message))
+                    .unwrap_or(0.0)
+        }
+        Node::InvariantStatement { expr, .. }
+        | Node::StaticAssert {
+            condition: expr, ..
+        } => NODE_COST + estimate_uj(expr),
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            estimate_uj(body)
+                + invariants.iter().map(estimate_uj).sum::<f64>()
+                + timeout
+                    .as_ref()
+                    .map(|value| estimate_uj(value))
+                    .unwrap_or(0.0)
+        }
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => estimate_uj(body),
+        _ => NODE_COST,
     }
 }
 

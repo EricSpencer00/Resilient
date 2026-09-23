@@ -170,6 +170,64 @@ fn unsupported(target: &str, reason: String) -> EmitError {
 /// bounds-checks every write.
 const MAX_INSTR_WIRE_WIDTH: usize = 10;
 
+/// Compute the worst-case `.rzbc` buffer size without allowing any of the
+/// independent wire-table counts to wrap before allocation.
+fn checked_wire_capacity(
+    target: &str,
+    main_instr_count: usize,
+    function_instr_count: usize,
+    function_count: usize,
+    try_handler_count: usize,
+) -> Result<usize, EmitError> {
+    let function_bytes = function_count.checked_mul(8).ok_or_else(|| {
+        unsupported(
+            target,
+            "embedded `.rzbc` function-table sizing overflowed".to_string(),
+        )
+    })?;
+
+    // Each function contributes one extra instruction-width slot in the
+    // function-table header, matching the encoder's existing conservative
+    // sizing formula.
+    let instruction_slots = main_instr_count
+        .checked_add(function_instr_count)
+        .and_then(|count| count.checked_add(function_count))
+        .ok_or_else(|| {
+            unsupported(
+                target,
+                "embedded `.rzbc` instruction-count sizing overflowed".to_string(),
+            )
+        })?;
+    let instruction_bytes = instruction_slots
+        .checked_mul(MAX_INSTR_WIRE_WIDTH)
+        .ok_or_else(|| {
+            unsupported(
+                target,
+                "embedded `.rzbc` instruction-byte sizing overflowed".to_string(),
+            )
+        })?;
+    let try_handler_bytes = try_handler_count
+        .checked_mul(1 + MAX_CATCH_ARMS * (2 + 4))
+        .ok_or_else(|| {
+            unsupported(
+                target,
+                "embedded `.rzbc` try-handler sizing overflowed".to_string(),
+            )
+        })?;
+
+    rzbc_serde::HEADER_LEN
+        .checked_add(instruction_bytes)
+        .and_then(|size| size.checked_add(function_bytes))
+        .and_then(|size| size.checked_add(try_handler_bytes))
+        .and_then(|size| size.checked_add(2))
+        .ok_or_else(|| {
+            unsupported(
+                target,
+                "embedded `.rzbc` aggregate buffer sizing overflowed".to_string(),
+            )
+        })
+}
+
 /// Compile `program` (the output of [`crate::compiler::compile`]) to
 /// a `.rzbc` byte blob for `target`, or a typed [`EmitError`] naming
 /// the first unsupported construct encountered. Never emits a
@@ -210,7 +268,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
     if program.functions.is_empty() {
         let main_instrs =
             translate_chunk_transformed(&program.main, target, main_try_base, None, &arities)?;
-        let cap = rzbc_serde::HEADER_LEN + main_instrs.len() * MAX_INSTR_WIRE_WIDTH;
+        let cap = checked_wire_capacity(target, main_instrs.len(), 0, 0, 0)?;
         let mut buf = vec![0u8; cap];
         let len = rzbc_serde::encode(&main_instrs, &mut buf).map_err(|e| {
             unsupported(
@@ -309,15 +367,22 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
         )
         .collect();
 
-    let func_instr_total: usize = func_instrs.iter().map(Vec::len).sum();
-    // Each try-handler entry, worst case: 1 (arm_count) +
-    // MAX_CATCH_ARMS * (2 variant + 4 handler_pc) bytes.
-    const MAX_TRY_ENTRY_WIRE_WIDTH: usize = 1 + MAX_CATCH_ARMS * (2 + 4);
-    let cap = rzbc_serde::HEADER_LEN
-        + (main_instrs.len() + func_instr_total + functions.len()) * MAX_INSTR_WIRE_WIDTH
-        + functions.len() * 8
-        + global_try_handlers.len() * MAX_TRY_ENTRY_WIRE_WIDTH
-        + 2;
+    let func_instr_total = func_instrs
+        .iter()
+        .try_fold(0usize, |total, instrs| total.checked_add(instrs.len()))
+        .ok_or_else(|| {
+            unsupported(
+                target,
+                "embedded `.rzbc` function instruction-count sizing overflowed".to_string(),
+            )
+        })?;
+    let cap = checked_wire_capacity(
+        target,
+        main_instrs.len(),
+        func_instr_total,
+        functions.len(),
+        global_try_handlers.len(),
+    )?;
     let mut buf = vec![0u8; cap];
     let len = rzbc_serde::encode_program(&main_instrs, &functions, &global_try_handlers, &mut buf)
         .map_err(|e| {
@@ -1072,6 +1137,34 @@ mod tests {
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         }
+    }
+
+    #[test]
+    fn checked_wire_capacity_preserves_small_layouts() {
+        let expected = rzbc_serde::HEADER_LEN
+            + 13 * MAX_INSTR_WIRE_WIDTH
+            + 2 * 8
+            + (1 + MAX_CATCH_ARMS * (2 + 4))
+            + 2;
+        assert_eq!(checked_wire_capacity("thumb", 6, 5, 2, 1), Ok(expected));
+    }
+
+    #[test]
+    fn checked_wire_capacity_rejects_instruction_width_overflow() {
+        let err = checked_wire_capacity("thumb", usize::MAX / MAX_INSTR_WIRE_WIDTH + 1, 0, 0, 0)
+            .unwrap_err();
+        assert!(err.reason.contains("instruction-byte sizing overflowed"));
+    }
+
+    #[test]
+    fn checked_wire_capacity_rejects_table_width_overflow() {
+        let err = checked_wire_capacity("thumb", 0, 0, usize::MAX / 8 + 1, 0).unwrap_err();
+        assert!(err.reason.contains("function-table sizing overflowed"));
+
+        let handler_width = 1 + MAX_CATCH_ARMS * (2 + 4);
+        let err =
+            checked_wire_capacity("thumb", 0, 0, 0, usize::MAX / handler_width + 1).unwrap_err();
+        assert!(err.reason.contains("try-handler sizing overflowed"));
     }
 
     #[test]

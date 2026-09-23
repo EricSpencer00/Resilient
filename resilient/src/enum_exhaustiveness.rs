@@ -797,16 +797,17 @@ fn format_witness(w: &Witness) -> String {
 }
 
 /// Check a single `Node::Match`'s arms for nested (beyond-top-level)
-/// non-exhaustiveness. Guard-blind, matching the conservative behavior
-/// of `check_match` above: a guarded arm's pattern still counts toward
-/// coverage since a guard may fail, so treating it as *not* covering
-/// would be strictly more precise but is out of scope here — the same
-/// documented gap already exists at the top level.
+/// non-exhaustiveness. Guarded arms are excluded because a false guard
+/// falls through at runtime and cannot certify coverage of its pattern.
 fn check_one_match(
     arms: &[(crate::Pattern, Option<Node>, Node)],
     enum_meta: &HashMap<&str, Vec<VariantMeta<'_>>>,
 ) -> Option<Witness> {
-    let rows: Vec<Vec<Cell>> = arms.iter().map(|(p, _guard, _)| vec![Cell::P(p)]).collect();
+    let rows: Vec<Vec<Cell>> = arms
+        .iter()
+        .filter(|(_, guard, _)| guard.is_none())
+        .map(|(p, _, _)| vec![Cell::P(p)])
+        .collect();
     let mut stack = Vec::new();
     matrix_exhaustive(rows, enum_meta, &mut stack).err()
 }
@@ -1891,6 +1892,32 @@ fn f(Option<Result<Shape, Shape>> value) -> int {
             errs.is_empty(),
             "bare and qualified Result patterns cover every nested payload; got: {:?}",
             errs
+        );
+    }
+
+    #[test]
+    fn guarded_nested_variant_does_not_count_toward_coverage() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os, bool ok) -> int {
+    return match os {
+        Some(Shape::Circle(r)) if ok => r,
+        Some(Shape::Square(s)) => s,
+        None => 0,
+    };
+}
+"#;
+        let (prog, parse_errors) = crate::parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {:?}", parse_errors);
+        let err = check_nested(&prog, "test.rz")
+            .expect_err("a guarded nested variant must not certify coverage");
+        assert!(
+            err.contains("Shape::Circle"),
+            "error must name the guarded nested case that can fall through: {}",
+            err
         );
     }
 }

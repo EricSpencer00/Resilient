@@ -11,32 +11,24 @@
 
 use crate::{RResult, Value};
 
-fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
-    let mut out: Vec<i64> = Vec::with_capacity(items.len());
-    for v in items {
-        match v {
-            Value::Int(n) => out.push(*n),
-            other => {
-                return Err(format!(
-                    "{}: expected all int elements, got {}",
-                    name, other
-                ));
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// `array_cumsum(arr) -> Array` — prefix sums. Output length matches
 /// input length. Uses wrapping arithmetic on overflow (matches the
 /// existing `array_sum` reduction convention).
 pub(crate) fn builtin_array_cumsum(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_cumsum", items)?;
-            let mut out: Vec<Value> = Vec::with_capacity(nums.len());
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
             let mut acc: i64 = 0;
-            for n in nums {
+            for value in items {
+                let n = match value {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_cumsum: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
                 acc = acc.wrapping_add(n);
                 out.push(Value::Int(acc));
             }
@@ -55,10 +47,18 @@ pub(crate) fn builtin_array_cumsum(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_cumprod(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_cumprod", items)?;
-            let mut out: Vec<Value> = Vec::with_capacity(nums.len());
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
             let mut acc: i64 = 1;
-            for n in nums {
+            for value in items {
+                let n = match value {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_cumprod: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
                 acc = acc.wrapping_mul(n);
                 out.push(Value::Int(acc));
             }
@@ -78,11 +78,23 @@ pub(crate) fn builtin_array_cumprod(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_diffs(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_diffs", items)?;
-            let out: Vec<Value> = nums
-                .windows(2)
-                .map(|w| Value::Int(w[1].wrapping_sub(w[0])))
-                .collect();
+            let mut out = Vec::with_capacity(items.len().saturating_sub(1));
+            let mut previous = None;
+            for value in items {
+                let current = match value {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_diffs: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if let Some(previous) = previous {
+                    out.push(Value::Int(current.wrapping_sub(previous)));
+                }
+                previous = Some(current);
+            }
             Ok(Value::Array(out))
         }
         [other] => Err(format!("array_diffs: expected array, got {}", other)),
@@ -101,10 +113,29 @@ pub(crate) fn builtin_array_min_max(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Err("array_min_max: empty array has no min or max".to_string());
             }
-            let nums = collect_ints("array_min_max", items)?;
-            let mut min = nums[0];
-            let mut max = nums[0];
-            for &n in &nums[1..] {
+            let mut values = items.iter();
+            let first = match values.next() {
+                Some(Value::Int(n)) => *n,
+                Some(other) => {
+                    return Err(format!(
+                        "array_min_max: expected all int elements, got {}",
+                        other
+                    ));
+                }
+                None => return Err("array_min_max: empty array has no min or max".to_string()),
+            };
+            let mut min = first;
+            let mut max = first;
+            for value in values {
+                let n = match value {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_min_max: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
                 if n < min {
                     min = n;
                 }

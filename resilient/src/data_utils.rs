@@ -147,7 +147,7 @@ pub(crate) fn builtin_csv_parse(args: &[Value]) -> RResult<Value> {
     match args {
         [v] => {
             let s = as_string("csv_parse", v)?;
-            Ok(Value::Array(parse_delimited(s, ',')))
+            Ok(Value::Array(parse_delimited(s, ',')?))
         }
         _ => Err(format!(
             "csv_parse: expected 1 argument, got {}",
@@ -163,7 +163,7 @@ pub(crate) fn builtin_csv_parse_tsv(args: &[Value]) -> RResult<Value> {
     match args {
         [v] => {
             let s = as_string("csv_parse_tsv", v)?;
-            Ok(Value::Array(parse_delimited(s, '\t')))
+            Ok(Value::Array(parse_delimited(s, '\t')?))
         }
         _ => Err(format!(
             "csv_parse_tsv: expected 1 argument, got {}",
@@ -172,13 +172,33 @@ pub(crate) fn builtin_csv_parse_tsv(args: &[Value]) -> RResult<Value> {
     }
 }
 
-fn parse_delimited(s: &str, delim: char) -> Vec<Value> {
-    s.lines()
+const MAX_DELIMITED_ROWS: usize = 100_000;
+const MAX_DELIMITED_FIELDS: usize = 1_000_000;
+
+fn parse_delimited(s: &str, delim: char) -> RResult<Vec<Value>> {
+    let rows = s.lines().count();
+    if rows > MAX_DELIMITED_ROWS {
+        return Err(format!(
+            "delimited input would exceed {MAX_DELIMITED_ROWS} rows"
+        ));
+    }
+
+    // Delimiters inside quoted fields are conservatively counted too. This
+    // upper bound lets us reject oversized inputs before allocating any rows.
+    let delimiter_count = s.bytes().filter(|&byte| byte == delim as u8).count();
+    let field_upper_bound = delimiter_count.saturating_add(rows);
+    if field_upper_bound > MAX_DELIMITED_FIELDS {
+        return Err(format!(
+            "delimited input would exceed {MAX_DELIMITED_FIELDS} fields"
+        ));
+    }
+
+    Ok(s.lines()
         .map(|line| {
             let fields = parse_csv_row(line, delim);
             Value::Array(fields.into_iter().map(Value::String).collect())
         })
-        .collect()
+        .collect())
 }
 
 /// Parse a single CSV row with optional quoting.
@@ -190,7 +210,10 @@ fn parse_csv_row(line: &str, delim: char) -> Vec<String> {
     // escapes can lower the actual field count, but never raise it,
     // so this is a safe upper bound.
     let cap = if (delim as u32) < 0x80 {
-        line.bytes().filter(|&b| b == delim as u8).count() + 1
+        line.bytes()
+            .filter(|&b| b == delim as u8)
+            .count()
+            .saturating_add(1)
     } else {
         1
     };

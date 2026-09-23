@@ -24,9 +24,9 @@ fn field_value<'a>(element: &'a Value, field: &str) -> Option<&'a Value> {
 fn cmp_values(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
-        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal),
-        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal),
+        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
+        (Value::Int(x), Value::Float(y)) => (*x as f64).total_cmp(y),
+        (Value::Float(x), Value::Int(y)) => x.total_cmp(&(*y as f64)),
         (Value::String(x), Value::String(y)) => x.cmp(y),
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         _ => a.to_string().cmp(&b.to_string()),
@@ -42,13 +42,15 @@ fn sort_impl(args: &[Value], descending: bool, fname: &str) -> RResult<Value> {
             indexed.sort_by(|(_, a), (_, b)| {
                 let va = field_value(a, &field);
                 let vb = field_value(b, &field);
-                let ord = match (va, vb) {
-                    (Some(fa), Some(fb)) => cmp_values(fa, fb),
+                match (va, vb) {
+                    (Some(fa), Some(fb)) => {
+                        let ord = cmp_values(fa, fb);
+                        if descending { ord.reverse() } else { ord }
+                    }
                     (Some(_), None) => Ordering::Less,
                     (None, Some(_)) => Ordering::Greater,
                     (None, None) => Ordering::Equal,
-                };
-                if descending { ord.reverse() } else { ord }
+                }
             });
 
             Ok(Value::Array(indexed.into_iter().map(|(_, v)| v).collect()))
@@ -64,6 +66,10 @@ fn sort_impl(args: &[Value], descending: bool, fname: &str) -> RResult<Value> {
         )),
     }
 }
+
+#[cfg(test)]
+#[path = "array_struct_sort_order_tests.rs"]
+mod array_struct_sort_order_tests;
 
 /// `array_sort_by_field(arr, field)` — ascending sort of structs/maps by a
 /// named field. Elements missing the field sort last.

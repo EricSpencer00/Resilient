@@ -81,6 +81,10 @@ const DEFAULT_RATE_LIMIT_PER_MIN: u32 = 100;
 /// Default bounded worker-pool size for concurrent HTTP connections
 /// (RES-3937).
 const DEFAULT_MAX_CONNECTIONS: usize = 16;
+/// Upper bound for operator-configured HTTP worker pools. Keeping this
+/// separate from the default prevents an environment typo from turning the
+/// listener into an unbounded thread and queue allocation request.
+const MAX_MCP_CONNECTIONS: usize = 1024;
 /// Default grace period for draining in-flight requests on shutdown
 /// (RES-3942), in seconds.
 const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
@@ -123,11 +127,10 @@ impl HttpHardeningConfig {
                 "RESILIENT_MCP_RATE_LIMIT_PER_MIN",
                 DEFAULT_RATE_LIMIT_PER_MIN,
             ),
-            max_connections: env_var_usize(
+            max_connections: bounded_worker_count(env_var_usize(
                 "RESILIENT_MCP_MAX_CONNECTIONS",
                 DEFAULT_MAX_CONNECTIONS,
-            )
-            .max(1),
+            )),
             shutdown_drain: Duration::from_secs(env_var_u64(
                 "RESILIENT_MCP_SHUTDOWN_DRAIN_SECS",
                 DEFAULT_SHUTDOWN_DRAIN_SECS,
@@ -144,6 +147,10 @@ fn env_var_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn bounded_worker_count(value: usize) -> usize {
+    value.clamp(1, MAX_MCP_CONNECTIONS)
 }
 
 fn env_var_u64(key: &str, default: u64) -> u64 {
@@ -309,6 +316,99 @@ fn shutdown_requested() -> bool {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Maximum bytes accepted for one newline-delimited stdio message.
+const DEFAULT_MAX_STDIO_MESSAGE_BYTES: usize = DEFAULT_MAX_BODY_BYTES;
+
+#[derive(Debug, Eq, PartialEq)]
+enum StdioRead {
+    EndOfInput,
+    Message(String),
+    TooLong,
+}
+
+/// Read one NDJSON message without allowing an unterminated line to grow
+/// beyond the same cap used for HTTP request bodies. `BufRead::lines()` cannot
+/// enforce this boundary because it allocates the complete line first.
+fn read_bounded_stdio_line<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<StdioRead> {
+    let mut line = Vec::with_capacity(max_bytes.min(4096));
+
+    loop {
+        let (consumed, newline, fits) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                if line.is_empty() {
+                    return Ok(StdioRead::EndOfInput);
+                }
+                return String::from_utf8(line)
+                    .map(StdioRead::Message)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+            }
+
+            if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                let fits = append_bounded_stdio_chunk(&mut line, &chunk[..newline], max_bytes);
+                (newline + 1, true, fits)
+            } else {
+                let chunk_len = chunk.len();
+                let fits = append_bounded_stdio_chunk(&mut line, chunk, max_bytes);
+                (chunk_len, false, fits)
+            }
+        };
+
+        reader.consume(consumed);
+        if newline {
+            if !fits {
+                return Ok(StdioRead::TooLong);
+            }
+            return String::from_utf8(line)
+                .map(StdioRead::Message)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+        }
+        if !fits {
+            discard_stdio_line(reader)?;
+            return Ok(StdioRead::TooLong);
+        }
+    }
+}
+
+fn append_bounded_stdio_chunk(line: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> bool {
+    let Some(required) = line.len().checked_add(chunk.len()) else {
+        return false;
+    };
+    if required > max_bytes {
+        return false;
+    }
+
+    if required > line.capacity() {
+        let doubled = line.capacity().saturating_mul(2).max(1);
+        let target = doubled.max(required).min(max_bytes);
+        if line.try_reserve_exact(target - line.capacity()).is_err() {
+            return false;
+        }
+    }
+    line.extend_from_slice(chunk);
+    true
+}
+
+fn discard_stdio_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
+    loop {
+        let (consumed, newline) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            if let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+                (newline + 1, true)
+            } else {
+                (chunk.len(), false)
+            }
+        };
+        reader.consume(consumed);
+        if newline {
+            return Ok(());
+        }
+    }
+}
+
 /// Run the MCP server loop on stdin/stdout.
 ///
 /// Reads one JSON object per line, dispatches it, and writes the
@@ -317,10 +417,29 @@ pub fn run() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
+    let mut input = stdin.lock();
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
+    loop {
+        let line = match read_bounded_stdio_line(&mut input, DEFAULT_MAX_STDIO_MESSAGE_BYTES) {
+            Ok(StdioRead::EndOfInput) => break,
+            Ok(StdioRead::Message(line)) => line,
+            Ok(StdioRead::TooLong) => {
+                let _ = write_response(
+                    &mut out,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {
+                            "code": -32700,
+                            "message": format!(
+                                "Parse error: MCP stdio message exceeds {}-byte limit",
+                                DEFAULT_MAX_STDIO_MESSAGE_BYTES
+                            )
+                        }
+                    }),
+                );
+                continue;
+            }
             Err(_) => break,
         };
         let trimmed = line.trim();
@@ -3659,6 +3778,38 @@ mod tests {
         assert!(resp["result"]["resources"].is_array());
     }
 
+    #[test]
+    fn stdio_reader_accepts_exact_limit_and_final_partial_line() {
+        let mut input = std::io::Cursor::new(b"abcd\nlast");
+
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("abcd".to_string())
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("last".to_string())
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::EndOfInput
+        );
+    }
+
+    #[test]
+    fn stdio_reader_rejects_oversized_line_and_recovers_at_newline() {
+        let mut input = std::io::Cursor::new(b"abcde\nnext\n");
+
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::TooLong
+        );
+        assert_eq!(
+            read_bounded_stdio_line(&mut input, 4).unwrap(),
+            StdioRead::Message("next".to_string())
+        );
+    }
+
     fn test_config() -> HttpHardeningConfig {
         HttpHardeningConfig {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -3668,6 +3819,22 @@ mod tests {
             shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
             api_key: None,
         }
+    }
+
+    #[test]
+    fn worker_count_preserves_default_and_valid_values() {
+        assert_eq!(bounded_worker_count(DEFAULT_MAX_CONNECTIONS), 16);
+        assert_eq!(bounded_worker_count(1), 1);
+        assert_eq!(
+            bounded_worker_count(MAX_MCP_CONNECTIONS),
+            MAX_MCP_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn worker_count_clamps_zero_and_oversized_values() {
+        assert_eq!(bounded_worker_count(0), 1);
+        assert_eq!(bounded_worker_count(usize::MAX), MAX_MCP_CONNECTIONS);
     }
 
     #[test]
