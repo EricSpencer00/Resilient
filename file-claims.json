@@ -203,6 +203,10 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4789-array-intersperse-bound",
+      "claimed_at": "2026-09-23T07:51:30Z"
     }
   }
 }
