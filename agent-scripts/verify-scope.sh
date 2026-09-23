@@ -158,8 +158,13 @@ for f in "${MODIFIED_FILES[@]}"; do
   esac
 done
 
-# Rule 1b: no new `unsafe` blocks. Scan the diff for added `unsafe` lines.
-if git diff "${BASE}...${HEAD}" -- '*.rs' 2>/dev/null | grep -E '^\+.*\bunsafe\b' | grep -vE '^\+\+\+' >/dev/null; then
+# Rule 1b: block new Rust unsafe constructs, not mentions of the language
+# keyword in lexer tokens or prose.
+UNSAFE_CONSTRUCT_RX='(^|[^[:alnum:]_])unsafe[[:space:]]*(\{|fn[[:space:]]|impl[[:space:]]|trait[[:space:]]|extern[[:space:]])'
+if git diff "${BASE}...${HEAD}" -- '*.rs' 2>/dev/null \
+  | grep -E '^[+][^+]' \
+  | sed 's/^+//' \
+  | grep -E "$UNSAFE_CONSTRUCT_RX" >/dev/null; then
   fail "introduces new \`unsafe\` block — requires explicit maintainer approval (see CLAUDE.md Security rules)"
 fi
 
