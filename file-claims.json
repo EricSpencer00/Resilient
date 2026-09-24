@@ -203,6 +203,14 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4875-type-annotation-depth",
+      "claimed_at": "2026-09-24T20:03:16Z"
+    },
+    "resilient/tests/parser_type_depth.rs": {
+      "branch": "res-4875-type-annotation-depth",
+      "claimed_at": "2026-09-24T20:03:16Z"
     }
   }
 }
