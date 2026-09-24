@@ -16,7 +16,8 @@ cargo test --manifest-path resilient/Cargo.toml   # should be green before you s
 
 1. Find something to work on — [good first issues][gfi] are scoped to a
    single file with a reproduction and acceptance criteria.
-2. Branch, make your change, add a test.
+2. Choose the verification path before changing behavior, then branch
+   and work through the test strategy below.
 3. Before pushing, run the three gates CI will run:
    ```bash
    cargo test --manifest-path resilient/Cargo.toml
@@ -176,11 +177,35 @@ cargo test --manifest-path resilient-runtime/Cargo.toml
 cargo test --manifest-path resilient/Cargo.toml <test_name>
 ```
 
+### Test strategy
+
+For complex behavior, strongly prefer end-to-end tests through the public
+interface. Use them as the sole test mechanism when they cover the relevant
+behavior and failure modes; avoid duplicating the same coverage with unit
+tests.
+
+Never write unit tests after the implementation they cover. If a unit test
+is necessary, write and run it before implementation, then make the
+implementation pass without weakening the test.
+
+If end-to-end verification cannot reliably exercise a behavior, first
+record the ways the isolated system could fail, map each relevant failure
+mode to a check, and explain why an end-to-end test cannot cover it. Keep
+isolated checks focused on those gaps.
+
+At the end of an end-to-end run, produce verifiable, repeatable evidence.
+Record the exact command, source revision, toolchain, relevant configuration
+and fixture identifiers or hashes, outcomes, and checksums for generated
+evidence. Do not include secrets. Issue #4868 tracks shared
+artifact-generation support.
+
 ### Direct regression coverage
 
 Shipped language features and shipped CLI workflows should keep at least
 one direct regression or smoke test instead of relying on incidental
-coverage.
+coverage. End-to-end coverage is preferred when it exercises the public
+behavior; use isolated coverage for behavior that cannot be observed
+reliably end to end.
 
 - Update or extend the tracked inventory in
   [`docs/stable-regression-inventory.md`](docs/stable-regression-inventory.md)

@@ -79,9 +79,30 @@ Commit format: `RES-NNN: short description` (≤72 chars).
 **All PRs must pass every test. PRs that modify existing tests require
 explicit maintainer approval before merge.**
 
+### Plan verification before implementation
+
+- For complex behavior, strongly prefer end-to-end tests through the public
+  interface. Use them as the sole test mechanism when they cover the relevant
+  behavior and failure modes; avoid adding duplicate unit tests just for a
+  second layer of coverage.
+- Never write unit tests after writing the implementation they cover. When a
+  unit test is necessary, write and run it before the implementation, then
+  make the implementation pass without weakening the test.
+- When an end-to-end test cannot reliably exercise a behavior and isolated
+  testing is necessary, record the ways the system under test could fail
+  before implementation, map each relevant failure mode to a check, and
+  explain why end-to-end verification cannot cover it.
+- At the end of each end-to-end run, produce evidence that can be checked and
+  repeated: record the exact command, source revision (and a diff hash for
+  uncommitted work), toolchain, relevant configuration and fixture identifiers
+  or hashes, outcomes, and checksums
+  for generated evidence. Do not include secrets. Issue #4868 tracks shared
+  artifact-generation support.
+
 Rules:
-1. A failing test means the *implementation* is wrong — fix the code, not
-   the test.
+1. Outside the intentional red run of a new test written before
+   implementation, a failing test means the *implementation* is wrong — fix
+   the code, not the test.
 2. Do not delete or weaken tests (lowering an assertion = deleting a test).
 3. When a test legitimately needs updating (intentional behaviour change),
    call it out in a **"Test changes"** section of the PR body with a
