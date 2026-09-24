@@ -420,10 +420,11 @@ impl<const N: usize> DmaChain<N> {
     }
 
     /// Borrow the descriptor at `index`. Returns `None` if the
-    /// index is past the chain's `len()`. Used by host-side tests
+    /// index is past the chain's `len()`, or if the populated chain
+    /// moved after its links were recorded. Used by host-side tests
     /// to walk the chain without dereferencing raw pointers.
     pub fn get(&self, index: usize) -> Option<&DmaDescriptor> {
-        if index >= self.len {
+        if self.movement_error().is_some() || index >= self.len {
             return None;
         }
         // SAFETY: index < self.len, and the invariant on `len` is
@@ -433,13 +434,13 @@ impl<const N: usize> DmaChain<N> {
 
     /// Head pointer — what you'd hand a DMA controller's `PADR`
     /// (peripheral address-of-descriptor) register. Null if the
-    /// chain is empty.
+    /// chain is empty or moved after its links were recorded.
     ///
     /// Returned as `*const DmaDescriptor` (the engine reads it, never
     /// writes it). The pointer is valid for as long as `self` is
     /// alive and unmoved.
     pub fn head_ptr(&self) -> *const DmaDescriptor {
-        if self.len == 0 {
+        if self.len == 0 || self.movement_error().is_some() {
             ptr::null()
         } else {
             // SAFETY: len >= 1, so index 0 is initialised.
