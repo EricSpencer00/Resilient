@@ -194,10 +194,29 @@ mode to a check, and explain why an end-to-end test cannot cover it. Keep
 isolated checks focused on those gaps.
 
 At the end of an end-to-end run, produce verifiable, repeatable evidence.
-Record the exact command, source revision, toolchain, relevant configuration
-and fixture identifiers or hashes, outcomes, and checksums for generated
-evidence. Do not include secrets. Issue #4868 tracks shared
-artifact-generation support.
+The runner writes to `target/e2e-artifacts/latest`, records the exact command,
+source revision and working-tree digest, toolchain versions, declared input
+hashes, and command outcome. Deterministic evidence is checksummed; timestamps
+and duration are stored separately in volatile metadata.
+
+Run a representative end-to-end test and verify its artifact with:
+
+```bash
+python3 agent-scripts/e2e-evidence.py run \
+  --input Cargo.toml \
+  --input Cargo.lock \
+  --input resilient/Cargo.toml \
+  --input resilient/tests/it/contract_certificate_e2e_smoke.rs \
+  -- cargo test --manifest-path resilient/Cargo.toml \
+  --test it contract_certificate_e2e_smoke
+python3 agent-scripts/e2e-evidence.py verify target/e2e-artifacts/latest
+```
+
+List each relevant configuration and fixture with `--input`. The runner does
+not store child output or environment values; do not pass secrets in command
+arguments. If the test command fails, the runner still writes and verifies the
+failure artifact before returning that command's exit status. Run the verify
+command separately to validate the bundle after a failure.
 
 ### Direct regression coverage
 

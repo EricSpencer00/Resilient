@@ -92,12 +92,13 @@ explicit maintainer approval before merge.**
   testing is necessary, record the ways the system under test could fail
   before implementation, map each relevant failure mode to a check, and
   explain why end-to-end verification cannot cover it.
-- At the end of each end-to-end run, produce evidence that can be checked and
-  repeated: record the exact command, source revision (and a diff hash for
-  uncommitted work), toolchain, relevant configuration and fixture identifiers
-  or hashes, outcomes, and checksums
-  for generated evidence. Do not include secrets. Issue #4868 tracks shared
-  artifact-generation support.
+- At the end of each end-to-end run, create and verify a repeatable evidence
+  bundle with `python3 agent-scripts/e2e-evidence.py run` and
+  `python3 agent-scripts/e2e-evidence.py verify`. The manifest records the
+  command, source revision and any working-tree digest, toolchain, declared
+  input hashes, outcome, and deterministic evidence checksums. Keep volatile run
+  metadata separate. Do not pass secrets as command arguments or include them
+  in evidence. See the exact example in `CONTRIBUTING.md`.
 
 Rules:
 1. Outside the intentional red run of a new test written before
