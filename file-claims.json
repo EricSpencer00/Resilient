@@ -211,6 +211,10 @@
     "resilient/tests/parser_pattern_depth.rs": {
       "branch": "res-4877-pattern-depth",
       "claimed_at": "2026-09-24T20:36:37Z"
+    },
+    "resilient/src/sum_types.rs": {
+      "branch": "res-4877-pattern-depth",
+      "claimed_at": "2026-09-24T20:47:13Z"
     }
   }
 }
