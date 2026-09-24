@@ -113,6 +113,8 @@ pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
     Ok(out)
 }
 
+const MAX_FORMAT_DIM: usize = 65_535;
+
 /// Render an integer through the standalone format-spec engine.
 ///
 /// Supports `:Nd` (space-padded width), `:0Nd` (zero-padded width,
@@ -135,6 +137,11 @@ pub fn render_int(spec: &str, value: i64) -> Result<String, String> {
         let width: usize = width_digits
             .parse()
             .map_err(|_| format!("format: invalid integer width `{}`", width_str))?;
+        if width > MAX_FORMAT_DIM {
+            return Err(format!(
+                "format: integer width {width} exceeds maximum {MAX_FORMAT_DIM}"
+            ));
+        }
         return Ok(if zero_pad {
             if value < 0 {
                 let body = format!(
@@ -189,6 +196,11 @@ pub fn render_float(spec: &str, value: f64) -> Result<String, String> {
             let prec: usize = prec_str
                 .parse()
                 .map_err(|_| format!("format: invalid float precision `{}`", prec_str))?;
+            if prec > MAX_FORMAT_DIM {
+                return Err(format!(
+                    "format: float precision {prec} exceeds maximum {MAX_FORMAT_DIM}"
+                ));
+            }
             return Ok(format!("{value:.prec$}"));
         }
         return Err(format!("format: malformed float spec `{}`", spec));
