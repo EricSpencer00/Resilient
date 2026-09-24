@@ -203,14 +203,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/format_builtin.rs": {
-      "branch": "res-4824-format-validation-bound",
-      "claimed_at": "2026-09-24T16:08:06Z"
-    },
-    "resilient/tests/format_builtin_dimension_bounds.rs": {
-      "branch": "res-4824-format-validation-bound",
-      "claimed_at": "2026-09-24T16:08:06Z"
     }
   }
 }
