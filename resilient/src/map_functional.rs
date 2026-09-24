@@ -11,6 +11,17 @@ use crate::{Interpreter, MapKey, Value};
 
 type RResult<T> = Result<T, String>;
 
+const MAX_MAP_TO_PAIRS_ENTRIES: usize = 10_000_000;
+
+fn check_map_to_pairs_len(len: usize) -> RResult<()> {
+    if len > MAX_MAP_TO_PAIRS_ENTRIES {
+        return Err(format!(
+            "map_to_pairs: map has {len} entries (max {MAX_MAP_TO_PAIRS_ENTRIES})"
+        ));
+    }
+    Ok(())
+}
+
 /// `map_filter(m, fn) -> Map`
 ///
 /// Keeps only the entries of `m` for which `fn(key, value)` returns true.
@@ -137,10 +148,11 @@ pub(crate) fn builtin_map_for_each(interp: &mut Interpreter, args: &[Value]) -> 
 pub(crate) fn builtin_map_to_pairs(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => {
-            let pairs: Vec<Value> = m
-                .iter()
-                .map(|(k, v)| Value::Array(vec![map_key_to_value(k), v.clone()]))
-                .collect();
+            check_map_to_pairs_len(m.len())?;
+            let mut pairs = Vec::with_capacity(m.len());
+            for (key, value) in m {
+                pairs.push(Value::Array(vec![map_key_to_value(key), value.clone()]));
+            }
             Ok(Value::Array(pairs))
         }
         [other] => Err(format!("map_to_pairs: expected a Map, got {other}")),
@@ -469,5 +481,21 @@ println(m2["k"]);"#);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "100", "original unchanged");
         assert_eq!(lines[1], "200", "copy updated");
+    }
+}
+
+#[cfg(test)]
+mod map_to_pairs_resource_tests {
+    use super::{MAX_MAP_TO_PAIRS_ENTRIES, check_map_to_pairs_len};
+
+    #[test]
+    fn map_to_pairs_checks_budget_before_allocating() {
+        assert!(check_map_to_pairs_len(MAX_MAP_TO_PAIRS_ENTRIES).is_ok());
+        let error = check_map_to_pairs_len(MAX_MAP_TO_PAIRS_ENTRIES + 1).unwrap_err();
+        assert!(error.contains("map_to_pairs"));
+        assert_eq!(
+            error,
+            "map_to_pairs: map has 10000001 entries (max 10000000)"
+        );
     }
 }
