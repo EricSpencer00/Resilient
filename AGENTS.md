@@ -96,10 +96,10 @@ explicit maintainer approval before merge.**
   bundle with `python3 agent-scripts/e2e-evidence.py run` and
   `python3 agent-scripts/e2e-evidence.py verify`. The manifest records the
   command, source revision and any working-tree digest, toolchain, declared
-  input hashes, per-test outcomes when available, command status, and deterministic
-  evidence checksums. Keep volatile run
-  metadata separate. Do not pass secrets as command arguments or include them
-  in evidence. See the exact example in `CONTRIBUTING.md`.
+  input hashes, per-test outcomes when available, command status, and
+  deterministic evidence checksums. Keep volatile run metadata separate.
+  Do not pass secrets as command arguments or include them in evidence. See
+  the exact example in `CONTRIBUTING.md`.
 
 Rules:
 1. Outside the intentional red run of a new test written before
