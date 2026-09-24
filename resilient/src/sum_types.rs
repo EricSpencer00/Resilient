@@ -390,6 +390,9 @@ pub(crate) fn parse_named_pattern_payload(parser: &mut Parser) -> EnumPatternPay
                     parser.next_token(); // past field name
                     parser.next_token(); // past `:` to start of sub-pattern
                     let p = parser.parse_pattern();
+                    if parser.is_pattern_depth_exceeded() {
+                        return EnumPatternPayload::Named(fields);
+                    }
                     parser.next_token(); // past last token of sub-pattern
                     p
                 } else {
@@ -433,6 +436,9 @@ pub(crate) fn parse_tuple_pattern_payload(parser: &mut Parser) -> EnumPatternPay
             }
             _ => {
                 let p = parser.parse_pattern();
+                if parser.is_pattern_depth_exceeded() {
+                    return EnumPatternPayload::Tuple(subs);
+                }
                 subs.push(p);
                 parser.next_token(); // past last token of sub-pattern
                 if parser.current_token == Token::Comma {
