@@ -3570,6 +3570,8 @@ struct Parser {
     block_depth: u32,
     /// RES-4871: direct else-if recursion remains active after each body block returns.
     if_depth: u32,
+    /// RES-4875: bounds recursive type annotations, independent of expression nesting.
+    type_depth: u32,
 }
 
 /// RES-4185: maximum recursive-descent expression nesting depth.
@@ -3586,6 +3588,9 @@ const MAX_BLOCK_DEPTH: u32 = 256;
 /// RES-4871: else-if chains recurse after their consequence blocks return, so
 /// they need a separate bound from the simultaneously active block depth.
 const MAX_IF_DEPTH: u32 = 256;
+
+/// RES-4875: type annotations recurse separately from expressions and blocks.
+const MAX_TYPE_DEPTH: u32 = 256;
 
 impl Parser {
     fn new(lexer: Lexer) -> Self {
@@ -3611,6 +3616,7 @@ impl Parser {
             expr_depth: 0,
             block_depth: 0,
             if_depth: 0,
+            type_depth: 0,
         };
 
         parser.next_token();
@@ -5929,6 +5935,20 @@ impl Parser {
     }
 
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
+        if self.type_depth >= MAX_TYPE_DEPTH {
+            self.record_error(format!(
+                "type annotation nesting too deep (limit {}) {}",
+                MAX_TYPE_DEPTH, ctx
+            ));
+            return None;
+        }
+        self.type_depth += 1;
+        let result = self.parse_type_annotation_inner(ctx);
+        self.type_depth -= 1;
+        result
+    }
+
+    fn parse_type_annotation_inner(&mut self, ctx: &str) -> Option<String> {
         // RES-385: optional `linear` prefix. `linear T` becomes the
         // encoded string `"linear T"`; downstream (parse_type_name)
         // strips the prefix back off and records the linearity bit
