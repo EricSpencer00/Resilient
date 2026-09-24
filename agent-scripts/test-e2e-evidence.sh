@@ -27,6 +27,7 @@ assert manifest["inputs"][0]["path"] == "agent-scripts/test-e2e-evidence.sh"
 assert len(manifest["inputs"][0]["sha256"]) == 64
 assert manifest["result"]["status"] == "passed"
 assert manifest["result"]["exit_code"] == 0
+assert {"name": "evidence_smoke", "status": "passed"} in manifest["result"]["outcomes"]
 assert manifest["toolchain"]["python"].startswith("Python ")
 PY
 

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,9 @@ SECRET_FLAG = re.compile(
 SECRET_ASSIGNMENT = re.compile(
     r"(?i)^(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?KEY))="
 )
+ANSI_ESCAPE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+TEST_OUTCOME = re.compile(rb"^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored|measured)$")
+MAX_RESULT_LINE = 64 * 1024
 
 
 class EvidenceError(Exception):
@@ -295,7 +299,7 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
             or set(outcome) != {"name", "status"}
             or not isinstance(outcome["name"], str)
             or not isinstance(outcome["status"], str)
-            or outcome["status"] not in {"passed", "failed"}
+            or outcome["status"] not in {"passed", "failed", "ignored", "measured"}
         ):
             raise EvidenceError("manifest outcome is malformed")
 
@@ -421,6 +425,64 @@ def reject_secret_arguments(command: list[str]) -> None:
         )
 
 
+def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]]]:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return 127, []
+    except OSError:
+        return 126, []
+
+    outcomes: list[dict[str, str]] = []
+    outcomes_lock = threading.Lock()
+
+    def relay(stream: Any, destination: Any) -> None:
+        while True:
+            line = stream.readline(MAX_RESULT_LINE + 1)
+            if not line:
+                return
+            if len(line) > MAX_RESULT_LINE and not line.endswith(b"\n"):
+                while line and not line.endswith(b"\n"):
+                    line = stream.readline(MAX_RESULT_LINE + 1)
+                continue
+            try:
+                destination.buffer.write(line)
+                destination.flush()
+            except (BrokenPipeError, OSError):
+                pass
+
+            normalized = ANSI_ESCAPE.sub(b"", line.strip())
+            match = TEST_OUTCOME.fullmatch(normalized)
+            if match:
+                name = match.group(1).decode("utf-8", "replace")
+                raw_status = match.group(2).decode("ascii")
+                status = {
+                    "ok": "passed",
+                    "FAILED": "failed",
+                    "ignored": "ignored",
+                    "measured": "measured",
+                }[raw_status]
+                with outcomes_lock:
+                    outcomes.append({"name": name, "status": status})
+
+    threads = [
+        threading.Thread(target=relay, args=(process.stdout, sys.stdout)),
+        threading.Thread(target=relay, args=(process.stderr, sys.stderr)),
+    ]
+    for thread in threads:
+        thread.start()
+    exit_code = process.wait()
+    for thread in threads:
+        thread.join()
+    outcomes.sort(key=lambda item: (item["name"], item["status"]))
+    return exit_code, outcomes
+
+
 def run_command(args: argparse.Namespace) -> int:
     command = list(args.command)
     if command and command[0] == "--":
@@ -443,16 +505,11 @@ def run_command(args: argparse.Namespace) -> int:
     started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     start_time = time.monotonic()
 
-    try:
-        completed = subprocess.run(command, cwd=ROOT, check=False)
-        exit_code = completed.returncode
-    except FileNotFoundError:
-        exit_code = 127
-    except OSError:
-        exit_code = 126
-
+    exit_code, outcomes = execute_command(command)
     duration_ms = max(0, int((time.monotonic() - start_time) * 1000))
     status = "passed" if exit_code == 0 else "failed"
+    outcomes.append({"name": "command", "status": status})
+    outcomes.sort(key=lambda item: (item["name"], item["status"]))
     manifest = {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -461,7 +518,7 @@ def run_command(args: argparse.Namespace) -> int:
         "result": {
             "status": status,
             "exit_code": exit_code,
-            "outcomes": [{"name": "command", "status": status}],
+            "outcomes": outcomes,
         },
         "evidence_sha256": {},
     }

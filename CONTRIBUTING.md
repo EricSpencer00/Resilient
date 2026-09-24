@@ -196,7 +196,8 @@ isolated checks focused on those gaps.
 At the end of an end-to-end run, produce verifiable, repeatable evidence.
 The runner writes to `target/e2e-artifacts/latest`, records the exact command,
 source revision and working-tree digest, toolchain versions, declared input
-hashes, and command outcome. Deterministic evidence is checksummed; timestamps
+hashes, Rust test-case outcomes when available, and command status. Deterministic
+evidence is checksummed; timestamps
 and duration are stored separately in volatile metadata.
 
 Run a representative end-to-end test and verify its artifact with:
