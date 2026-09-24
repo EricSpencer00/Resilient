@@ -3566,6 +3566,10 @@ struct Parser {
     /// input (e.g. thousands of nested parens) by returning a typed
     /// diagnostic instead of recursing without bound.
     expr_depth: u32,
+    /// RES-4871: structural block nesting depth, independent of expression depth.
+    block_depth: u32,
+    /// RES-4871: direct else-if recursion remains active after each body block returns.
+    if_depth: u32,
 }
 
 /// RES-4185: maximum recursive-descent expression nesting depth.
@@ -3573,6 +3577,15 @@ struct Parser {
 /// legitimate expression nesting there is well under 100) while staying
 /// far below the depth that risks a native stack overflow.
 const MAX_EXPR_DEPTH: u32 = 500;
+
+/// RES-4871: counts function, control-flow, handler, and other parsed blocks.
+/// This stays below the typechecker's own recursive-node budget so valid input
+/// at the parser limit can still pass the full CLI check.
+const MAX_BLOCK_DEPTH: u32 = 256;
+
+/// RES-4871: else-if chains recurse after their consequence blocks return, so
+/// they need a separate bound from the simultaneously active block depth.
+const MAX_IF_DEPTH: u32 = 256;
 
 impl Parser {
     fn new(lexer: Lexer) -> Self {
@@ -3596,6 +3609,8 @@ impl Parser {
             emit_errors,
             comprehension_counter: 0,
             expr_depth: 0,
+            block_depth: 0,
+            if_depth: 0,
         };
 
         parser.next_token();
@@ -6813,9 +6828,44 @@ impl Parser {
         }
     }
 
+    /// RES-4871: skip an over-limit body without adding more parser stack
+    /// frames. Count both map/struct braces and set-literal braces because
+    /// each closes with the same `RightBrace` token.
+    fn skip_over_depth_block(&mut self) {
+        let mut depth = 1usize;
+        self.next_token();
+        while self.current_token != Token::Eof {
+            match self.current_token {
+                Token::LeftBrace | Token::HashLeftBrace => {
+                    depth = depth.saturating_add(1);
+                }
+                Token::RightBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            self.next_token();
+        }
+    }
+
     pub(crate) fn parse_block_statement(&mut self) -> Node {
         // RES-087: capture the `{` token's span before advancing.
         let brace_span = self.span_at_current();
+        if self.block_depth >= MAX_BLOCK_DEPTH {
+            self.record_error(format!(
+                "block nesting too deep (limit {})",
+                MAX_BLOCK_DEPTH
+            ));
+            self.skip_over_depth_block();
+            return Node::Block {
+                stmts: Vec::new(),
+                span: brace_span,
+            };
+        }
+        self.block_depth += 1;
         // RES-1772: pre-size to 4 — typical block has 2-5 statements.
         // Called recursively for every brace-scope in the program,
         // so the 0→4 doubling chain was paid per block. Same fixed-
@@ -6853,6 +6903,7 @@ impl Parser {
             self.next_token();
         }
 
+        self.block_depth -= 1;
         Node::Block {
             stmts: statements,
             span: brace_span,
@@ -8962,6 +9013,32 @@ impl Parser {
     }
 
     fn parse_if_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        if self.if_depth >= MAX_IF_DEPTH {
+            self.record_error(format!(
+                "conditional nesting too deep (limit {})",
+                MAX_IF_DEPTH
+            ));
+            return Node::IfStatement {
+                condition: Box::new(Node::BooleanLiteral {
+                    value: false,
+                    span: stmt_span,
+                }),
+                consequence: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: stmt_span,
+                }),
+                alternative: None,
+                span: stmt_span,
+            };
+        }
+        self.if_depth += 1;
+        let result = self.parse_if_statement_inner();
+        self.if_depth -= 1;
+        result
+    }
+
+    fn parse_if_statement_inner(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'if'
 
