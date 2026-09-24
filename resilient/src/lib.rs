@@ -3572,6 +3572,12 @@ struct Parser {
     if_depth: u32,
     /// RES-4875: bounds recursive type annotations, independent of expression nesting.
     type_depth: u32,
+    /// RES-4877: bounds recursively nested match patterns.
+    pattern_depth: u32,
+    /// RES-4877: tracks nested pattern-parser entry points for one recovery boundary.
+    pattern_parse_depth: u32,
+    /// RES-4877: stops recursive pattern helpers once the depth limit is reached.
+    pattern_depth_exceeded: bool,
 }
 
 /// RES-4185: maximum recursive-descent expression nesting depth.
@@ -3591,6 +3597,9 @@ const MAX_IF_DEPTH: u32 = 256;
 
 /// RES-4875: type annotations recurse separately from expressions and blocks.
 const MAX_TYPE_DEPTH: u32 = 256;
+
+/// RES-4877: keeps recursive match-pattern parsing below native stack limits.
+const MAX_PATTERN_DEPTH: u32 = 256;
 
 impl Parser {
     fn new(lexer: Lexer) -> Self {
@@ -3617,6 +3626,9 @@ impl Parser {
             block_depth: 0,
             if_depth: 0,
             type_depth: 0,
+            pattern_depth: 0,
+            pattern_parse_depth: 0,
+            pattern_depth_exceeded: false,
         };
 
         parser.next_token();
@@ -7817,6 +7829,9 @@ impl Parser {
             let subpat = if self.current_token == Token::Colon {
                 self.next_token();
                 let p = self.parse_pattern();
+                if self.pattern_depth_exceeded {
+                    return Pattern::Wildcard;
+                }
                 self.next_token();
                 p
             } else {
@@ -10977,10 +10992,29 @@ impl Parser {
     }
 
     pub(crate) fn parse_pattern(&mut self) -> Pattern {
+        self.pattern_parse_depth += 1;
+        let pattern = if self.pattern_depth_exceeded {
+            Pattern::Wildcard
+        } else {
+            self.parse_pattern_inner()
+        };
+        self.pattern_parse_depth -= 1;
+
+        if self.pattern_parse_depth == 0 && self.pattern_depth_exceeded {
+            self.recover_overdeep_pattern();
+            self.pattern_depth_exceeded = false;
+            return Pattern::Wildcard;
+        }
+        pattern
+    }
+
+    fn parse_pattern_inner(&mut self) -> Pattern {
         let first = self.parse_pattern_atom();
-        // RES-160: collect `| <pattern>` tails. `|` is
-        // `Token::BitOr`; a lone `|` in pattern position is
-        // unambiguous since no pattern atom starts with `|`.
+        if self.pattern_depth_exceeded {
+            return Pattern::Wildcard;
+        }
+        // RES-160: collect `| <pattern>` tails. A lone `|` in pattern
+        // position is unambiguous since no pattern atom starts with `|`.
         if self.peek_token != Token::BitOr {
             return first;
         }
@@ -10989,16 +11023,53 @@ impl Parser {
             self.next_token(); // current_token = `|`
             self.next_token(); // past `|` to the next atom
             let next = self.parse_pattern_atom();
+            if self.pattern_depth_exceeded {
+                return Pattern::Wildcard;
+            }
             branches.push(next);
         }
         Pattern::Or(branches)
     }
 
-    /// RES-160: parse a single, atomic match pattern (no top-level
-    /// `|`). Single-token patterns only for now — structural
-    /// patterns (tuples, struct destructure in match) land with
-    /// RES-161 and friends.
+    pub(crate) fn is_pattern_depth_exceeded(&self) -> bool {
+        self.pattern_depth_exceeded
+    }
+
+    fn recover_overdeep_pattern(&mut self) {
+        while !matches!(
+            self.peek_token,
+            Token::FatArrow | Token::If | Token::Assign | Token::Eof
+        ) {
+            self.next_token();
+        }
+    }
+
+    /// Parse one atomic pattern. Recursive payloads re-enter this wrapper so
+    /// every pattern form consumes the same depth budget.
     fn parse_pattern_atom(&mut self) -> Pattern {
+        if self.pattern_depth_exceeded {
+            return Pattern::Wildcard;
+        }
+        if self.pattern_depth >= MAX_PATTERN_DEPTH {
+            self.record_error(format!(
+                "pattern nesting too deep (limit {})",
+                MAX_PATTERN_DEPTH
+            ));
+            self.pattern_depth_exceeded = true;
+            return Pattern::Wildcard;
+        }
+
+        self.pattern_depth += 1;
+        let pattern = self.parse_pattern_atom_inner();
+        self.pattern_depth -= 1;
+        if self.pattern_depth_exceeded {
+            Pattern::Wildcard
+        } else {
+            pattern
+        }
+    }
+
+    fn parse_pattern_atom_inner(&mut self) -> Pattern {
         let tok_span = self.span_at_current();
         match &self.current_token {
             Token::Underscore => Pattern::Wildcard,
@@ -11049,6 +11120,9 @@ impl Parser {
                     self.next_token(); // current = `(`
                     self.next_token(); // current = start of inner pattern
                     let inner = self.parse_pattern_atom();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     self.next_token(); // current = `)`
                     return Pattern::Some(Box::new(inner));
                 }
@@ -11058,6 +11132,9 @@ impl Parser {
                     self.next_token(); // current = `(`
                     self.next_token(); // current = start of inner pattern
                     let inner = self.parse_pattern_atom();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     self.next_token(); // current = `)`
                     return Pattern::Ok(Box::new(inner));
                 }
@@ -11065,6 +11142,9 @@ impl Parser {
                     self.next_token();
                     self.next_token();
                     let inner = self.parse_pattern_atom();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     self.next_token();
                     return Pattern::Err(Box::new(inner));
                 }
@@ -11100,6 +11180,9 @@ impl Parser {
                         }
                         _ => EnumPatternPayload::None,
                     };
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     return Pattern::EnumVariant {
                         type_name: Some(name),
                         variant_name,
@@ -11124,6 +11207,9 @@ impl Parser {
                     self.next_token(); // current = `@`
                     self.next_token(); // current = start of inner pattern
                     let inner = self.parse_pattern_atom();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     Pattern::Bind(name, Box::new(inner))
                 } else {
                     Pattern::Identifier(name)
@@ -11157,6 +11243,9 @@ impl Parser {
         }
         self.next_token(); // current = start of first sub-pattern
         let first = self.parse_pattern();
+        if self.pattern_depth_exceeded {
+            return Pattern::Wildcard;
+        }
         // Bare `(p)` — parenthesized pattern, no trailing comma.
         if self.peek_token == Token::RightParen {
             self.next_token(); // current = `)`
@@ -11175,6 +11264,9 @@ impl Parser {
                     }
                     self.next_token(); // current = start of next sub-pattern
                     let p = self.parse_pattern();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     items.push(p);
                 }
                 Token::RightParen => {
@@ -11209,6 +11301,9 @@ impl Parser {
         }
         self.next_token(); // current = start of first sub-pattern
         let first = self.parse_pattern();
+        if self.pattern_depth_exceeded {
+            return Pattern::Wildcard;
+        }
         fields.push(first);
         loop {
             match self.peek_token {
@@ -11221,6 +11316,9 @@ impl Parser {
                     }
                     self.next_token(); // current = start of next sub-pattern
                     let p = self.parse_pattern();
+                    if self.pattern_depth_exceeded {
+                        return Pattern::Wildcard;
+                    }
                     fields.push(p);
                 }
                 Token::RightParen => {
