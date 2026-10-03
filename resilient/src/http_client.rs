@@ -19,6 +19,9 @@ use std::time::Duration;
 type RResult<T> = Result<T, String>;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+// Bound the entire wire response, including headers and chunk framing.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 fn ok(v: Value) -> Value {
     Value::Result {
@@ -646,6 +649,37 @@ fn host_header(parsed: &ParsedUrl) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn read_bounded_response(reader: &mut impl Read) -> RResult<Vec<u8>> {
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        // One extra byte distinguishes an exact-size response from overflow.
+        let available = (MAX_RESPONSE_BYTES - raw.len() + 1).min(chunk.len());
+        let count = match reader.read(&mut chunk[..available]) {
+            Ok(0) => return Ok(raw),
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("read failed: {error}")),
+        };
+        if count > MAX_RESPONSE_BYTES - raw.len() {
+            return Err(format!(
+                "HTTP response exceeds {MAX_RESPONSE_BYTES} byte limit"
+            ));
+        }
+        if raw.len() + count > raw.capacity() {
+            let capacity = raw
+                .capacity()
+                .saturating_mul(2)
+                .max(chunk.len())
+                .min(MAX_RESPONSE_BYTES);
+            raw.try_reserve_exact(capacity - raw.len())
+                .map_err(|error| format!("HTTP response allocation failed: {error}"))?;
+        }
+        raw.extend_from_slice(&chunk[..count]);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOptions) -> Value {
     let parsed = match parse_url(url) {
         Ok(p) => p,
@@ -696,10 +730,10 @@ fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOpt
         return err_val(format!("flush failed: {e}"));
     }
 
-    let mut raw = Vec::new();
-    if let Err(e) = stream.read_to_end(&mut raw) {
-        return err_val(format!("read failed: {e}"));
-    }
+    let raw = match read_bounded_response(&mut stream) {
+        Ok(raw) => raw,
+        Err(error) => return err_val(error),
+    };
 
     let raw_str = String::from_utf8_lossy(&raw);
     parse_http_response(&raw_str)
