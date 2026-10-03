@@ -33,6 +33,8 @@ SECRET_ASSIGNMENT = re.compile(
 ANSI_ESCAPE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 TEST_OUTCOME = re.compile(rb"^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored|measured)$")
 MAX_RESULT_LINE = 64 * 1024
+HARNESS_RESULT = re.compile(rb"^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; \d+ filtered out; finished in .+$")
+ATTEST_SCHEMA = "resilient-e2e-attestation"
 
 
 class EvidenceError(Exception):
@@ -231,7 +233,7 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
     }
     if set(manifest) != required:
         raise EvidenceError("manifest fields do not match the supported schema")
-    if manifest["schema"] != SCHEMA or manifest["schema_version"] != SCHEMA_VERSION:
+    if manifest["schema"] != SCHEMA or manifest["schema_version"] not in (1, 2):
         raise EvidenceError("unsupported evidence schema")
     if not isinstance(manifest["source"], dict):
         raise EvidenceError("manifest source metadata is malformed")
@@ -277,11 +279,10 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
             or ".." in Path(item["path"]).parts
         ):
             raise EvidenceError("manifest input entry is malformed")
-    if not isinstance(result, dict) or set(result) != {
-        "status",
-        "exit_code",
-        "outcomes",
-    }:
+    result_keys = {"status", "exit_code", "outcomes"}
+    if manifest["schema_version"] == 2:
+        result_keys.add("test_harness")
+    if not isinstance(result, dict) or set(result) != result_keys:
         raise EvidenceError("manifest result is incomplete")
     if (
         not isinstance(result["status"], str)
@@ -302,6 +303,16 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
             or outcome["status"] not in {"passed", "failed", "ignored", "measured"}
         ):
             raise EvidenceError("manifest outcome is malformed")
+
+    if manifest["schema_version"] == 2:
+        harness = result["test_harness"]
+        if (not isinstance(harness, dict) or set(harness) != {"test", "summaries"}
+                or not isinstance(harness["test"], str) or not harness["test"]
+                or not isinstance(harness["summaries"], list)
+                or any(not isinstance(item, list) or len(item) != 4
+                       or any(type(n) is not int or n < 0 for n in item)
+                       for item in harness["summaries"])):
+            raise EvidenceError("regression harness metadata is malformed")
 
     identity = {
         "source": source,
@@ -425,7 +436,7 @@ def reject_secret_arguments(command: list[str]) -> None:
         )
 
 
-def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]]]:
+def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]], list[list[int]]]:
     try:
         process = subprocess.Popen(
             command,
@@ -434,11 +445,12 @@ def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]]]:
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError:
-        return 127, []
+        return 127, [], []
     except OSError:
-        return 126, []
+        return 126, [], []
 
     outcomes: list[dict[str, str]] = []
+    summaries: list[list[int]] = []
     outcomes_lock = threading.Lock()
 
     def relay(stream: Any, destination: Any) -> None:
@@ -457,6 +469,10 @@ def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]]]:
                 pass
 
             normalized = ANSI_ESCAPE.sub(b"", line.strip())
+            completion = HARNESS_RESULT.fullmatch(normalized)
+            if completion:
+                with outcomes_lock:
+                    summaries.append([int(value) for value in completion.groups()])
             match = TEST_OUTCOME.fullmatch(normalized)
             if match:
                 name = match.group(1).decode("utf-8", "replace")
@@ -480,7 +496,7 @@ def execute_command(command: list[str]) -> tuple[int, list[dict[str, str]]]:
     for thread in threads:
         thread.join()
     outcomes.sort(key=lambda item: (item["name"], item["status"]))
-    return exit_code, outcomes
+    return exit_code, outcomes, summaries
 
 
 def run_command(args: argparse.Namespace) -> int:
@@ -505,7 +521,7 @@ def run_command(args: argparse.Namespace) -> int:
     started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     start_time = time.monotonic()
 
-    exit_code, outcomes = execute_command(command)
+    exit_code, outcomes, summaries = execute_command(command)
     duration_ms = max(0, int((time.monotonic() - start_time) * 1000))
     status = "passed" if exit_code == 0 else "failed"
     outcomes.append({"name": "command", "status": status})
@@ -522,6 +538,9 @@ def run_command(args: argparse.Namespace) -> int:
         },
         "evidence_sha256": {},
     }
+    if args.regression_test:
+        manifest["schema_version"] = 2
+        manifest["result"]["test_harness"] = {"test": args.regression_test, "summaries": summaries}
     summary = summary_text(manifest)
     install_bundle(output, manifest, summary, started, duration_ms)
 
@@ -534,12 +553,121 @@ def run_command(args: argparse.Namespace) -> int:
     return exit_code
 
 
+
+def regression_outcomes(manifest: dict[str, Any], test: str, baseline: bool) -> None:
+    result = manifest["result"]
+    harness = result.get("test_harness", {})
+    if harness.get("test") != test or not harness.get("summaries"):
+        raise EvidenceError("named regression needs a completed recorded Rust test harness")
+    outcomes = [item for item in result["outcomes"] if item["name"] != "command"]
+    names = [item["name"] for item in outcomes]
+    if len(set(names)) != len(names) or names.count(test) != 1:
+        raise EvidenceError("regression outcome is missing or duplicated")
+    counts = [sum(item["status"] == status for item in outcomes)
+              for status in ("passed", "failed", "ignored", "measured")]
+    totals = [sum(item[index] for item in harness["summaries"]) for index in range(4)]
+    if counts != totals or counts[2:] != [0, 0]:
+        raise EvidenceError("test outcomes differ from completed harness totals or include skips")
+    failed = [item["name"] for item in outcomes if item["status"] == "failed"]
+    if baseline:
+        if result["exit_code"] != 101 or failed != [test]:
+            raise EvidenceError("baseline must fail only the target test with Rust test exit 101")
+    elif result["exit_code"] != 0 or failed:
+        raise EvidenceError("final run must pass the same regression without other failures")
+    commands = [item for item in result["outcomes"] if item["name"] == "command"]
+    if commands != [{"name": "command", "status": "failed" if baseline else "passed"}]:
+        raise EvidenceError("command outcome is missing or inconsistent")
+
+
+def pair_manifest(directory: Path, test: str) -> dict[str, Any]:
+    baseline, final = verify_bundle(directory / "baseline"), verify_bundle(directory / "final")
+    regression_outcomes(baseline, test, True)
+    regression_outcomes(final, test, False)
+    if not baseline["inputs"] or any(baseline[key] != final[key] for key in ("command", "toolchain", "inputs")):
+        raise EvidenceError("commands, toolchains and nonempty declared test/fixture inputs must match")
+    if {item["name"] for item in baseline["result"]["outcomes"]} != {item["name"] for item in final["result"]["outcomes"]}:
+        raise EvidenceError("both runs must execute the same named tests")
+    for bundle in (baseline, final):
+        paths = [item["path"] for item in bundle["inputs"]]
+        if len(set(paths)) != len(paths):
+            raise EvidenceError("duplicate declared inputs")
+    bindings = {f"{role}/{name}": sha256_file(directory / role / name)
+                for role in ("baseline", "final") for name in ("manifest.json", "summary.md", "checksums.sha256")}
+    return {"schema": ATTEST_SCHEMA, "schema_version": 1, "test": test,
+            "baseline": baseline, "final": final, "bundle_hashes": bindings,
+            "run_id": sha256_bytes(canonical_json({"test": test, "bundles": bindings})),
+            "result": {"status": "passed", "exit_code": 0}}
+
+
+def pair_summary(manifest: dict[str, Any]) -> str:
+    lines = ["# Test-first regression evidence", "", "- Test: " + manifest["test"],
+             "- Pair ID: " + manifest["run_id"], ""]
+    for role in ("baseline", "final"):
+        run = manifest[role]
+        lines.extend([f"## {role}", "", f"- Bundle: {role}/ (run {run['run_id']})",
+                      f"- Source: {run['source']['commit']} / worktree {run['source']['worktree_sha256']}",
+                      f"- Command: {shlex.join(run['command'])}",
+                      f"- Outcome: {run['result']['status']} (exit {run['result']['exit_code']})", ""])
+    lines.append("Checksums establish bundle integrity; they are not authenticated provenance. Declared inputs must include the target test and fixtures.")
+    return "\n".join(lines) + "\n"
+
+
+def pair_checksums(directory: Path) -> str:
+    names = ["manifest.json", "summary.md"] + [f"{role}/{name}" for role in ("baseline", "final")
+              for name in ("manifest.json", "summary.md", "checksums.sha256")]
+    return "".join(f"{sha256_file(directory / name)}  {name}\n" for name in sorted(names))
+
+
+def verify_artifact(directory: Path) -> dict[str, Any]:
+    try:
+        schema = json.loads((directory / "manifest.json").read_text())["schema"]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise EvidenceError("artifact manifest is missing or malformed") from exc
+    if schema != ATTEST_SCHEMA:
+        return verify_bundle(directory)
+    if directory.is_symlink() or {item.name for item in directory.iterdir()} != {"manifest.json", "summary.md", "checksums.sha256", "baseline", "final"}:
+        raise EvidenceError("invalid combined artifact layout")
+    for name in ("manifest.json", "summary.md", "checksums.sha256"):
+        if (directory / name).is_symlink() or not (directory / name).is_file():
+            raise EvidenceError("combined metadata must be regular files")
+    try:
+        actual = json.loads((directory / "manifest.json").read_text())
+        expected = pair_manifest(directory, actual["test"])
+        if actual != expected or (directory / "summary.md").read_text() != pair_summary(expected) or (directory / "checksums.sha256").read_text() != pair_checksums(directory):
+            raise EvidenceError("combined evidence bindings or checksums differ")
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        raise EvidenceError("combined evidence is malformed") from exc
+    return expected
+
+
+def attest_command(args: argparse.Namespace) -> int:
+    output = args.output.resolve()
+    if output.exists():
+        raise EvidenceError("attestation output already exists; preserve previous runs")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".attestation-", dir=output.parent))
+    try:
+        for role, source in (("baseline", args.baseline), ("final", args.final)):
+            verify_bundle(source)
+            shutil.copytree(source, staging / role)
+        manifest = pair_manifest(staging, args.test)
+        (staging / "manifest.json").write_bytes(canonical_json(manifest))
+        (staging / "summary.md").write_text(pair_summary(manifest))
+        (staging / "checksums.sha256").write_text(pair_checksums(staging))
+        verify_artifact(staging)
+        os.replace(staging, output)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    print(f"verified red-green attestation {manifest['run_id']} at {output}")
+    return 0
+
 def verify_command(args: argparse.Namespace) -> int:
     path = Path(args.artifact)
     if not path.is_absolute():
         path = ROOT / path
     try:
-        manifest = verify_bundle(path)
+        manifest = verify_artifact(path)
     except EvidenceError as error:
         print(f"e2e-evidence: {error}", file=sys.stderr)
         return 1
@@ -560,9 +688,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="repository-relative configuration or fixture file to hash",
     )
+    run.add_argument("--regression-test", help="record completed Rust harness summaries for a named regression")
     run.add_argument("command", nargs=argparse.REMAINDER)
     verify = commands.add_parser("verify", help="validate an evidence bundle")
     verify.add_argument("artifact", help="artifact directory to verify")
+    attest = commands.add_parser("attest", help="link verified failing and passing runs")
+    attest.add_argument("--baseline", required=True, type=Path)
+    attest.add_argument("--final", required=True, type=Path)
+    attest.add_argument("--test", required=True)
+    attest.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -572,6 +706,8 @@ def main() -> int:
     try:
         if args.action == "run":
             return run_command(args)
+        if args.action == "attest":
+            return attest_command(args)
         return verify_command(args)
     except EvidenceError as error:
         print(f"e2e-evidence: {error}", file=sys.stderr)

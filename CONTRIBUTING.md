@@ -538,3 +538,57 @@ Use this to confirm a cross-compile change works before tagging.
 - For security concerns, reach out to the maintainers privately
 
 Thank you for contributing to Resilient! 🚀
+
+### Linked test-first evidence (RES-4873)
+
+Record the red run before repairing implementation. For a Rust regression,
+select the exact test and declare its test file, fixtures and configuration as
+inputs. Use the same command, toolchain and declared inputs for the green run:
+
+```sh
+python3 agent-scripts/e2e-evidence.py run \
+  --regression-test one_byte_over_wire_limit_is_rejected_for_get_and_post \
+  --output target/e2e-artifacts/http-red \
+  --input resilient/tests/http_response_bound.rs \
+  --input Cargo.toml --input resilient/Cargo.toml --input Cargo.lock \
+  -- cargo test --locked -p resilient --test http_response_bound \
+     one_byte_over_wire_limit_is_rejected_for_get_and_post -- --exact --test-threads=1
+# Repair implementation; repeat the identical invocation with --output .../http-green.
+python3 agent-scripts/e2e-evidence.py attest \
+  --baseline target/e2e-artifacts/http-red --final target/e2e-artifacts/http-green \
+  --test one_byte_over_wire_limit_is_rejected_for_get_and_post \
+  --output target/e2e-artifacts/http-red-green
+python3 agent-scripts/e2e-evidence.py verify target/e2e-artifacts/http-red-green
+```
+
+The regression mode retains completed Rust harness counts in v2 run bundles;
+ordinary v1 bundles remain verifiable. Attestation requires exactly one target
+failure, Rust test exit 101, matching completed test counts, zero skips, then
+success for the same named tests. Build/launch failures, missing outcomes,
+additional failing tests and mismatched commands/toolchains/inputs are rejected.
+Inspect the red assertion to confirm it demonstrates the intended defect;
+completed test output alone cannot distinguish a semantic assertion from an
+environment-dependent assertion inside the target test. Checksums establish
+integrity, not authenticated provenance. The caller must declare the actual
+test and all relevant fixtures; the runner cannot infer their dependency graph.
+The combined bundle contains portable copies of both runs and deterministic
+checksums, separate from their volatile metadata. Keep red and green directories
+separate; combined outputs are never overwritten.
+
+### Hosted evidence proposal (RES-4874)
+
+The proposed `selected E2E evidence` job runs the public HTTP suite, verifies its
+bundle even after test failure, and uploads only that bundle under a suite/commit
+name with 14-day retention. A failed test command keeps the job failed. Applying
+this workflow addition requires maintainer approval under `AGENTS.md`.
+After the approved job has run, download its artifact with `gh run download
+<RUN_ID> --name e2e-http-response-bound-<SHA> --dir /tmp/http-evidence` and verify
+it with `python3 agent-scripts/e2e-evidence.py verify /tmp/http-evidence`.
+Read `manifest.json` for the exact command, source/worktree identity, toolchain
+and declared input hashes before repeating the run on that checkout. Local
+execution does not establish that a hosted run occurred.
+
+The HTTP client limits the complete wire response (headers, body and chunk
+framing) to 10 MiB. Exactly that many bytes are accepted on EOF; an additional
+byte returns a runtime error before being appended. GET and POST use the same
+bounded reader. Bounded chunked responses retain their existing decoding.
