@@ -125,6 +125,13 @@ $ rz verify-all ./certs --pubkey pub.pem
 ... exits 0 only if every obligation passes
 ```
 
+Solver replay requires `--z3`. With that flag, acceptance requires a
+successful solver exit, valid UTF-8 stdout containing exactly one `unsat`
+response (surrounding whitespace is permitted), and empty stderr. Additional
+results, Unknown, solver errors and failed processes fail closed. This is
+solver-checked replay of the saved query under trusted encoding and Z3; it
+is not an independent kernel proof or a source-to-query correctness proof.
+
 A non-zero exit code from `verify-all` indicates one of:
 
 - A cert file was tampered with (SHA-256 mismatch).
