@@ -222,6 +222,13 @@ pub(crate) fn iterate_range(lo: i64, hi: i64, inclusive: bool) -> impl Iterator<
     IntRangeIter::new(lo, hi, inclusive)
 }
 
+/// Exclusive upper bound for a slice endpoint. Saturates at `i64::MAX`
+/// rather than overflowing: callers clamp the result to the sequence length
+/// afterwards, so the saturated value is only ever compared, never indexed.
+pub(crate) fn slice_exclusive_end(hi: i64, inclusive: bool) -> i64 {
+    if inclusive { hi.saturating_add(1) } else { hi }
+}
+
 /// Parse a required range upper bound, recording a diagnostic when the
 /// expression is absent. The placeholder keeps the AST recoverable so later
 /// statements can still be parsed after the error.

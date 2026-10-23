@@ -17805,7 +17805,7 @@ fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
                 None => len,
                 Some(h) => {
                     let h = normalize(h);
-                    if *inclusive { h + 1 } else { h }
+                    crate::ranges::slice_exclusive_end(h, *inclusive)
                 }
             };
             let lo_u = (lo_i.clamp(0, len)) as usize;
@@ -17824,7 +17824,7 @@ fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
                 None => len,
                 Some(h) => {
                     let h = normalize(h);
-                    if *inclusive { h + 1 } else { h }
+                    crate::ranges::slice_exclusive_end(h, *inclusive)
                 }
             };
             let lo_u = (lo_i.clamp(0, len)) as usize;
@@ -27291,7 +27291,7 @@ impl Interpreter {
                             Some(h) => normalize(h, len),
                             None => len,
                         };
-                        let hi_excl = if *inclusive { hi_norm + 1 } else { hi_norm };
+                        let hi_excl = crate::ranges::slice_exclusive_end(hi_norm, *inclusive);
                         if lo_i > hi_excl {
                             return Err(format!(
                                 "slice lower bound {} exceeds upper bound {}",
@@ -27323,7 +27323,7 @@ impl Interpreter {
                             Some(h) => normalize(h, len),
                             None => len,
                         };
-                        let hi_excl = if *inclusive { hi_norm + 1 } else { hi_norm };
+                        let hi_excl = crate::ranges::slice_exclusive_end(hi_norm, *inclusive);
                         if lo_i > hi_excl {
                             return Err(format!(
                                 "slice lower bound {} exceeds upper bound {}",
