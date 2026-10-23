@@ -25,6 +25,9 @@ list the mappings, honestly, with the gaps called out.
 - **[IEC 62304 (Medical Device Software)](standards/iec-62304)** —
   for medical device teams targeting Class A / B / C software.
 
+- **[IEC 61508 (Industrial)](standards/iec-61508)** — for SIL-oriented assessments.
+- **[Qualification preparation](qualification-readiness)** — evidence intake and review workflow.
+
 ## What Resilient is not
 
 Resilient is **not** a certified tool. No tool qualification
@@ -42,4 +45,4 @@ assessor.
 
 For the full per-objective mapping that consolidates all four
 standards on a single page, see
-[Certification and Safety Standards](../certification).
+[Certification and Safety Standards](certification).
