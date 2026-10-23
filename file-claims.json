@@ -215,6 +215,10 @@
     "resilient/tests/solver_replay_conformance.rs": {
       "branch": "res-4879-strict-solver-replay",
       "claimed_at": "2026-10-12T12:54:15Z"
+    },
+    "resilient/src/verifier_loop_invariants.rs": {
+      "branch": "res-4901-invariant-binding-soundness",
+      "claimed_at": "2026-10-23T21:39:43Z"
     }
   }
 }
