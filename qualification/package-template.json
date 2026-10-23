@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "project": "",
+  "owner": "",
+  "intended_use": "",
+  "standards": [
+    "iso-26262",
+    "do-178c",
+    "iec-62304",
+    "iec-61508"
+  ],
+  "baseline": {
+    "source_revision": "",
+    "compiler_sha256": "",
+    "target": "",
+    "backend": "",
+    "build_flags": "",
+    "solver_version": ""
+  },
+  "controls": [
+    {
+      "id": "anomalies",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "baseline",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "certification-plan",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "change-control",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "formal-methods-credit",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "functional-safety-plan",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "independent-review",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "intended-use",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "qualification-method",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "requirements",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "risk-management",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "safety-plan",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "sil-methods",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "software-classification",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "support-tool-assessment",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "tool-confidence",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "tool-qualification",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "tool-validation",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    },
+    {
+      "id": "validation",
+      "status": "open",
+      "owner": "",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": []
+    }
+  ],
+  "traceability": [],
+  "open_issues": [
+    "Qualification scope, evidence and independent assessment have not been completed."
+  ]
+}
