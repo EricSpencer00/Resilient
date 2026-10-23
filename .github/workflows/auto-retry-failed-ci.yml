@@ -1,0 +1,171 @@
+name: Auto-retry failed required CI
+
+# Why this exists
+# ---------------
+# `auto-rerun-held-ci.yml` recovers PRs whose required checks are stuck in
+# `action_required` (the bot-approval hold). It does NOT touch checks that
+# actually ran and concluded `failure` / `timed_out` / `cancelled`.
+#
+# But a huge share of those failures are transient — a hung `rz` process,
+# an `apt-get`/registry/linker blip, a flaky single test — not a real
+# regression. When that happens to a *required* check on a PR that is
+# already ready + agent-vetted + integration-synced, nothing retries it:
+# auto-merge sees a failed required check and skips forever, and the PR
+# wedges until a human notices. (Observed on #4880: vetted+synced, stuck
+# 11 days on a run that force-terminated orphan `rz` processes — a classic
+# runner hang, not a code failure.)
+#
+# This workflow closes that gap: it reruns the *failed required* checks on
+# eligible PRs, but with a HARD CAP of MAX_RETRIES per head SHA so a
+# genuinely-broken PR can never loop. Once the cap is hit it labels the PR
+# `ci-retry-exhausted` and comments once, surfacing it for a human/agent to
+# fix the actual bug instead of burning Actions minutes.
+#
+# The retry count is tracked in a sticky marker comment keyed on the head
+# SHA, so a fresh push (new SHA) resets the budget — a rebase or a real fix
+# gets its own full allowance.
+
+on:
+  schedule:
+    # Every 30 min, offset from auto-rerun-held-ci (which runs at :00) so the
+    # two recovery sweeps interleave rather than collide.
+    - cron: "10,40 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to evaluate (default: all eligible)"
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: auto-retry-failed-ci
+  cancel-in-progress: false
+
+env:
+  MAX_RETRIES: "2"
+  MARKER: "AUTO_RETRY_CI"
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rerun failed required checks on eligible PRs
+        env:
+          GH_TOKEN: ${{ secrets.CI_AUTORUN_PAT || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DISPATCH_PR: ${{ github.event.inputs.pr }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Required status checks per branch protection. Kept in sync with
+          # agent-auto-merge.yml's documented list. `diff-shape guardrail`
+          # and `fib(25) medians` are intentionally NOT required (advisory),
+          # so a failure there must never trigger a retry.
+          REQUIRED=(
+            "build / test / clippy"
+            "build / test with --features z3"
+            "board hygiene"
+            "resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)"
+            "resilient-runtime (riscv32imac-unknown-none-elf)"
+            "resilient-runtime (thumbv6m-none-eabi)"
+            "cortex-m demo .text budget check"
+          )
+          req_json=$(printf '%s\n' "${REQUIRED[@]}" | jq -R . | jq -s .)
+
+          # Candidate PRs: open, base main. Eligibility (vetted+synced+not
+          # draft) is re-checked per PR below.
+          if [[ -n "${DISPATCH_PR:-}" ]]; then
+            mapfile -t prs < <(printf '%s\n' "$DISPATCH_PR")
+          else
+            mapfile -t prs < <(gh pr list --state open --base main \
+              --json number --jq '.[].number')
+          fi
+
+          for pr in "${prs[@]}"; do
+            [[ -z "$pr" ]] && continue
+            echo "=== PR #$pr ==="
+
+            info=$(gh pr view "$pr" --json isDraft,baseRefName,labels,headRefOid,statusCheckRollup,state 2>/dev/null) || {
+              echo "  could not read PR — skip"; continue; }
+
+            state=$(jq -r '.state' <<<"$info")
+            [[ "$state" == "OPEN" ]] || { echo "  state=$state — skip"; continue; }
+            [[ "$(jq -r '.isDraft' <<<"$info")" == "false" ]] || { echo "  draft — skip"; continue; }
+            [[ "$(jq -r '.baseRefName' <<<"$info")" == "main" ]] || { echo "  base not main — skip"; continue; }
+            synced=$(jq -r '[.labels[].name]|index("integration-synced")//empty' <<<"$info")
+            vetted=$(jq -r '[.labels[].name]|index("agent-vetted")//empty' <<<"$info")
+            [[ -n "$synced" && -n "$vetted" ]] || { echo "  not vetted+synced — skip"; continue; }
+
+            head=$(jq -r '.headRefOid' <<<"$info")
+
+            # Failed REQUIRED checks (latest run per name), as run IDs to rerun.
+            # detailsUrl looks like .../actions/runs/<runId>/job/<jobId>.
+            failed_runs=$(jq -r --argjson req "$req_json" '
+              .statusCheckRollup
+              | map(select(.__typename == "CheckRun" or (.detailsUrl // "") | test("/actions/runs/")))
+              | group_by(.name)
+              | map(max_by(.completedAt // .startedAt // ""))
+              | [ .[]
+                  | select(.name as $n | $req | index($n))
+                  | select(.conclusion == "FAILURE" or .conclusion == "TIMED_OUT"
+                           or .conclusion == "CANCELLED" or .conclusion == "STARTUP_FAILURE")
+                  | (.detailsUrl // "") | capture("/actions/runs/(?<id>[0-9]+)/") | .id ]
+              | unique | .[]' <<<"$info" 2>/dev/null || true)
+
+            if [[ -z "$failed_runs" ]]; then
+              echo "  no failed required checks — skip"
+              continue
+            fi
+
+            # Read retry budget from the sticky marker comment for THIS head SHA.
+            marker=$(gh pr view "$pr" --json comments \
+              --jq "[.comments[] | select(.body|test(\"$MARKER\"))] | last | .body" 2>/dev/null || echo "")
+            count=0
+            if [[ -n "$marker" && "$marker" != "null" ]]; then
+              m_sha=$(sed -nE "s/.*$MARKER sha=([0-9a-f]+) count=([0-9]+).*/\1/p" <<<"$marker")
+              m_cnt=$(sed -nE "s/.*$MARKER sha=([0-9a-f]+) count=([0-9]+).*/\2/p" <<<"$marker")
+              if [[ "$m_sha" == "$head" && -n "$m_cnt" ]]; then
+                count="$m_cnt"
+              fi
+            fi
+
+            if (( count >= MAX_RETRIES )); then
+              echo "  retry budget exhausted ($count/$MAX_RETRIES) for ${head:0:8}"
+              # Label + comment once so a human/agent fixes the real failure.
+              has_label=$(jq -r '[.labels[].name]|index("ci-retry-exhausted")//empty' <<<"$info")
+              if [[ -z "$has_label" ]]; then
+                gh label create ci-retry-exhausted --color B60205 \
+                  --description "Required CI failed past the auto-retry cap; needs a real fix" \
+                  >/dev/null 2>&1 || true
+                gh pr edit "$pr" --add-label ci-retry-exhausted >/dev/null 2>&1 || true
+                gh pr comment "$pr" --body \
+                  "⚠️ Required CI has failed $MAX_RETRIES retries on \`${head:0:8}\` without going green — this looks like a **real** failure, not a flake. Auto-retry has stopped. Please fix the underlying issue (a fresh push resets the retry budget). _(auto-retry-failed-ci)_" \
+                  >/dev/null 2>&1 || true
+              fi
+              continue
+            fi
+
+            new_count=$(( count + 1 ))
+            echo "  retry $new_count/$MAX_RETRIES on ${head:0:8} — rerunning failed required runs"
+            while IFS= read -r rid; do
+              [[ -z "$rid" ]] && continue
+              if gh run rerun "$rid" --failed >/dev/null 2>&1; then
+                echo "    reran run $rid (--failed)"
+              else
+                echo "    could not rerun run $rid"
+              fi
+            done <<<"$failed_runs"
+
+            printf -v body '<!-- %s sha=%s count=%s -->\n🔁 Auto-retried failed required CI (attempt %s/%s) on `%s`. If this was a flake it should go green and auto-merge; if it fails again the retry budget shrinks, and at the cap the PR is flagged for a real fix. _(auto-retry-failed-ci)_' \
+              "$MARKER" "$head" "$new_count" "$new_count" "$MAX_RETRIES" "${head:0:8}"
+            gh pr comment "$pr" --body "$body" >/dev/null 2>&1 || true
+          done
+          echo "Sweep complete."
