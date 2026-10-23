@@ -24,12 +24,11 @@
 //! * `mat_lu(m)` — LU decomposition, returns [L, U, P] as Array of matrices
 
 use crate::Value;
+use crate::array_functional::MAX_GENERATED_ELEMENTS;
 
 type RResult<T> = Result<T, String>;
 
 type LuResult = RResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<usize>, f64)>;
-
-const MAX_HISTOGRAM_BINS: i64 = 10_000_000;
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -246,9 +245,10 @@ pub(crate) fn builtin_stats_histogram(args: &[Value]) -> RResult<Value> {
             if bins <= 0 {
                 return Err(format!("stats_histogram: bins must be > 0, got {bins}"));
             }
-            if bins > MAX_HISTOGRAM_BINS {
+            let max_bins = MAX_GENERATED_ELEMENTS as i64;
+            if bins > max_bins {
                 return Err(format!(
-                    "stats_histogram: bins {bins} too large (max {MAX_HISTOGRAM_BINS})"
+                    "stats_histogram: bins {bins} too large (max {max_bins})"
                 ));
             }
             let bin_count = usize::try_from(bins)
