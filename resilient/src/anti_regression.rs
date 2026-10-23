@@ -239,7 +239,10 @@ mod tests {
         );
         let err = check(&prog, "test.res").unwrap_err();
         // Verify the diagnostic reports the attribute's recorded line and a safe one-based column
-        assert!(err.starts_with("test.res:15:1: error:"), "Expected line:col format; got: {err}");
+        assert!(
+            err.starts_with("test.res:15:1: error:"),
+            "Expected line:col format; got: {err}"
+        );
         assert!(err.contains("stablefn"));
         assert!(err.contains("99999"));
         crate::feature_attrs::reset();
