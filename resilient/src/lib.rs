@@ -10,6 +10,8 @@ use std::rc::Rc;
 pub(crate) const ANONYMOUS_STRUCT_NAME: &str = "__anon_struct";
 
 // Import modules
+#[cfg(feature = "z3")]
+mod solver_replay;
 // RES-1136: alignment helpers — `next_multiple_of` and `is_multiple_of`.
 // Pure leaf builtins; module-isolated so adding new bytes/int helpers
 // doesn't have to dodge each other inside lib.rs.
@@ -33171,22 +33173,10 @@ fn which_z3() -> bool {
     false
 }
 
-/// Run `<z3_binary> -smt2 <path>` and return `Ok(true)` iff the
-/// first line of stdout is `unsat`. Used by `--z3` under
-/// `verify-all`. The binary defaults to `z3` on PATH but honors
-/// `Z3_BINARY` (RES-3946) for containerized deployments.
-///
-/// RES-1202: only called from the z3-gated verify-all dispatcher.
+/// Replay one certificate under the configured solver's trust boundary.
 #[cfg(feature = "z3")]
 fn run_z3_on(cert_path: &Path) -> RResult<bool> {
-    let out = std::process::Command::new(z3_binary_name())
-        .arg("-smt2")
-        .arg(cert_path)
-        .output()
-        .map_err(|e| format!("could not spawn z3: {}", e))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let first_line = stdout.lines().next().unwrap_or("").trim();
-    Ok(first_line == "unsat")
+    solver_replay::run(&z3_binary_name(), cert_path)
 }
 
 /// RES-198: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*`.
