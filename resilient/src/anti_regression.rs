@@ -222,4 +222,26 @@ mod tests {
         assert!(err_msg.contains("12345"));
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn diagnostic_preserves_source_position_with_safe_column() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"fn stablefn(int x) -> int { return x + 1; }"#;
+        let (prog, _) = parse(src);
+        crate::feature_attrs::record(
+            "stablefn",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: r#"since = "2.0", behavior = "99999""#.into(),
+                line: 15,
+            },
+        );
+        let err = check(&prog, "test.res").unwrap_err();
+        // Verify the diagnostic reports the attribute's recorded line and a safe one-based column
+        assert!(err.starts_with("test.res:15:1: error:"), "Expected line:col format; got: {err}");
+        assert!(err.contains("stablefn"));
+        assert!(err.contains("99999"));
+        crate::feature_attrs::reset();
+    }
 }
