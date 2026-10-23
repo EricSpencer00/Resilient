@@ -34411,11 +34411,13 @@ STATUS:
 
 CHECKS:
     Reads manifest.json, checks certificate hashes, and verifies signatures.
-    With --z3, requires nonempty obligations and successful solver replay.
+    With --z3, also runs `z3 -smt2` for solver re-verification when z3 is on PATH.
+    Replay requires nonempty obligations; a missing or failed solver is an error.
 
 FLAGS:
         --pubkey PATH    Verify signatures with a PEM public key override
-        --z3             Require Z3 replay on each certificate; unavailable solver is an error
+        --z3             Re-run Z3 on each certificate when the z3 binary is available
+                         Fail if the solver is unavailable or obligations are empty
 
 EXAMPLES:
     rz verify-all certs/
