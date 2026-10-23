@@ -32936,8 +32936,8 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
 /// 2. If the manifest entry has a `sig`, verifies it against the
 ///    cert's bytes with the embedded public key (or `--pubkey`
 ///    override). Mismatch → fail.
-/// 3. If `--z3` is set AND the `z3` binary is on PATH, runs
-///    `z3 -smt2 <cert>` and expects `unsat` on stdout. Absent
+/// 3. If `--z3` is set, requires a nonempty obligation set and runs
+///    `z3 -smt2 <cert>`; an unavailable solver fails replay. Absent
 ///    `--z3`, skips (the cryptographic checks alone are already
 ///    a strong regression signal).
 ///
@@ -33029,12 +33029,9 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
         None
     };
 
-    // Detect z3 availability once.
-    let z3_ok = run_z3 && which_z3();
-    if run_z3 && !z3_ok {
-        eprintln!(
-            "Warning: --z3 requested but the `z3` binary isn't on PATH; skipping Z3 re-verification."
-        );
+    if run_z3 && manifest.obligations.is_empty() {
+        eprintln!("Error: --z3 requested but the manifest contains no obligations to replay");
+        return Some(1);
     }
 
     println!(
@@ -33086,7 +33083,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
         };
 
         // Step 3: Z3.
-        let z3_label = if !z3_ok {
+        let z3_label = if !run_z3 {
             "-"
         } else {
             match run_z3_on(&cert_path) {
@@ -33147,30 +33144,6 @@ fn short_label(fn_name: &str, kind: &str, idx: usize) -> String {
 #[cfg(feature = "z3")]
 fn z3_binary_name() -> std::ffi::OsString {
     env::var_os("Z3_BINARY").unwrap_or_else(|| std::ffi::OsString::from("z3"))
-}
-
-/// Check whether the configured z3 binary is on PATH (or, when
-/// `Z3_BINARY` is set to an absolute/relative path, exists at that
-/// path directly) without shelling out at this point.
-///
-/// RES-1202: only called from the z3-gated verify-all dispatcher.
-#[cfg(feature = "z3")]
-fn which_z3() -> bool {
-    let bin = z3_binary_name();
-    let bin_path = Path::new(&bin);
-    if bin_path.is_absolute() || bin_path.components().count() > 1 {
-        return bin_path.is_file();
-    }
-    let Some(path_env) = env::var_os("PATH") else {
-        return false;
-    };
-    for p in env::split_paths(&path_env) {
-        let candidate = p.join(&bin);
-        if candidate.is_file() {
-            return true;
-        }
-    }
-    false
 }
 
 /// Replay one certificate under the configured solver's trust boundary.
@@ -34438,11 +34411,11 @@ STATUS:
 
 CHECKS:
     Reads manifest.json, checks certificate hashes, and verifies signatures.
-    With --z3, also runs `z3 -smt2` for solver re-verification when z3 is on PATH.
+    With --z3, requires nonempty obligations and successful solver replay.
 
 FLAGS:
         --pubkey PATH    Verify signatures with a PEM public key override
-        --z3             Re-run Z3 on each certificate when the z3 binary is available
+        --z3             Require Z3 replay on each certificate; unavailable solver is an error
 
 EXAMPLES:
     rz verify-all certs/

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "tool_use": "verify-all saved-query replay on Linux x86_64 with features z3",
+  "requirements": [
+    {
+      "id": "QREP-001",
+      "requirement": "Explicit replay shall fail when the configured solver cannot be found.",
+      "tests": [
+        "solver_replay_required::requested_replay_rejects_missing_absolute_solver",
+        "solver_replay_required::requested_replay_rejects_solver_absent_from_path"
+      ]
+    },
+    {
+      "id": "QREP-002",
+      "requirement": "Explicit replay shall require at least one obligation.",
+      "tests": [
+        "solver_replay_required::requested_replay_rejects_empty_obligation_set"
+      ]
+    },
+    {
+      "id": "QREP-003",
+      "requirement": "Hash-only verification shall remain usable without the solver CLI.",
+      "tests": [
+        "solver_replay_required::hash_only_verification_does_not_require_solver"
+      ]
+    },
+    {
+      "id": "QREP-004",
+      "requirement": "Replay shall accept exactly one clean UNSAT response from a successful process.",
+      "tests": [
+        "solver_replay_conformance::replay_accepts_one_clean_unsat_response",
+        "solver_replay_conformance::replay_rejects_unsat_from_failed_process",
+        "solver_replay_conformance::replay_rejects_conflicting_or_extra_responses"
+      ]
+    },
+    {
+      "id": "QREP-005",
+      "requirement": "Replay shall reject diagnostics, malformed output and nonproof responses.",
+      "tests": [
+        "solver_replay_conformance::replay_rejects_stderr_even_after_unsat",
+        "solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat",
+        "solver_replay_conformance::replay_rejects_nonproof_responses"
+      ]
+    },
+    {
+      "id": "QREP-006",
+      "requirement": "Actual Z3 shall accept the contradictory query and reject SAT, extra results and command errors.",
+      "tests": [
+        "real_solver::unsat",
+        "real_solver::sat",
+        "real_solver::multiple",
+        "real_solver::invalid"
+      ]
+    },
+    {
+      "id": "QREP-007",
+      "requirement": "Certificate hash or signature corruption shall fail verification.",
+      "tests": [
+        "verify_all_smoke::verify_all_detects_sha256_mismatch",
+        "verify_all_smoke::verify_all_detects_signature_tamper"
+      ]
+    },
+    {
+      "id": "QREP-008",
+      "requirement": "Missing or malformed manifests shall fail verification.",
+      "tests": [
+        "verify_all_smoke::verify_all_errors_on_missing_manifest",
+        "verify_all_smoke::verify_all_errors_on_malformed_manifest"
+      ]
+    },
+    {
+      "id": "QREP-009",
+      "requirement": "Valid signed and unsigned manifests shall pass their applicable integrity checks.",
+      "tests": [
+        "verify_all_smoke::verify_all_happy_path_signed",
+        "verify_all_smoke::verify_all_happy_path_unsigned"
+      ]
+    }
+  ]
+}
