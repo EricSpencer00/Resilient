@@ -47,3 +47,11 @@ assumptions and validation against both correct and deliberately incorrect
 implementations. A TLA+ model-checking result and a Resilient contract proof cover
 different models. Claiming a relationship requires a reviewed refinement argument
 and evidence for any translation used between them.
+
+## Available validation evidence
+
+The [saved-query replay validation record](https://github.com/EricSpencer00/Resilient/tree/main/qualification/certificate-replay)
+contains executed positive and negative tests, real Z3 results, source and binary
+identities, requirement traceability and failure analysis. It covers the saved-query
+replay operation on a pinned Linux baseline. Program-level proof completeness,
+other release targets and independent assessment remain outside that record.

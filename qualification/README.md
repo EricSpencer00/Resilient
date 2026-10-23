@@ -78,3 +78,10 @@ A passing TLA+ model does not prove a Resilient implementation refines it. Such
 credit needs an explicit refinement relation and validated translation or an
 independent implementation check. Benchmark performance and an informal research
 conversation are not qualification evidence or an industry endorsement.
+
+## Executed validation records
+
+The [saved-query replay record](certificate-replay/README.md) contains a real
+red/green regression run, operational requirements, failure analysis and actual
+Z3 observations for a pinned Linux baseline. Its scope and remaining gaps are
+explicit; it is an input to review, not an approved qualification package.

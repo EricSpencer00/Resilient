@@ -1,0 +1,80 @@
+{
+  "command": [
+    "python3",
+    "qualification/certificate-replay/run-real-solver.py",
+    "--rz",
+    "resilient/target/debug/rz",
+    "--solver",
+    "/usr/bin/z3",
+    "--output",
+    "../real-results.json"
+  ],
+  "evidence_sha256": {
+    "summary.md": "11d9ef135bcdc065e34566b573defd2a051bf54c557f6c4fece23917ec069af6"
+  },
+  "inputs": [
+    {
+      "path": "qualification/certificate-replay/queries/invalid.smt2",
+      "sha256": "bc54c7dab754dc8d4af5169f96068b22736d20d35fd72a8cba9d28eb5f162fa1"
+    },
+    {
+      "path": "qualification/certificate-replay/queries/multiple.smt2",
+      "sha256": "caa7a6a1b28e7434b3bfbd819c2c8dab6c3c56445a04e893971d2a35f43cac1e"
+    },
+    {
+      "path": "qualification/certificate-replay/queries/sat.smt2",
+      "sha256": "62d584b96631365b27039a05c9985bbebdcadaf875e2a04c8f6af3b79e3619ac"
+    },
+    {
+      "path": "qualification/certificate-replay/queries/unsat.smt2",
+      "sha256": "9c4eecf83f4b88fbd5a7822b6b9a9ab7c1f0eca154757f5d0f5214757d86668e"
+    },
+    {
+      "path": "qualification/certificate-replay/run-real-solver.py",
+      "sha256": "2fa7939afd77f690a7d8decc1eae47f2c79300a5b8c22031a2779a20526698b8"
+    },
+    {
+      "path": "resilient/target/debug/rz",
+      "sha256": "19a2b251d2d6d8c347c8d4a471009df444a587bcb74bbeaabd255f0e73488aaf"
+    }
+  ],
+  "result": {
+    "exit_code": 0,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "passed"
+      },
+      {
+        "name": "real_solver::invalid",
+        "status": "passed"
+      },
+      {
+        "name": "real_solver::multiple",
+        "status": "passed"
+      },
+      {
+        "name": "real_solver::sat",
+        "status": "passed"
+      },
+      {
+        "name": "real_solver::unsat",
+        "status": "passed"
+      }
+    ],
+    "status": "passed"
+  },
+  "run_id": "e346362a96a4504da7e1df8058996e63f7ebccbf3c0556e24cf24b506101a864",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "821b5513382d5d471fc787c56308cf4a90388d7f",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "python": "Python 3.12.3",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  }
+}

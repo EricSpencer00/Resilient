@@ -1,0 +1,42 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--quiet"
+  ],
+  "evidence_sha256": {
+    "summary.md": "c19bd7d873e86c1bf5365b54fd556c323e41a0cf9df17dce929c6de52e619139"
+  },
+  "inputs": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "b4f6e62a8d081da34b6d45174a8ea964f85eb9e128a4d8ac2bf2d8752e6de58f"
+    }
+  ],
+  "result": {
+    "exit_code": 0,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "passed"
+      }
+    ],
+    "status": "passed"
+  },
+  "run_id": "a52e630d1caa07a850f4919846409181f436e76dd302c81bf70b706500af5e04",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "821b5513382d5d471fc787c56308cf4a90388d7f",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "python": "Python 3.12.3",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  }
+}

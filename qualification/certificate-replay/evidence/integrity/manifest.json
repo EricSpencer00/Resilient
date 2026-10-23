@@ -1,0 +1,86 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--features",
+    "z3",
+    "--test",
+    "it",
+    "verify_all_smoke"
+  ],
+  "evidence_sha256": {
+    "summary.md": "e66123ebbdfe48bdf04176a8b53b2bc7dd686145e463218709790d405b3bebcf"
+  },
+  "inputs": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "b4f6e62a8d081da34b6d45174a8ea964f85eb9e128a4d8ac2bf2d8752e6de58f"
+    },
+    {
+      "path": "resilient/src/cert_sign.rs",
+      "sha256": "3bbcd5a08981fd6077fba498f8f222cb26b8390262895e7a7efa4a9b3b4f2336"
+    },
+    {
+      "path": "resilient/tests/it/verify_all_smoke.rs",
+      "sha256": "6d5f7e5e5d76eabf378d1f6a0a94e0d219c65955ee1182768336f437c7be5be3"
+    }
+  ],
+  "result": {
+    "exit_code": 0,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::emit_certificates_writes_manifest_json",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_detects_sha256_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_detects_signature_tamper",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_errors_on_malformed_manifest",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_errors_on_missing_manifest",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_happy_path_signed",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_happy_path_unsigned",
+        "status": "passed"
+      },
+      {
+        "name": "verify_all_smoke::verify_all_requires_directory_argument",
+        "status": "passed"
+      }
+    ],
+    "status": "passed"
+  },
+  "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "821b5513382d5d471fc787c56308cf4a90388d7f",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "python": "Python 3.12.3",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  }
+}
