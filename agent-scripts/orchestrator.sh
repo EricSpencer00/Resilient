@@ -57,6 +57,22 @@ done
 
 log() { printf '[orchestrator %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
+# Best-effort, portable sub-agent timeout. The orchestrator runs on macOS
+# fleet machines where GNU `timeout` is frequently absent, so degrade
+# gracefully: use timeout/gtimeout when present, otherwise run uncapped
+# (loop checkpoints + the guardrail still bound total work). A hung
+# `claude -p` otherwise wedges the serial loop forever — and in --parallel
+# mode the `wait` barrier never returns.
+AGENT_TIMEOUT="${AGENT_TIMEOUT:-45m}"
+_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+with_timeout() {
+  if [ -n "$_TIMEOUT_BIN" ]; then
+    "$_TIMEOUT_BIN" --signal=TERM --kill-after=30s "$AGENT_TIMEOUT" "$@"
+  else
+    "$@"
+  fi
+}
+
 run_one() {
   local issue="$1"
 
@@ -66,10 +82,17 @@ run_one() {
     return 0
   fi
 
-  local dispatch_out
-  dispatch_out="$(bash "$SCRIPT_DIR/dispatch-agent.sh" --issue "$issue" 2>&1)" || {
-    log "dispatch failed for #${issue}:"; echo "$dispatch_out"; return 1
-  }
+  local dispatch_out="" attempt
+  for attempt in 1 2 3; do
+    if dispatch_out="$(bash "$SCRIPT_DIR/dispatch-agent.sh" --issue "$issue" 2>&1)"; then
+      break
+    fi
+    log "dispatch attempt ${attempt}/3 failed for #${issue} (transient?); backing off"
+    if (( attempt == 3 )); then
+      log "dispatch gave up for #${issue}:"; echo "$dispatch_out"; return 1
+    fi
+    sleep $(( attempt * 5 ))
+  done
   local worktree
   worktree="$(printf '%s' "$dispatch_out" | awk -F': +' '/^Worktree/ {print $2; exit}')"
   local pr
@@ -127,8 +150,9 @@ When you're finished (guardrail green OR exhausted — don't loop forever on a s
 EOF
   } > "$prompt_file"
 
-  log "launching sub-agent for #${issue}"
-  (cd "$worktree" && $AGENT_CMD < "$prompt_file") || log "agent exited non-zero for #${issue}"
+  log "launching sub-agent for #${issue} (timeout ${AGENT_TIMEOUT}${_TIMEOUT_BIN:+ via $(basename "$_TIMEOUT_BIN")})"
+  (cd "$worktree" && with_timeout $AGENT_CMD < "$prompt_file") \
+    || log "agent exited non-zero or timed out for #${issue}"
 
   # Best-effort: if the agent forgot, run the guardrail ourselves.
   (cd "$worktree" && bash "$SCRIPT_DIR/ready-or-bail.sh" --pr "$pr") || true
@@ -140,6 +164,16 @@ EOF
     --status "orchestrator iteration complete" \
     --worktree "$worktree" \
     --summary "Executor process returned. Inspect the branch diff, latest PR comments, and guardrail report to resume." >/dev/null || true
+
+  # Cleanup: the branch is pushed and the PR is now the source of truth, so
+  # the local worktree is pure disk cost. Leaving it behind leaks disk AND
+  # can wedge the ticket forever — dispatch-agent refuses when the worktree
+  # path already exists and pick-ticket treats the lingering worktree/branch
+  # as "occupied". Remove the worktree; keep the pushed branch.
+  if [ -n "${worktree:-}" ] && [ -d "$worktree" ]; then
+    git -C "$REPO_ROOT" worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
+    log "removed worktree $worktree"
+  fi
 
   log "finished #${issue}"
 }
@@ -156,6 +190,11 @@ pick_next() {
     bash "$SCRIPT_DIR/pick-ticket.sh" 2>/dev/null | cut -f1
   fi
 }
+
+# Reap worktree admin entries left by a previously-crashed run so their
+# tickets become dispatchable again (a stale entry otherwise makes
+# dispatch-agent refuse and pick-ticket treat the ticket as taken).
+git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
 
 EXCLUDED=()
 COUNT=0
