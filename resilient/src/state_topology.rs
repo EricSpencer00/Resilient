@@ -20,7 +20,7 @@
 //!
 //! ## Attribute grammar (informal)
 //!
-//! ```
+//! ```rz
 //! #[state_machine(states=[S1, S2, ...], transitions=[(S1,S2), ...])]
 //! ```
 //!
