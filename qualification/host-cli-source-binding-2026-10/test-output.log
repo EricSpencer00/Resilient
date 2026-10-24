@@ -1,0 +1,118 @@
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m resilient v1.2.0 (/home/runner/work/Resilient/Resilient/resilient)
+[1m[92m   Compiling[0m resilient-span v1.2.0 (/home/runner/work/Resilient/Resilient/resilient-span)
+[1m[92m   Compiling[0m resilient-runtime v1.2.0 (/home/runner/work/Resilient/Resilient/resilient-runtime)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 21.15s
+[1m[92m     Running[0m tests/contract_replay_roundtrip.rs (resilient/target/debug/deps/contract_replay_roundtrip-8ee0a32b905fef30)
+
+running 4 tests
+test false_postcondition_is_rejected ... ok
+test straight_return_replays ... ok
+test constant_return_replays ... ok
+test branch_returns_replay_separately ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+[1m[92m     Running[0m tests/finite_loop_certificate_guards.rs (resilient/target/debug/deps/finite_loop_certificate_guards-76350ae28fdad849)
+
+running 4 tests
+test changing_iteration_binding_is_not_certified ... ok
+test empty_iteration_does_not_claim_an_executed_invariant_proof ... ok
+test shadowed_iteration_binding_is_not_certified ... ok
+test valid_iteration_binding_retains_runtime_check ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+[1m[92m     Running[0m tests/loop_certificate_roundtrip.rs (resilient/target/debug/deps/loop_certificate_roundtrip-fa3925c89e14d696)
+
+running 3 tests
+test false_loop_invariant_does_not_emit_a_proof ... ok
+test while_invariant_certificates_replay_with_real_solver ... ok
+test finite_loop_certificates_replay_with_real_solver ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+[1m[92m     Running[0m tests/manifest_authentication.rs (resilient/target/debug/deps/manifest_authentication-3faa95cb2fe05a28)
+
+running 8 tests
+test strict_replay_rejects_changed_program_identity ... ok
+test strict_replay_rejects_missing_manifest_signature ... ok
+test strict_replay_rejects_removed_obligations ... ok
+test strict_replay_rejects_reordered_obligations ... ok
+test strict_replay_rejects_wrong_manifest_key ... ok
+test legacy_replay_does_not_require_a_manifest_signature ... ok
+test strict_replay_accepts_the_complete_signed_manifest ... ok
+test compiler_signs_the_manifest_for_strict_replay ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+[1m[92m     Running[0m tests/solver_replay_bounds.rs (resilient/target/debug/deps/solver_replay_bounds-d6979dc2c4fd6d45)
+
+running 4 tests
+test replay_accepts_clean_response_within_budget ... ok
+test replay_rejects_oversized_whitespace_after_unsat ... ok
+test replay_rejects_invalid_timeout_configuration ... ok
+test replay_rejects_response_after_deadline ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+[1m[92m     Running[0m tests/solver_replay_conformance.rs (resilient/target/debug/deps/solver_replay_conformance-cd35ea15372c1fc4)
+
+running 6 tests
+test replay_accepts_one_clean_unsat_response ... ok
+test replay_rejects_invalid_utf8_after_unsat ... ok
+test replay_rejects_stderr_even_after_unsat ... ok
+test replay_rejects_unsat_from_failed_process ... ok
+test replay_rejects_nonproof_responses ... ok
+test replay_rejects_conflicting_or_extra_responses ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[1m[92m     Running[0m tests/solver_replay_required.rs (resilient/target/debug/deps/solver_replay_required-89f67310bbf76257)
+
+running 4 tests
+test requested_replay_rejects_empty_obligation_set ... ok
+test requested_replay_rejects_missing_absolute_solver ... ok
+test hash_only_verification_does_not_require_solver ... ok
+test requested_replay_rejects_solver_absent_from_path ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+[1m[92m     Running[0m tests/source_binding.rs (resilient/target/debug/deps/source_binding-693a5307ec604a2e)
+
+running 14 tests
+test duplicate_inventory_file_is_rejected ... ok
+test changed_import_is_rejected ... ok
+test changed_entry_is_rejected ... ok
+test malformed_inventory_is_rejected ... ok
+test cache_and_no_cache_emit_identical_binding ... ok
+test legacy_replay_remains_compatible_without_binding ... ok
+test missing_import_edge_is_rejected ... ok
+test identical_relocated_sources_verify ... ok
+test missing_inventory_is_rejected ... ok
+test traversal_inventory_path_is_rejected ... ok
+test symlink_import_outside_root_is_rejected_before_read ... ok
+test unreachable_inventory_file_is_rejected ... ok
+test unsigned_inventory_is_rejected ... ok
+test signed_inventory_binds_all_parsed_inputs ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+[1m[92m     Running[0m tests/source_binding_graph.rs (resilient/target/debug/deps/source_binding_graph-000aadbd47c19dcd)
+
+running 10 tests
+test duplicate_edge_is_rejected ... ok
+test absolute_target_is_rejected ... ok
+test coherently_omitted_import_is_rejected ... ok
+test extra_edge_is_rejected ... ok
+test missing_source_and_invalid_root_are_rejected ... ok
+test cyclic_graph_and_excessive_inventory_are_bounded ... ok
+test package_resolution_graph_does_not_invoke_git ... ok
+test outside_root_fifo_is_rejected_without_opening_it ... ok
+test unsupported_version_and_empty_inventory_are_rejected ... ok
+test nested_diamond_graph_relocates_with_its_common_root ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+E2E evidence written to /home/runner/work/_temp/qualification-baseline/tests
+E2E evidence verified: 9acb20e24d23d96524aa5666bd5bd4b07a689d6e5d5dc34c1b1725117649a228

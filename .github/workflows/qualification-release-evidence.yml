@@ -1,0 +1,137 @@
+name: Package qualification baseline evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: Successful expanded qualification binary baseline run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download the identified hosted baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          [[ "$BASELINE_RUN_ID" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/qualification-release/downloaded"
+          gh run view "$BASELINE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,headSha,conclusion,url,jobs,workflowName,event \
+            > "$RUNNER_TEMP/qualification-release/baseline-run.json"
+          gh run download "$BASELINE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'qualification-binary-baseline-*' \
+            --dir "$RUNNER_TEMP/qualification-release/downloaded"
+      - name: Verify and package the exact compiler with its dossier
+        env:
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess, tarfile
+          work = pathlib.Path(os.environ['RUNNER_TEMP']) / 'qualification-release'
+          run = json.loads((work / 'baseline-run.json').read_text())
+          assert run['conclusion'] == 'success'
+          assert run['workflowName'] == 'Qualification binary baseline' and run['event'] == 'workflow_dispatch'
+          assert run['databaseId'] == int(os.environ['BASELINE_RUN_ID'])
+          roots = list((work / 'downloaded').glob('qualification-binary-baseline-*'))
+          assert len(roots) == 1
+          baseline = roots[0]
+          dossier = pathlib.Path('qualification/host-cli-source-binding-2026-10')
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          def verify_inventory(root):
+              for path in root.rglob('*'):
+                  assert not path.is_symlink() and (path.is_dir() or path.is_file()), path
+              listed = set()
+              for line in (root / 'SHA256SUMS').read_text().splitlines():
+                  expected, relative = line.split('  ', 1)
+                  path = (root / relative).resolve()
+                  assert path.is_relative_to(root.resolve()) and path.is_file(), relative
+                  assert digest(path) == expected, relative
+                  assert path not in listed, relative
+                  listed.add(path)
+              actual = {path.resolve() for path in root.rglob('*')
+                        if path.is_file() and path != root / 'SHA256SUMS'}
+              assert actual == listed, actual ^ listed
+          verify_inventory(baseline)
+          verify_inventory(dossier)
+          history = pathlib.Path('qualification/hosted-records/2026-10-source-binding')
+          verify_inventory(history)
+          identity = json.loads((baseline / 'binary-identity.json').read_text())
+          package = json.loads((dossier / 'package.json').read_text())
+          observed = json.loads((dossier / 'observations.json').read_text())
+          manifest = json.loads((baseline / 'tests/manifest.json').read_text())
+          assert identity == json.loads((dossier / 'binary-identity.json').read_text())
+          assert identity['source_revision'] == run['headSha'] == package['baseline']['source_revision']
+          assert identity['compiler_sha256'] == package['baseline']['compiler_sha256'] == digest(baseline / 'rz')
+          assert observed['run'] == run['databaseId'] and observed['compiler_sha256'] == identity['compiler_sha256']
+          assert manifest['result']['exit_code'] == 0 and manifest['result']['status'] == 'passed'
+          assert manifest == json.loads((dossier / 'tests/manifest.json').read_text())
+          assert observed['test_count'] == 57 and len(manifest['result']['outcomes']) == 58
+          assert {'name': 'command', 'status': 'passed'} in manifest['result']['outcomes']
+          assert observed['suite_count'] == 9 and observed['failed'] == observed['ignored'] == 0
+          assert all(outcome['status'] == 'passed' for outcome in manifest['result']['outcomes'])
+          assert {'source_binding', 'source_binding_graph'} <= set(manifest['command'])
+          assert (baseline / 'test-output.log').stat().st_size > 0
+          assert (dossier / 'hosted-job.log').stat().st_size > 0
+          assert subprocess.check_output(['git', 'rev-parse', identity['source_revision'] + '^{tree}'], text=True).strip() == identity['source_tree']
+          root = work / 'qualification-baseline-linux-x86_64-debug'
+          shutil.copytree(baseline, root / 'baseline')
+          shutil.copytree(dossier, root / 'dossier')
+          shutil.copytree(history, root / 'history/source-binding')
+          shutil.copy2(work / 'baseline-run.json', root / 'baseline-run.json')
+          subprocess.run(['git', 'archive', '--format=tar', '--output=' + str(root / 'source-snapshot.tar'),
+                          identity['source_revision']], check=True)
+          (root / 'baseline/rz').chmod(0o755)
+          receipt = {'baseline_run': run['databaseId'], 'source_revision': identity['source_revision'],
+                     'source_tree': identity['source_tree'], 'compiler_sha256': identity['compiler_sha256'],
+                     'compiler_version': identity['compiler_version'],
+                     'dossier_revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                     'packaging_run': os.environ['GITHUB_RUN_ID'], 'test_count': observed['test_count'],
+                     'suite_count': observed['suite_count'], 'profile': identity['profile'],
+                     'assessment_accepted': False, 'optimized_release_qualified': False}
+          (root / 'packaging-identity.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
+          (root / 'README.md').write_text(
+              '# Tested host debug qualification baseline\n\n'
+              'This archive preserves the exact Linux x86_64 debug compiler and the source-bound '
+              'technical preparation dossier identified in packaging-identity.json. '
+              'It is separate from the optimized language release and does not qualify that binary. '
+              'The linked libraries, build environment, scope, test observations, anomalies and '
+              'pending independent/project acceptance are retained in the baseline and dossier.\n\n'
+              'The exact compiler source tree is retained in source-snapshot.tar. '
+              'Verify SHA256SUMS from this directory before use. The compiler is baseline/rz; '
+              'its required library identities are recorded in baseline/binary-identity.json.\n')
+          (root / 'SHA256SUMS').write_text(''.join(
+              digest(path) + '  ' + str(path.relative_to(root)) + '\n'
+              for path in sorted(root.rglob('*')) if path.is_file() and path != root / 'SHA256SUMS'))
+          verify_inventory(root)
+          assets = work / 'assets'
+          assets.mkdir()
+          archive = assets / 'qualification-baseline-linux-x86_64-debug.tar.gz'
+          with tarfile.open(archive, 'w:gz') as output:
+              output.add(root, arcname=root.name)
+          with tarfile.open(archive, 'r:gz') as packed:
+              packed.extractall(work / 'unpacked', filter='data')
+          verify_inventory(work / 'unpacked' / root.name)
+          archive_digest = digest(archive)
+          (assets / (archive.name + '.sha256')).write_text(archive_digest + '  ' + archive.name + '\n')
+          shutil.copy2(root / 'packaging-identity.json', assets / 'qualification-baseline-linux-x86_64-debug.json')
+          print(json.dumps({'archive': archive.name, 'sha256': archive_digest, **receipt}, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-baseline-release-${{ inputs.baseline_run_id }}
+          path: ${{ runner.temp }}/qualification-release/assets
+          retention-days: 90
+          if-no-files-found: error

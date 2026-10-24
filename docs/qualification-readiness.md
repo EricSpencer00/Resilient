@@ -66,3 +66,5 @@ records 33 hosted outcomes against an identified executable and source tree,
 concrete operational requirements, failure analysis and four populated
 preparation profiles. It retains the raw job log and complete downloaded archive
 inventory, with independent review and project acceptance explicitly pending.
+
+The [source-bound 1.2 host dossier](../qualification/host-cli-source-binding-2026-10/README.md) records the retained debug binary and all 57 passes across nine suites from hosted run40060158827. It preserves the earlier baseline and leaves project classification, independent review and external acceptance pending.

@@ -97,3 +97,5 @@ retains 24 new CLI cases on baseline and candidate, with 23 verified red-green
 attestations and a passing legacy control. The binary-baseline workflow now
 includes both source-binding suites with the seven earlier suites and records
 raw test output, compiler version and resolved dynamic-library identities.
+
+The [source-bound 1.2 host dossier](host-cli-source-binding-2026-10/README.md) records the retained debug binary and all 57 passes across nine suites from hosted run40060158827. It preserves the earlier baseline and leaves project classification, independent review and external acceptance pending.

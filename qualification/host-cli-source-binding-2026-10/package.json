@@ -1,0 +1,542 @@
+{
+  "schema_version": 1,
+  "project": "Resilient host certificate/replay technical preparation",
+  "owner": "Codex technical preparation for Eric Spencer",
+  "intended_use": "Linux x86_64 debug z3 host CLI --emit-certificate/--sign-cert and verify-cert/verify-all saved-query integrity and explicit solver replay; restricted by scope.md; source-content identity requires verify-all --source-root snapshot --pubkey accepted-key --z3 under a controlled stable filesystem snapshot",
+  "standards": [
+    "iso-26262",
+    "do-178c",
+    "iec-62304",
+    "iec-61508"
+  ],
+  "baseline": {
+    "source_revision": "be7d1302d66bb9061e497ffc6df6d9b57660d298",
+    "compiler_sha256": "7bdca0c29ce7c3706bc0e89a6dc2bcc10e25308edb6b89b6ad029f71640691a9",
+    "target": "x86_64-unknown-linux-gnu host",
+    "backend": "host CLI saved-query emission/replay; no target machine-code credit",
+    "build_flags": "cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --test contract_replay_roundtrip --test manifest_authentication --test loop_certificate_roundtrip --test finite_loop_certificate_guards --test solver_replay_bounds --test solver_replay_required --test solver_replay_conformance --test source_binding --test source_binding_graph; debug profile",
+    "solver_version": "Z3 version 4.13.3 - 64 bit"
+  },
+  "controls": [
+    {
+      "id": "anomalies",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "anomalies.md",
+          "sha256": "300b19fec0d0477713ec0bdd11b20580dc3516c18b18b8391145291f2708a20f"
+        },
+        {
+          "path": "prior-run-disposition.json",
+          "sha256": "3edfc851261294e0184d67ba2fb6e9ed75a0a27c5cebe6a50ebc69746af9a2cd"
+        }
+      ]
+    },
+    {
+      "id": "baseline",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "binary-identity.json",
+          "sha256": "5e8b173cabd91b94750492f644f51870b26b349f424fc020e1f13c83006aa32b"
+        },
+        {
+          "path": "tests/manifest.json",
+          "sha256": "af3b14828c3b72ec647d8497b129a19ad083a49f69112e9817727bb906f1dfc3"
+        },
+        {
+          "path": "hosted-artifact-SHA256SUMS",
+          "sha256": "3e747dab47ffe6032b6a0e1d177100d5f3f740c7a8baa5af51f0e141bbe681a1"
+        },
+        {
+          "path": "run.json",
+          "sha256": "7235554485ba3c53eee1f09eb8a4c71ac89a0691a8dec6769a395c2dab83441a"
+        },
+        {
+          "path": "artifacts.json",
+          "sha256": "c3c3e0e08848a1ea6add0890fc44f4ecff9f813df684d5eeb28d4c43b965f0e5"
+        },
+        {
+          "path": "reproduction.md",
+          "sha256": "f96c3a120f328b190102c75d2223c77125fe91886269f0102f56c14a5176e38e"
+        }
+      ]
+    },
+    {
+      "id": "certification-plan",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "change-control",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "formal-methods-credit",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "functional-safety-plan",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "independent-review",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "intended-use",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        }
+      ]
+    },
+    {
+      "id": "qualification-method",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "requirements",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "requirements.json",
+          "sha256": "405d38f85f3c82d688ffd88a6da077bf4f6cd2073b1f33a9a48f3061e7eb05f5"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        }
+      ]
+    },
+    {
+      "id": "risk-management",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "safety-plan",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "sil-methods",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "software-classification",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "support-tool-assessment",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "tool-confidence",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "tool-qualification",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "tool-validation",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "standard-use.md",
+          "sha256": "14cbeeeabd47b27fcccebf4d6344a6875e594a223ff5c5ec3daa97d5ef8fe83c"
+        },
+        {
+          "path": "scope.md",
+          "sha256": "0191f8ec622366e94e9441fe6a7a6c5de769bd0d5915a378380ea33ddceb2720"
+        },
+        {
+          "path": "failure-analysis.md",
+          "sha256": "2a617e80c682e3cf40344c8afaa3ea8876b7f95c4ac112ac205cd1d43272f6e9"
+        },
+        {
+          "path": "change-control.md",
+          "sha256": "fadf971202817b462dc074926dd37169e74651ff437dd8377a1162e1f19df4ff"
+        }
+      ]
+    },
+    {
+      "id": "validation",
+      "status": "prepared-pending-review",
+      "owner": "Codex technical preparation for Eric Spencer",
+      "reviewer": "",
+      "review_record": "",
+      "artifacts": [
+        {
+          "path": "tests/manifest.json",
+          "sha256": "af3b14828c3b72ec647d8497b129a19ad083a49f69112e9817727bb906f1dfc3"
+        },
+        {
+          "path": "tests/summary.md",
+          "sha256": "afefa232d7b0b6e3eaef623c0b304be0b8a051df07a759c6fe9f1bfc6a0cd20d"
+        },
+        {
+          "path": "hosted-job.log",
+          "sha256": "1e7eed2a6037f964a6d77b3bf851ed6f5ce66e1155b1af5c3870c2d996244ab0"
+        },
+        {
+          "path": "test-output.log",
+          "sha256": "333e2cf478ba2066b367447186d622a6894c167baaa3229f7870d1c01d267b25"
+        },
+        {
+          "path": "observations.json",
+          "sha256": "9fd0ce6bb7fdf36c89119de23ee3d3d67fbc975cd33f69bf4425a043687ebe32"
+        }
+      ]
+    }
+  ],
+  "traceability": [
+    {
+      "requirement": "QHOST-001",
+      "source": "resilient/tests/contract_replay_roundtrip.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "contract_replay_roundtrip::straight_return_replays; contract_replay_roundtrip::branch_returns_replay_separately; contract_replay_roundtrip::constant_return_replays; contract_replay_roundtrip::false_postcondition_is_rejected",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-002",
+      "source": "resilient/tests/manifest_authentication.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "manifest_authentication::strict_replay_accepts_the_complete_signed_manifest; manifest_authentication::strict_replay_rejects_removed_obligations; manifest_authentication::strict_replay_rejects_reordered_obligations; manifest_authentication::strict_replay_rejects_changed_program_identity; manifest_authentication::strict_replay_rejects_missing_manifest_signature; manifest_authentication::strict_replay_rejects_wrong_manifest_key; manifest_authentication::legacy_replay_does_not_require_a_manifest_signature; manifest_authentication::compiler_signs_the_manifest_for_strict_replay",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-003",
+      "source": "resilient/tests/loop_certificate_roundtrip.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "loop_certificate_roundtrip::while_invariant_certificates_replay_with_real_solver; loop_certificate_roundtrip::finite_loop_certificates_replay_with_real_solver; loop_certificate_roundtrip::false_loop_invariant_does_not_emit_a_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-004",
+      "source": "resilient/tests/finite_loop_certificate_guards.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "finite_loop_certificate_guards::shadowed_iteration_binding_is_not_certified; finite_loop_certificate_guards::changing_iteration_binding_is_not_certified; finite_loop_certificate_guards::valid_iteration_binding_retains_runtime_check; finite_loop_certificate_guards::empty_iteration_does_not_claim_an_executed_invariant_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-005",
+      "source": "resilient/tests/solver_replay_bounds.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_bounds::replay_rejects_response_after_deadline; solver_replay_bounds::replay_rejects_oversized_whitespace_after_unsat; solver_replay_bounds::replay_rejects_invalid_timeout_configuration; solver_replay_bounds::replay_accepts_clean_response_within_budget",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-006",
+      "source": "resilient/tests/solver_replay_required.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_required::requested_replay_rejects_missing_absolute_solver; solver_replay_required::requested_replay_rejects_solver_absent_from_path; solver_replay_required::requested_replay_rejects_empty_obligation_set; solver_replay_required::hash_only_verification_does_not_require_solver",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-007",
+      "source": "resilient/tests/solver_replay_conformance.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_conformance::replay_accepts_one_clean_unsat_response; solver_replay_conformance::replay_rejects_unsat_from_failed_process; solver_replay_conformance::replay_rejects_conflicting_or_extra_responses; solver_replay_conformance::replay_rejects_stderr_even_after_unsat; solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat; solver_replay_conformance::replay_rejects_nonproof_responses",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-008",
+      "source": "resilient/tests/source_binding.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "source_binding::signed_inventory_binds_all_parsed_inputs; source_binding::identical_relocated_sources_verify; source_binding::changed_entry_is_rejected; source_binding::changed_import_is_rejected; source_binding::missing_inventory_is_rejected; source_binding::unsigned_inventory_is_rejected; source_binding::malformed_inventory_is_rejected; source_binding::duplicate_inventory_file_is_rejected; source_binding::missing_import_edge_is_rejected; source_binding::unreachable_inventory_file_is_rejected; source_binding::traversal_inventory_path_is_rejected; source_binding::symlink_import_outside_root_is_rejected_before_read; source_binding::cache_and_no_cache_emit_identical_binding; source_binding::legacy_replay_remains_compatible_without_binding",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-009",
+      "source": "resilient/tests/source_binding_graph.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "source_binding_graph::coherently_omitted_import_is_rejected; source_binding_graph::duplicate_edge_is_rejected; source_binding_graph::extra_edge_is_rejected; source_binding_graph::unsupported_version_and_empty_inventory_are_rejected; source_binding_graph::absolute_target_is_rejected; source_binding_graph::missing_source_and_invalid_root_are_rejected; source_binding_graph::nested_diamond_graph_relocates_with_its_common_root; source_binding_graph::package_resolution_graph_does_not_invoke_git; source_binding_graph::outside_root_fifo_is_rejected_without_opening_it; source_binding_graph::cyclic_graph_and_excessive_inventory_are_bounded",
+      "result": "pass",
+      "evidence_control": "validation"
+    }
+  ],
+  "open_issues": [
+    "Independent technical adequacy review and authentic review records remain pending; no regulatory independence is claimed.",
+    "Project-specific safety context, applicable editions/classification and qualification/validation method selection require consuming-project tailoring and acceptance.",
+    "Source-to-query translation and mathematical-to-machine-integer correspondence are outside the observed replay results.",
+    "Finite-loop semantic completeness and runtime concurrency anomalies remain excluded except for explicitly tested behavior documented in scope.md.",
+    "External assessor/authority/manufacturer acceptance is pending; this is technical preparation only.",
+    "Issue #4954 tracks verified permanent debug executable/evidence release retention; until a publication receipt exists, the Actions artifact expires after 90 days."
+  ]
+}
