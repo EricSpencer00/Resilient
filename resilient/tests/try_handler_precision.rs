@@ -92,3 +92,15 @@ fn typed_try_mixed_handler_return_remains_rejected() {
         "{output:?}"
     );
 }
+#[test]
+fn typed_try_handler_fallthrough_remains_rejected() {
+    let output = run(
+        "fn missing(int x) -> int { try { return x; } catch Failure { println(x); } }",
+        false,
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("return"),
+        "{output:?}"
+    );
+}
