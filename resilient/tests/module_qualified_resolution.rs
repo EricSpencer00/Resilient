@@ -16,6 +16,11 @@ fn run(
             .args(["--version", "--verbose"])
             .output()
             .unwrap();
+        assert!(
+            version.status.success(),
+            "version capture failed: {:?}",
+            version
+        );
         (
             format!("{:x}", Sha256::digest(fs::read(binary).unwrap())),
             String::from_utf8_lossy(&version.stdout).into_owned(),
@@ -43,7 +48,7 @@ fn run(
     // Emit source-bound observations in normal hosted test logs, including controls.
     let record = serde_json::json!({"case":case,"role":role,"source":source,"library":library,
         "flags":flags,"binary_sha256":identity.0,"version":identity.1,
-        "dispatch":"match","overflow":"default","status":out.status.code(),
+        "dispatch":"match","overflow":"default","version_status":0,"status":out.status.code(),
         "stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr)});
     writeln!(std::io::stderr(), "MODULE_RESOLUTION_RECORD {record}").unwrap();
     fs::remove_dir_all(root).unwrap();
@@ -65,6 +70,19 @@ fn positive(case: &str, source: &str, library: Option<&str>, expected: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
 }
 fn negative(case: &str, source: &str, library: Option<&str>, diagnostic: &str) {
+    let checked = run(
+        &format!("{case}_typecheck"),
+        source,
+        library,
+        &["-t"],
+        "frontend-negative-stage-control",
+    );
+    assert!(!checked.status.success());
+    let error = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        error.contains("Type error:") && error.contains(diagnostic),
+        "{error}"
+    );
     let out = run(
         case,
         source,
@@ -113,7 +131,7 @@ fn qualified_inline_function_is_callable() {
     }
     positive(
         "qualified",
-        "mod checks { fn f(int x) -> int { return x; } } println(checks::f(7));",
+        "mod checks { fn f(int x) -> int requires x > 0 { return x; } } println(checks::f(7));",
         None,
         "7",
     );
@@ -190,5 +208,15 @@ fn private_file_import_member_remains_unbound() {
         "use \"lib.rz\" as lib; println(lib::secret(1));",
         Some("pub fn f(int x) -> int { return x; } fn secret(int x) -> int { return x; }"),
         "Undefined variable 'lib::secret'",
+    );
+}
+
+#[test]
+fn same_member_name_keeps_distinct_qualified_contracts() {
+    positive(
+        "distinct_contracts",
+        "mod left { fn f(int x) -> int requires x > 0 { return x; } } mod right { fn f(int x) -> int requires x < 0 { return x; } } println(left::f(7)); println(right::f(-7));",
+        None,
+        "7\n-7",
     );
 }
