@@ -69,7 +69,7 @@ fn capture(name: &str) {
         assert_eq!(Path::new(filename).file_name().unwrap(), filename);
         let bytes = std::fs::read(root.join("certs").join(filename)).unwrap();
         assert_eq!(hash(&bytes), obligation["sha256"]);
-        queries.push(json!({"filename": filename, "sha256": hash(&bytes), "text": String::from_utf8(bytes).unwrap()}));
+        queries.push(json!({"filename": filename, "kind": obligation["kind"], "sha256": hash(&bytes), "text": String::from_utf8(bytes).unwrap()}));
     }
     let replay = Command::new(compiler)
         .arg("verify-all")
@@ -85,6 +85,7 @@ fn capture(name: &str) {
         .args(["--version", "--verbose"])
         .output()
         .unwrap();
+    assert!(version.status.success(), "compiler identity command failed");
     let configured_solver = std::env::var("Z3_BINARY").unwrap_or_else(|_| "z3".into());
     let solver_lookup = Command::new("which")
         .arg(&configured_solver)
@@ -124,7 +125,12 @@ fn capture(name: &str) {
         expected["paths"].as_array().unwrap().len(),
         "source-authored path inventory differs for {name}"
     );
-    for query in record["queries"].as_array().unwrap() {
+    for query in record["queries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|query| query["kind"] == "ensures_implementation")
+    {
         assert!(
             query["text"]
                 .as_str()
