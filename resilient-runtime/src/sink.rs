@@ -31,8 +31,8 @@
 //!
 //! The global sink pointer lives in an `UnsafeCell` behind a
 //! `Sync` newtype and an allocation-free lock. Concurrent writes
-//! are serialized; reentrant writes fail with
-//! [`SinkErr::WriteFailed`] rather than deadlocking. Installation
+//! never overlap; concurrent or reentrant writes fail immediately with
+//! [`SinkErr::WriteFailed`] rather than waiting. Installation
 //! or clearing attempted while a write is active is ignored.
 
 use core::cell::UnsafeCell;
@@ -49,7 +49,7 @@ pub enum SinkErr {
     /// the runtime's `println` from a context where the sink
     /// hasn't been set up.
     NoSink,
-    /// The installed sink's `write_str` returned an error. The
+    /// The sink is busy, or its `write_str` returned an error. The
     /// payload is deliberately unit — sinks encode their own
     /// richer diagnostics in their implementation and surface
     /// them via logging / side channels.
