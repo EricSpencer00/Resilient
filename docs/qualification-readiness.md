@@ -60,3 +60,9 @@ The [replay resource-limit record](https://github.com/EricSpencer00/Resilient/tr
 retains the hosted baseline and repaired runs, three verified red-green
 attestations, and a source reconstruction patch. It covers timeout enforcement,
 output limits and configuration rejection, with a passing-response control.
+
+The [host certificate/replay dossier](https://github.com/EricSpencer00/Resilient/tree/main/qualification/host-cli-2026-10)
+records 33 hosted outcomes against an identified executable and source tree,
+concrete operational requirements, failure analysis and four populated
+preparation profiles. It retains the raw job log and complete downloaded archive
+inventory, with independent review and project acceptance explicitly pending.
