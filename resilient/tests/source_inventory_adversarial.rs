@@ -2,6 +2,7 @@
 #![cfg(unix)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -94,10 +95,14 @@ impl Fixture {
         }
         let output = child.wait_with_output().unwrap();
         let report:Value=serde_json::from_slice(&output.stdout).unwrap_or_else(|_|json!({"raw":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr)}));
-        println!(
-            "SOURCE_INVENTORY_BOUNDARY_CAPTURE {}",
-            json!({"case":std::thread::current().name(),"expected":expected,"actual":report,"graph_sha256":hash(&raw),"elapsed_ms":started.elapsed().as_millis(),"claim":"public adversarial lexical/sourcegraph boundary; no compiler proof or signature acceptance"})
-        );
+        {
+            let mut records_stdout = std::io::stdout().lock();
+            writeln!(records_stdout,
+                        "SOURCE_INVENTORY_BOUNDARY_CAPTURE {}",
+                        json!({"case":std::thread::current().name(),"expected":expected,"actual":report,"graph_sha256":hash(&raw),"elapsed_ms":started.elapsed().as_millis(),"claim":"public adversarial lexical/sourcegraph boundary; no compiler proof or signature acceptance"})
+                    ).unwrap();
+            records_stdout.flush().unwrap();
+        }
         assert!(!output.status.success(), "{output:?}");
         assert_eq!(report["code"], expected);
         for key in ["contract_sites", "declarations", "files", "import_edges"] {

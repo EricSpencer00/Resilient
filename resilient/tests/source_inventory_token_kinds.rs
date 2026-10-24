@@ -2,6 +2,7 @@
 #![cfg(unix)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -68,10 +69,14 @@ fn check(source: &str, import: bool, expected: &str) {
     }
     let output = child.wait_with_output().unwrap();
     let report:Value=serde_json::from_slice(&output.stdout).unwrap_or_else(|_|json!({"raw":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr)}));
-    println!(
-        "SOURCE_INVENTORY_TOKEN_KIND_CAPTURE {}",
-        json!({"case":std::thread::current().name(),"source":source,"source_graph":graph,"expected":expected,"actual":report,"claim":"restricted grammar token-kind boundary, not full compiler syntax or proof validity"})
-    );
+    {
+        let mut records_stdout = std::io::stdout().lock();
+        writeln!(records_stdout,
+                "SOURCE_INVENTORY_TOKEN_KIND_CAPTURE {}",
+                json!({"case":std::thread::current().name(),"source":source,"source_graph":graph,"expected":expected,"actual":report,"claim":"restricted grammar token-kind boundary, not full compiler syntax or proof validity"})
+            ).unwrap();
+        records_stdout.flush().unwrap();
+    }
     assert_eq!(report["code"], expected, "{output:?}");
     assert_eq!(output.status.success(), expected == "inventoried");
     if expected != "inventoried" {

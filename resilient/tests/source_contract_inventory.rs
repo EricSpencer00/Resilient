@@ -2,6 +2,7 @@
 #![cfg(unix)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,7 +61,15 @@ impl Fixture {
         let record = json!({"case":std::thread::current().name(),"expected_code":code,"expected_inventory":self.expected,"actual_report":report,"source_graph":graph,"claim":"lexical enumeration only; no compiler/signature/proof acceptance observed"});
         let record = serde_json::to_string(&record).unwrap();
         assert!(record.len() <= 256 * 1024);
-        println!("SOURCE_INVENTORY_REQUIREMENT_CAPTURE {record}");
+        {
+            let mut records_stdout = std::io::stdout().lock();
+            writeln!(
+                records_stdout,
+                "SOURCE_INVENTORY_REQUIREMENT_CAPTURE {record}"
+            )
+            .unwrap();
+            records_stdout.flush().unwrap();
+        }
         assert_eq!(report["code"], code, "{output:?}");
         assert_eq!(output.status.success(), code == "inventoried");
         report
