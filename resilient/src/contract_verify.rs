@@ -897,6 +897,7 @@ mod tests {
         fn match_return_is_grounded_against_each_scalar_arm() {
             let src = r#"
                 fn at_least_self(int x) -> int
+                    requires x < 9223372036854775807
                     ensures result >= x
                 { return match x { 0 => x, _ => x + 1 }; }
             "#;
