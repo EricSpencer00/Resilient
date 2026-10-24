@@ -1,0 +1,79 @@
+{
+  "schema": "resilient-correspondence-negative-expectations",
+  "version": 1,
+  "authorship": "Codex GPT-6.1 Sol low; source-authored before next-cycle query capture",
+  "profile": "vm-i64-wrap-v1",
+  "claim": "Finite source/model counterexamples using equality only. Try handler is conservative modeled alternative, not established runtime exception path. These do not replace full path/query structural review.",
+  "fixtures": [
+    {
+      "fixture": "negative_straight.rz",
+      "source_sha256": "2f5c8c783c0f775d5568a22940d9f7d3ec3a3341edd0670cc9ca94302c0cc98b",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "entry",
+      "input": {
+        "x": 1
+      },
+      "returned_value": 0,
+      "expected_result": 1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_if_else.rz",
+      "source_sha256": "09a22b04d6c12bc9805f673b92069fc594b949fb616e93e49701c0c2d53e84be",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "else",
+      "input": {
+        "x": -1
+      },
+      "returned_value": 0,
+      "expected_result": -1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_early_fallthrough.rz",
+      "source_sha256": "dd454077f05b55046a286db42c791bcbe0e5616b25f5dacc16f49f0b5f7b0ca0",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "fallthrough",
+      "input": {
+        "x": -1
+      },
+      "returned_value": 0,
+      "expected_result": -1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_first_match_guarded.rz",
+      "source_sha256": "057d027c6f72d1ed3b599b2999826c8ab761c0416994bb8cd774c253a09accbd",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "arm1",
+      "input": {
+        "x": 1
+      },
+      "returned_value": 0,
+      "expected_result": 1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_try_overapprox.rz",
+      "source_sha256": "c178a18b37741c21502bdb92ee6a7ae31b92ca380e50c9c6351a5e5867638cba",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "handler-Failure",
+      "input": {
+        "x": 1
+      },
+      "returned_value": 0,
+      "expected_result": 1,
+      "witness_claim": "conservative model witness only; no actual exception reachability claim",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    }
+  ]
+}
