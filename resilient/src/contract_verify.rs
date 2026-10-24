@@ -335,7 +335,10 @@ pub(crate) fn prove_ensures(
             .collect();
         return (combine_path_verdicts(verdicts), ProofBasis::Implementation);
     }
-    (Verdict::Unknown, ProofBasis::ClauseOnly)
+    #[cfg(feature = "z3")]
+    return (Verdict::Unknown, ProofBasis::ClauseOnly);
+    #[cfg(not(feature = "z3"))]
+    (Verdict::Unknown, ProofBasis::Implementation)
 }
 
 #[cfg(feature = "z3")]
