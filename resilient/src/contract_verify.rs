@@ -295,6 +295,60 @@ pub(crate) fn prove_ensures(
     (prove_clause(clause, requires), ProofBasis::ClauseOnly)
 }
 
+/// Replay artifacts retain each modeled path as an independent solver session.
+#[cfg(feature = "z3")]
+pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> Option<Vec<String>> {
+    use symbolic_eval::ResultPath;
+    if !symbolic_eval::mentions_result(clause) {
+        return None;
+    }
+    let paths = match symbolic_eval::model_body(body)? {
+        ResultModel::Straight { ret } => vec![ResultPath {
+            condition: None,
+            ret,
+        }],
+        ResultModel::Branch {
+            condition,
+            then_ret,
+            else_ret,
+        } => vec![
+            ResultPath {
+                condition: Some(condition.clone()),
+                ret: then_ret,
+            },
+            ResultPath {
+                condition: Some(Box::new(symbolic_eval::negate(&condition))),
+                ret: else_ret,
+            },
+        ],
+        ResultModel::Paths { paths } => paths,
+    };
+    if paths.is_empty() {
+        return None;
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let obligation = symbolic_eval::substitute_result(clause, &path.ret);
+            let mut axioms = requires.to_vec();
+            if let Some(condition) = path.condition {
+                axioms.push(*condition);
+            }
+            let (proven, certificate, _) = crate::verifier_z3::prove_tautology_with_certificate(
+                &obligation,
+                &std::collections::HashMap::new(),
+                &axioms,
+                CLAUSE_TIMEOUT_MS,
+            );
+            if proven {
+                certificate.map(|certificate| certificate.smt2)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Combine the two per-branch verdicts of an `if/else` case split: the
 /// clause holds for the whole function only if it holds on *both*
 /// reachable branches. A refutation on either branch refutes the
