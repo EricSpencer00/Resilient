@@ -131,6 +131,14 @@ replay never falls back to integrity-only checks. An empty obligation set is
 also rejected in replay mode. Without `--z3`, empty manifests retain their
 integrity-only behavior and no solver is required.
 
+Each solver invocation has a 30-second default deadline and a 64 KiB limit
+for each captured stream. Set `RZ_SOLVER_TIMEOUT_MS` to an integer from 1 to
+300000 to select a different deadline. Invalid settings fail replay before
+launching the solver. Standard input is closed. A timeout or capture failure
+terminates and reaps the direct solver child; this is not containment of an
+arbitrary process tree. Use a trusted solver executable rather than a wrapper
+that leaves descendants running or holding output pipes open.
+
 With `--z3`, acceptance requires a
 successful solver exit, valid UTF-8 stdout containing exactly one `unsat`
 response (surrounding whitespace is permitted), and empty stderr. Additional
