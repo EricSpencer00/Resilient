@@ -1,0 +1,3 @@
+mod m { pub fn f(int x) -> int ensures result == x { return x; } }
+use m::*;
+println(f(1)); println(m::f(2));
