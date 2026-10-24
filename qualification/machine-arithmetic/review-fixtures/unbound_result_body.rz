@@ -1,0 +1,5 @@
+fn unbound(int x) -> int
+    ensures result == result
+{
+    return result;
+}
