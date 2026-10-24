@@ -679,6 +679,7 @@ mod loop_bound;
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
 // with proof certificates.
 mod contract_verify;
+mod machine_arithmetic;
 // RES-4218: rejects an `ensures` clause that Z3 refutes against the
 // function's own body (counterexample in hand). Consumes
 // `contract_verify`'s body-aware path from the typechecker.
@@ -31785,6 +31786,7 @@ fn execute_file(
     let typecheck_strict = verbose_typecheck || type_strict;
     let want_typecheck = !no_typecheck;
     let mut proven_fns: HashSet<String> = HashSet::new();
+    let mut typecheck_failed = false;
     if want_typecheck {
         if verbose_typecheck {
             println!("Running type checker...");
@@ -31827,12 +31829,24 @@ fn execute_file(
                 }
             }
             Err(e) => {
+                typecheck_failed = true;
                 eprintln!("\x1B[31mType error: {}\x1B[0m", e);
                 // RES-117: add a caret diagnostic beneath the
                 // ANSI-red header so the offending source position
                 // is visually underlined.
                 eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
                 if typecheck_strict {
+                    if let Some(path) = emit_contract_cert {
+                        let diagnostic = contract_certificate::emit_diagnostic(
+                            &program,
+                            filename,
+                            "failed",
+                            "typecheck-rejected",
+                        );
+                        std::fs::write(path, diagnostic).map_err(|error| {
+                            format!("could not write failed-typecheck diagnostics: {error}")
+                        })?;
+                    }
                     return Err(format!("Type check failed: {}", e));
                 }
                 // RES-1088: soft mode — surface the diagnostic but
@@ -31883,7 +31897,26 @@ fn execute_file(
     // from the parsed program's contract surface, and it degrades
     // honestly to `unknown` verdicts on non-z3 builds.
     if let Some(path) = emit_contract_cert {
-        let json = contract_certificate::emit(&program, filename);
+        let json = if typecheck_failed || !want_typecheck || use_jit {
+            contract_certificate::emit_diagnostic(
+                &program,
+                filename,
+                if !want_typecheck {
+                    "skipped"
+                } else if typecheck_failed {
+                    "failed"
+                } else {
+                    "passed"
+                },
+                if use_jit {
+                    "unsupported-execution-backend"
+                } else {
+                    "typecheck-unvalidated"
+                },
+            )
+        } else {
+            contract_certificate::emit(&program, filename)
+        };
         std::fs::write(path, &json).map_err(|e| {
             format!(
                 "--emit-contract-certificate: failed to write {}: {}",

@@ -1,0 +1,7 @@
+const NAN: Float = 0.0 / 0.0;
+fn identity(int x) -> int
+    ensures result == x && NAN == NAN
+{
+    return x;
+}
+identity(0);
