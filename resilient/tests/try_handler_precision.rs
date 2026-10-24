@@ -132,7 +132,17 @@ fn declared_failure_call_has_typed_try_return_flow() {
         false,
         true,
     );
-    assert_one(&output);
+    // Ordinary try blocks deterministically inject a declared checked failure
+    // (FAILURE_MODEL.md, RES-775); the handler, not risky's return, executes.
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.parse::<i64>().is_ok())
+            .collect::<Vec<_>>(),
+        ["0"],
+        "{output:?}"
+    );
     let report = report.unwrap_or_else(|| panic!("{output:?}"));
     use std::io::Write;
     std::io::stdout()
