@@ -69,7 +69,11 @@ fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
         .lines()
         .filter(|line| line.parse::<i64>().is_ok())
         .collect();
+    let frontend_passed = stdout.contains("Type check passed")
+        && !diagnostic.contains("Type check failed")
+        && !diagnostic.contains("at compile time");
     let satisfied = !timed_out
+        && frontend_passed
         && if violation {
             !output.status.success()
                 && diagnostic.contains("Contract violation")
@@ -78,10 +82,14 @@ fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
         } else {
             output.status.success() && actual_numbers == numbers
         };
-    let record = serde_json::json!({"schema":"resilient-entry-cli-record/v2", "case":case,"source":source,"source_sha256":format!("{:x}",sha2::Sha256::digest(source.as_bytes())),"argv":["--audit","--no-cache",root.join("input.rz")],"overflow_environment":"unset","effective_overflow_mode":"Wrap","features":{"z3":cfg!(feature="z3"),"jit":cfg!(feature="jit"),"lsp":cfg!(feature="lsp")},"compiler_path":env!("CARGO_BIN_EXE_rz"),"compiler_sha256":binary_sha,"rustc":rustc,"exit_code":output.status.code(),"timed_out":timed_out,"stdout":stdout,"stderr":String::from_utf8_lossy(&output.stderr),"expected_requires_violation":violation,"expected_numeric_output":numbers,"requirement_satisfied":satisfied});
+    let record = serde_json::json!({"schema":"resilient-entry-cli-record/v3", "case":case,"source":source,"source_sha256":format!("{:x}",sha2::Sha256::digest(source.as_bytes())),"argv":["--audit","--no-cache",root.join("input.rz")],"overflow_environment":"unset","effective_overflow_mode":"Wrap","features":{"z3":cfg!(feature="z3"),"jit":cfg!(feature="jit"),"lsp":cfg!(feature="lsp")},"compiler_path":env!("CARGO_BIN_EXE_rz"),"compiler_sha256":binary_sha,"rustc":rustc,"exit_code":output.status.code(),"timed_out":timed_out,"stdout":stdout,"stderr":String::from_utf8_lossy(&output.stderr),"expected_requires_violation":violation,"expected_numeric_output":numbers,"requirement_satisfied":satisfied});
     let line = format!("RESILIENT_ENTRY_RECORD {}\n", record);
     std::io::stdout().lock().write_all(line.as_bytes()).unwrap();
     assert!(!timed_out, "CLI child timed out: {output:?}");
+    assert!(
+        frontend_passed,
+        "runtime requirement was not reached: {diagnostic}"
+    );
     if violation {
         assert!(!output.status.success(), "{output:?}");
         assert!(
@@ -109,7 +117,7 @@ fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
 fn self_tail_entry_rechecks_requires_before_body() {
     exercise(
         "self_tail_entry_rechecks_requires_before_body",
-        "#[must_tail_call] fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(n - 1); } println(\"FORBIDDEN_BODY\"); return n; } println(positive(1));",
+        "fn opaque(int n) -> int { return n; } #[must_tail_call] fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(opaque(n - 1)); } println(\"FORBIDDEN_BODY\"); return n; } println(positive(1));",
         true,
         &[],
     );
@@ -127,7 +135,7 @@ fn valid_self_tail_entries_preserve_results() {
 fn mutual_tail_entry_checks_target_requires_before_body() {
     exercise(
         "mutual_tail_entry_checks_target_requires_before_body",
-        "#[mutual_tail_call] fn first(int n) -> int requires n > 0 { if n == 1 { return second(n - 1); } return n; } #[mutual_tail_call] fn second(int n) -> int requires n > 0 { if n == 0 { println(\"FORBIDDEN_BODY\"); return n; } return first(n - 1); } println(first(1));",
+        "fn opaque(int n) -> int { return n; } #[mutual_tail_call] fn first(int n) -> int requires n > 0 { if n == 1 { return second(opaque(n - 1)); } return n; } #[mutual_tail_call] fn second(int n) -> int requires n > 0 { if n == 0 { println(\"FORBIDDEN_BODY\"); return n; } return first(n - 1); } println(first(1));",
         true,
         &[],
     );
@@ -163,7 +171,7 @@ fn valid_aliased_call_preserves_result() {
 fn ordinary_recursive_entry_keeps_requires() {
     exercise(
         "ordinary_recursive_entry_keeps_requires",
-        "fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(n - 1); } println(\"FORBIDDEN_BODY\"); return n; } println(positive(1));",
+        "fn opaque(int n) -> int { return n; } fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(opaque(n - 1)); } println(\"FORBIDDEN_BODY\"); return n; } println(positive(1));",
         true,
         &[],
     );
