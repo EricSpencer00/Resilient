@@ -51,6 +51,64 @@ pub struct StdImport {
     pub alias: Option<String>,
 }
 
+pub(crate) struct TracedTarget {
+    pub path: PathBuf,
+    pub namespace: Option<String>,
+}
+
+pub(crate) trait ImportTrace {
+    fn resolve(&mut self, _from: &Path, _specifier: &str) -> Result<Option<TracedTarget>, String> {
+        Ok(None)
+    }
+    fn edge(
+        &mut self,
+        _from: &Path,
+        _specifier: &str,
+        _target: &Path,
+        _namespace: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn builtin(&mut self, _from: &Path, _module: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn before_read(&mut self, _path: &Path) -> Result<(), String> {
+        Ok(())
+    }
+    fn parsed(&mut self, _path: &Path, _source: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn depth(&mut self, _depth: usize) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct Untraced;
+impl ImportTrace for Untraced {}
+
+#[cfg(feature = "z3")]
+pub(crate) fn expand_uses_traced(
+    program: &mut Node,
+    entry: &Path,
+    loaded: &mut HashSet<PathBuf>,
+    std_imports: &mut Vec<StdImport>,
+    trace: &mut dyn ImportTrace,
+    allow_lookup: bool,
+) -> Result<(), String> {
+    let base = entry.parent().unwrap_or_else(|| Path::new("."));
+    let mut in_flight = vec![canonicalize_or_self(entry)];
+    expand_recursive(
+        program,
+        base,
+        loaded,
+        std_imports,
+        &mut in_flight,
+        Some(entry),
+        trace,
+        allow_lookup,
+    )
+}
+
 /// Expand every `Node::Use` in `program`'s top level.
 ///
 /// File-based imports are resolved, parsed, and spliced in.
@@ -75,16 +133,30 @@ pub fn expand_uses_with_std(
     std_imports: &mut Vec<StdImport>,
 ) -> Result<(), String> {
     let mut in_flight: Vec<PathBuf> = Vec::new();
-    expand_recursive(program, base_dir, loaded, std_imports, &mut in_flight)
+    expand_recursive(
+        program,
+        base_dir,
+        loaded,
+        std_imports,
+        &mut in_flight,
+        None,
+        &mut Untraced,
+        true,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn expand_recursive(
     program: &mut Node,
     base_dir: &Path,
     loaded: &mut HashSet<PathBuf>,
     std_imports: &mut Vec<StdImport>,
     in_flight: &mut Vec<PathBuf>,
+    importer: Option<&Path>,
+    trace: &mut dyn ImportTrace,
+    allow_lookup: bool,
 ) -> Result<(), String> {
+    trace.depth(in_flight.len())?;
     // RES-4110: resolve inline-module globs before file/dependency imports.
     // This pass removes only `use mod::*` nodes, leaving the existing file
     // import resolver and its visibility rules unchanged.
@@ -115,10 +187,56 @@ fn expand_recursive(
 
             // Check for standard library import: `use std::module;`
             if let Some(module_name) = path.strip_prefix("std::") {
+                if let Some(from) = importer {
+                    trace.builtin(from, module_name)?;
+                }
                 std_imports.push(StdImport {
                     module: module_name.to_string(),
                     alias,
                 });
+                continue;
+            }
+
+            // Strict source verification resolves exclusively through authenticated edges.
+            let resolved = if let Some(from) = importer {
+                trace.resolve(from, path)?
+            } else {
+                None
+            };
+            if !allow_lookup && resolved.is_none() {
+                return Err("source binding: missing authenticated import edge".into());
+            }
+            if let Some(resolved) = resolved {
+                let from = importer.ok_or("source binding: missing importer identity")?;
+                trace.edge(from, path, &resolved.path, resolved.namespace.as_deref())?;
+                let canon = canonicalize_or_self(&resolved.path);
+                check_cycle(&canon, in_flight)?;
+                if alias.is_none() && !loaded.insert(canon.clone()) {
+                    continue;
+                }
+                let mut imported = load_and_parse_traced(&resolved.path, trace)?;
+                let dir = resolved.path.parent().unwrap_or_else(|| Path::new("."));
+                in_flight.push(canon);
+                expand_recursive(
+                    &mut imported,
+                    dir,
+                    loaded,
+                    std_imports,
+                    in_flight,
+                    Some(&resolved.path),
+                    trace,
+                    allow_lookup,
+                )?;
+                in_flight.pop();
+                if let Node::Program(stmts) = imported {
+                    append_imported_stmts(
+                        stmts,
+                        &mut expanded,
+                        selectors.as_deref(),
+                        is_pub,
+                        alias.as_deref().or(resolved.namespace.as_deref()),
+                    );
+                }
                 continue;
             }
 
@@ -128,6 +246,9 @@ fn expand_recursive(
                 && let Ok(Some(dep_path)) =
                     crate::pkg_deps::resolve_dep_module(base_dir, dep_name, module)
             {
+                if let Some(from) = importer {
+                    trace.edge(from, path, &dep_path, Some(dep_name))?;
+                }
                 let canon = canonicalize_or_self(&dep_path);
 
                 // RES-2540: cycle detection — check in-flight stack.
@@ -138,7 +259,7 @@ fn expand_recursive(
                 } else if alias.is_none() {
                     continue;
                 }
-                let imported_program = load_and_parse(&dep_path)?;
+                let imported_program = load_and_parse_traced(&dep_path, trace)?;
                 let imported_dir = dep_path
                     .parent()
                     .map(Path::to_path_buf)
@@ -151,6 +272,9 @@ fn expand_recursive(
                     loaded,
                     std_imports,
                     in_flight,
+                    importer.map(|_| dep_path.as_path()),
+                    trace,
+                    allow_lookup,
                 )?;
                 in_flight.pop();
                 if let Node::Program(imported_stmts) = imported_program {
@@ -180,6 +304,9 @@ fn expand_recursive(
             }
 
             let target = resolve_use_path(base_dir, path)?;
+            if let Some(from) = importer {
+                trace.edge(from, path, &target, None)?;
+            }
             let canon = canonicalize_or_self(&target);
 
             // RES-2540: cycle detection — check in-flight stack.
@@ -192,7 +319,7 @@ fn expand_recursive(
                 loaded.insert(canon.clone());
             }
 
-            let imported_program = load_and_parse(&target)?;
+            let imported_program = load_and_parse_traced(&target, trace)?;
             let imported_dir = target
                 .parent()
                 .map(Path::to_path_buf)
@@ -206,6 +333,9 @@ fn expand_recursive(
                 loaded,
                 std_imports,
                 in_flight,
+                importer.map(|_| target.as_path()),
+                trace,
+                allow_lookup,
             )?;
             in_flight.pop();
 
@@ -776,7 +906,13 @@ fn import_size_error(path: &Path, size: u64) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn load_and_parse(path: &Path) -> Result<Node, String> {
+    load_and_parse_traced(path, &mut Untraced)
+}
+
+fn load_and_parse_traced(path: &Path, trace: &mut dyn ImportTrace) -> Result<Node, String> {
+    trace.before_read(path)?;
     let file = fs::File::open(path)
         .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
     let file_size = file
@@ -797,6 +933,7 @@ fn load_and_parse(path: &Path) -> Result<Node, String> {
     if let Some(err) = import_size_error(path, src.len() as u64) {
         return Err(err);
     }
+    trace.parsed(path, &src)?;
     let (program, errors) = parse(&src);
     if !errors.is_empty() {
         return Err(format!(
