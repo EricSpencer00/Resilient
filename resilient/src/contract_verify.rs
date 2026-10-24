@@ -267,39 +267,48 @@ pub(crate) fn machine_profile(
     let Some(model) = symbolic_eval::model_body(body) else {
         return false;
     };
-    let mut expressions: Vec<&Node> = requires.iter().chain(ensures).collect();
+    let mut expressions: Vec<(&Node, bool)> = requires
+        .iter()
+        .map(|node| (node, false))
+        .chain(ensures.iter().map(|node| (node, true)))
+        .collect();
     match &model {
-        ResultModel::Straight { ret } => expressions.push(ret),
+        ResultModel::Straight { ret } => expressions.push((ret, false)),
         ResultModel::Branch {
             condition,
             then_ret,
             else_ret,
-        } => expressions.extend([condition.as_ref(), then_ret.as_ref(), else_ret.as_ref()]),
+        } => expressions.extend([
+            (condition.as_ref(), false),
+            (then_ret.as_ref(), false),
+            (else_ret.as_ref(), false),
+        ]),
         ResultModel::Paths { paths } => {
             for path in paths {
-                expressions.push(&path.ret);
+                expressions.push((&path.ret, false));
                 if let Some(condition) = &path.condition {
-                    expressions.push(condition);
+                    expressions.push((condition, false));
                 }
             }
         }
     }
-    fn bound(node: &Node, parameters: &[(String, String)]) -> bool {
+    fn bound(node: &Node, parameters: &[(String, String)], postcondition: bool) -> bool {
         match node {
             Node::Identifier { name, .. } => {
-                name == "result" || parameters.iter().any(|(_, parameter)| parameter == name)
+                (postcondition && name == "result")
+                    || parameters.iter().any(|(_, parameter)| parameter == name)
             }
-            Node::PrefixExpression { right, .. } => bound(right, parameters),
+            Node::PrefixExpression { right, .. } => bound(right, parameters, postcondition),
             Node::InfixExpression { left, right, .. } => {
-                bound(left, parameters) && bound(right, parameters)
+                bound(left, parameters, postcondition) && bound(right, parameters, postcondition)
             }
             Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => true,
             _ => false,
         }
     }
-    expressions
-        .into_iter()
-        .all(|node| crate::machine_arithmetic::supported(node) && bound(node, parameters))
+    expressions.into_iter().all(|(node, postcondition)| {
+        crate::machine_arithmetic::supported(node) && bound(node, parameters, postcondition)
+    })
 }
 
 pub(crate) fn prove_ensures(
