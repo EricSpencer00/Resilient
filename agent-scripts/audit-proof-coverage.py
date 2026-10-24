@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath
 import selectors
 import shutil
 import signal
+import stat
+import threading
 import subprocess
 import sys
 import time
@@ -20,7 +22,8 @@ MAX_SITES = 512
 
 class Rejected(Exception):
     def __init__(self, stage, code, detail):
-        self.stage, self.code, self.detail = stage, code, detail
+        self.stage, self.code = stage, code
+        self.detail = str(detail) if isinstance(detail, Path) else detail
 
 
 def reject(stage, code, detail):
@@ -32,11 +35,25 @@ def digest(raw):
 
 
 def read(path, limit=MAX_DOCUMENT):
-    with Path(path).open('rb') as stream:
-        raw = stream.read(limit + 1)
-    if len(raw) > limit:
-        reject('binding', 'resource_limit', path)
-    return raw
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            reject('binding', 'non_regular_input', str(path))
+        if info.st_size > limit:
+            reject('binding', 'resource_limit', str(path))
+        chunks, count = [], 0
+        while count <= limit:
+            chunk = os.read(descriptor, min(65536, limit + 1 - count))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            count += len(chunk)
+        if count > limit:
+            reject('binding', 'resource_limit', str(path))
+        return b''.join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def unique_object(pairs):
@@ -56,10 +73,10 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
 
 
-def bounded(argv, timeout, stage, input_bytes=None):
+def bounded(argv, timeout, stage, input_bytes=None, environment=None):
     """Bound both output streams and kill the inherited solver process group."""
     process = subprocess.Popen(argv, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, env=environment)
     captured = {process.stdout: bytearray(), process.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in captured:
@@ -162,9 +179,14 @@ def sexpressions(raw):
         reject('coverage', 'invalid_query', 'unclosed SMT command')
     if not roots or any(not isinstance(command, list) or not command for command in roots):
         reject('coverage', 'invalid_query', 'empty SMT session')
-    allowed = {'set-logic', 'declare-const', 'assert', 'check-sat'}
+    allowed = {'set-logic', 'declare-const', 'declare-fun', 'assert', 'check-sat'}
     if any(command[0] not in allowed for command in roots):
         reject('coverage', 'unsupported_session', 'only reviewed single-session commands are supported')
+    for command in roots:
+        if command[0] == 'declare-fun' and (len(command) != 4 or command[2] != []):
+            reject('coverage', 'unsupported_session', 'only zero-arity scalar declarations are supported')
+        if command[0] == 'declare-const' and len(command) != 3:
+            reject('coverage', 'unsupported_session', 'invalid scalar declaration')
     if roots[-1] != ['check-sat'] or sum(command[0] == 'check-sat' for command in roots) != 1:
         reject('coverage', 'unsupported_session', 'exactly one final check-sat is required')
     return roots
@@ -201,6 +223,26 @@ def audit(args):
         reject('binding', 'invalid_policy', 'unsupported policy schema/version')
     if not args.profile or policy.get('profile') != args.profile:
         reject('binding', 'profile_mismatch', 'requested reviewed model profile differs')
+    certs = Path(args.cert_dir).resolve(strict=True)
+    manifest_raw = read(certs / 'manifest.json')
+    manifest = decode(manifest_raw)
+    binding = manifest.get('source_binding')
+    if not isinstance(binding, dict) or digest(canonical(binding)) != policy.get('source_graph_sha256'):
+        reject('binding', 'source_graph_mismatch', 'signed input graph differs from reviewed policy')
+    entries = manifest.get('obligations')
+    if not isinstance(entries, list) or len(entries) > MAX_SITES:
+        reject('binding', 'resource_limit', 'manifest obligation count exceeds512')
+    preflight_bytes = 0
+    for entry in entries:
+        filename = entry.get('cert')
+        if (not isinstance(filename, str) or not filename.endswith('.smt2')
+                or any(character in filename for character in '/\\:')
+                or Path(filename).name != filename):
+            reject('binding', 'invalid_query', 'query must have a confined relative filename')
+        preflight_bytes += len(read(certs / filename, MAX_QUERY))
+        if preflight_bytes > 16 * MAX_QUERY:
+            reject('binding', 'resource_limit', 'total query bytes exceed16MiB')
+    read(Path(args.pubkey).resolve(strict=True))
     compiler = Path(args.rz).resolve(strict=True)
     compiler_hash = digest(read(compiler, 256 * 1024 * 1024))
     if compiler_hash != policy.get('compiler', {}).get('sha256'):
@@ -209,18 +251,22 @@ def audit(args):
     build_profile = policy['compiler'].get('build_profile')
     if code or not build_profile or ('  profile: ' + build_profile) not in output.decode().splitlines():
         reject('binding', 'build_profile_mismatch', 'actual build profile differs from policy')
-    certs = Path(args.cert_dir).resolve(strict=True)
-    manifest_raw = read(certs / 'manifest.json')
-    manifest = decode(manifest_raw)
-    binding = manifest.get('source_binding')
-    if not isinstance(binding, dict) or digest(canonical(binding)) != policy.get('source_graph_sha256'):
-        reject('binding', 'source_graph_mismatch', 'signed input graph differs from reviewed policy')
+    configured = shutil.which(os.environ.get('Z3_BINARY', 'z3'))
+    if not configured:
+        reject('binding', 'solver_unavailable', 'configured Z3_BINARY is unavailable')
+    solver = str(Path(configured).resolve(strict=True))
+    solver_hash = digest(read(solver, 256 * 1024 * 1024))
+    if solver_hash != policy.get('solver', {}).get('sha256'):
+        reject('binding', 'solver_hash_mismatch', 'actual configured solver differs from trusted policy')
+    environment = dict(os.environ, Z3_BINARY=solver)
     code, output, errors = bounded([str(compiler), 'verify-all', str(certs), '--source-root', str(Path(args.source_root).resolve(strict=True)),
-                                    '--pubkey', str(Path(args.pubkey).resolve(strict=True)), '--z3'], budget('authentication'), 'authentication')
+                                    '--pubkey', str(Path(args.pubkey).resolve(strict=True)), '--z3'], budget('authentication'), 'authentication', environment=environment)
     if code:
         reject('authentication', 'authentication_failed', (output + errors).decode(errors='replace')[-4096:])
-    if read(certs / 'manifest.json') != manifest_raw or digest(read(compiler, 256 * 1024 * 1024)) != compiler_hash:
-        reject('authentication', 'input_changed', 'manifest/compiler changed during verification')
+    if (read(certs / 'manifest.json') != manifest_raw
+            or digest(read(compiler, 256 * 1024 * 1024)) != compiler_hash
+            or digest(read(solver, 256 * 1024 * 1024)) != solver_hash):
+        reject('authentication', 'input_changed', 'manifest/compiler/solver changed during verification')
     sites = policy.get('sites')
     if not isinstance(sites, list) or not 1 <= len(sites) <= MAX_SITES:
         reject('coverage', 'invalid_policy', 'expected1..512explicit sites')
@@ -260,9 +306,6 @@ def audit(args):
             reject('coverage', 'duplicate_obligation', key)
         actual[key] = obligation
     expected, matched = set(), []
-    solver = shutil.which(os.environ.get('Z3_BINARY', 'z3'))
-    if not solver:
-        reject('authentication', 'solver_unavailable', 'configured solver is unavailable')
     query_bytes = 0
     for identity, site in requested:
         key = reference(site.get('obligation'))
@@ -291,23 +334,52 @@ def audit(args):
         commands = sexpressions(raw)
         if commands != site.get('commands'):
             reject('coverage', 'checkpoint_mismatch', identity)
-        assertions = [index for index, command in enumerate(commands) if command[0] == 'assert']
-        if not assertions or commands[assertions[-1]][1][:1] != ['not']:
-            reject('coverage', 'invalid_checkpoint', 'last assertion must be reviewed negated goal')
-        antecedent = [command for index, command in enumerate(commands) if index != assertions[-1]]
+        feasibility = site.get('feasibility_commands')
+        if not isinstance(feasibility, list):
+            reject('coverage', 'invalid_feasibility_checkpoint', 'independently reviewed feasibility commands are required')
+        feasibility_raw = ('\n'.join(render(command) for command in feasibility) + '\n').encode()
+        if len(feasibility_raw) > MAX_QUERY or sexpressions(feasibility_raw) != feasibility:
+            reject('coverage', 'invalid_feasibility_checkpoint', 'invalid bounded feasibility session')
+        declarations = lambda session: [command for command in session if command[0] in ('set-logic', 'declare-const', 'declare-fun')]
+        if declarations(commands) != declarations(feasibility):
+            reject('coverage', 'invalid_feasibility_checkpoint', 'full query and feasibility checkpoint must share exact theory/symbol declarations')
         code, result, errors = bounded([solver, '-in', '-smt2'], budget('coverage'), 'coverage',
-                                       ('\n'.join(render(command) for command in antecedent) + '\n').encode())
+                                       feasibility_raw, environment=environment)
         if code or errors or result.strip() != b'sat':
             reject('coverage', 'infeasible_obligation' if not code and not errors and result.strip() == b'unsat' else 'unresolved_feasibility', identity)
-        matched.append({'site': dict(zip(('source', 'declaration', 'clause', 'path'), identity)), 'obligation': key, 'query_sha256': digest(raw), 'antecedent': 'sat'})
+        matched.append({'site': dict(zip(('source', 'declaration', 'clause', 'path'), identity)), 'obligation': key, 'query_sha256': digest(raw), 'feasibility_checkpoint_sha256': digest(canonical(feasibility)), 'reviewed_feasibility': 'sat'})
+    if digest(read(solver, 256 * 1024 * 1024)) != solver_hash:
+        reject('coverage', 'input_changed', 'solver changed during feasibility checks')
+    auditor_hash = digest(read(Path(__file__).resolve()))
+    budget('coverage')
     extras = [key for key in actual if key[1] == 'ensures_implementation' and key not in expected]
     if extras:
         reject('coverage', 'extra_obligation', extras)
     return {'stage': 'coverage', 'code': 'covered', 'claim': 'only the supplied independently reviewed policy; not automatic source completeness',
-            'policy_sha256': args.policy_sha256, 'compiler_sha256': compiler_hash, 'profile': args.profile,
-            'source_graph_sha256': policy['source_graph_sha256'], 'solver_sha256': digest(read(solver, 256 * 1024 * 1024)),
+            'auditor_sha256': auditor_hash, 'policy_sha256': args.policy_sha256, 'compiler_sha256': compiler_hash, 'profile': args.profile,
+            'source_graph_sha256': policy['source_graph_sha256'], 'solver_sha256': solver_hash,
             'sites': matched, 'unselected': unselected,
             'auxiliary_nonimplementation_obligations': sum(key[1] != 'ensures_implementation' for key in actual)}
+
+
+def with_deadline(args):
+    if (os.name != 'posix' or threading.current_thread() is not threading.main_thread()
+            or not 0.1 <= args.timeout_seconds <= 60):
+        reject('binding', 'unsupported_environment', 'POSIX main thread and timeout0.1..60seconds required')
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+    def expired(_signal, _frame):
+        reject('binding', 'audit_timeout', 'outer audit deadline exceeded')
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, args.timeout_seconds)
+    try:
+        return audit(args)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, max(0.000001, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
 
 
 def main():
@@ -319,7 +391,7 @@ def main():
         parser.add_argument('--' + flag, required=True)
     parser.add_argument('--timeout-seconds', type=float, default=30)
     try:
-        report = audit(parser.parse_args())
+        report = with_deadline(parser.parse_args())
     except Rejected as error:
         report = {'stage': error.stage, 'code': error.code, 'detail': error.detail}
     except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError, subprocess.SubprocessError) as error:

@@ -1,0 +1,22 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'hardening_fifo_policy_is_rejected_without_opening_it' (6863) panicked at resilient/tests/proof_coverage_audit.rs:536:5:
+assertion `left != right` failed: auditor hung on policy FIFO: Output { status: ExitStatus(unix_wait_status(31744)), stdout: "", stderr: "" }
+  left: Some(124)
+ right: Some(124)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hardening_fifo_policy_is_rejected_without_opening_it ... FAILED
+
+failures:
+
+failures:
+    hardening_fifo_policy_is_rejected_without_opening_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 4.18s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/hardening_fifo_policy_is_rejected_without_opening_it
+E2E evidence verified: 8a087e4d0eaa1433ad7c5719399f100c9dd665fdce9f9a0fbd16d231f856179c

@@ -1,0 +1,22 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'integration_zeroarity_bv_branch_checkpoints_are_supported' (6991) panicked at resilient/tests/proof_coverage_audit.rs:114:9:
+assertion `left == right` failed: {"code":"unsupported_session","detail":"only reviewed single-session commands are supported","stage":"coverage"}
+  left: String("unsupported_session")
+ right: "covered"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test integration_zeroarity_bv_branch_checkpoints_are_supported ... FAILED
+
+failures:
+
+failures:
+    integration_zeroarity_bv_branch_checkpoints_are_supported
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.42s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/integration_zeroarity_bv_branch_checkpoints_are_supported
+E2E evidence verified: ff644480cc197239242686658dce56e3f26c5d8f83110bdd8c85807ab53bd9e5

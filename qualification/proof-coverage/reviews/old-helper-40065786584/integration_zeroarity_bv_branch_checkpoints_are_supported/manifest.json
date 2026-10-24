@@ -1,0 +1,53 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "proof_coverage_audit",
+    "integration_zeroarity_bv_branch_checkpoints_are_supported",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "da631bf5502d9e42db2a9374f230748056d0490795dc2cad8b9b251c047ee3d0"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/proof_coverage_audit.rs",
+      "sha256": "fb6784849f97b759565deec3ad726d3fb550dc180066891b205e0383c8a35a03"
+    }
+  ],
+  "result": {
+    "exit_code": 101,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "failed"
+      },
+      {
+        "name": "integration_zeroarity_bv_branch_checkpoints_are_supported",
+        "status": "failed"
+      }
+    ],
+    "status": "failed"
+  },
+  "run_id": "ff644480cc197239242686658dce56e3f26c5d8f83110bdd8c85807ab53bd9e5",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "3efcbaf7ba1c61959dbd07e396d8599bbf6b4116",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}

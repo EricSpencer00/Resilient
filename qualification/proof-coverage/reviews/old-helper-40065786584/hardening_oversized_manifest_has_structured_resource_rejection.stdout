@@ -1,0 +1,20 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'hardening_oversized_manifest_has_structured_resource_rejection' (6950) panicked at resilient/tests/proof_coverage_audit.rs:590:29:
+structured resource rejection required: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "Traceback (most recent call last):\n  File \"/home/runner/work/Resilient/Resilient/resilient/../agent-scripts/audit-proof-coverage.py\", line 332, in <module>\n    sys.exit(main())\n             ~~~~^^\n  File \"/home/runner/work/Resilient/Resilient/resilient/../agent-scripts/audit-proof-coverage.py\", line 327, in main\n    print(json.dumps(report, sort_keys=True))\n          ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/json/__init__.py\", line 242, in dumps\n    **kw).encode(obj)\n          ~~~~~~^^^^^\n  File \"/usr/lib/python3.14/json/encoder.py\", line 202, in encode\n    chunks = self.iterencode(o, _one_shot=True)\n  File \"/usr/lib/python3.14/json/encoder.py\", line 263, in iterencode\n    return _iterencode(o, 0)\n  File \"/usr/lib/python3.14/json/encoder.py\", line 182, in default\n    raise TypeError(f'Object of type {o.__class__.__name__} '\n                    f'is not JSON serializable')\nTypeError: Object of type PosixPath is not JSON serializable\nwhen serializing dict item 'detail'\n" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hardening_oversized_manifest_has_structured_resource_rejection ... FAILED
+
+failures:
+
+failures:
+    hardening_oversized_manifest_has_structured_resource_rejection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.38s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/hardening_oversized_manifest_has_structured_resource_rejection
+E2E evidence verified: e11fdacf028596f73ad6fa0b89072661be60634ac012e0253dcdb50fc5054f74
