@@ -38,6 +38,7 @@ jobs:
         run: |
           git fetch --no-tags origin "$CANDIDATE"
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_binding.rs" > resilient/tests/machine_arithmetic_binding.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_boundaries.rs" > resilient/tests/machine_arithmetic_boundaries.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -69,7 +70,7 @@ jobs:
           MACHINE_ARITHMETIC_RECORDS: ${{ runner.temp }}/machine-arithmetic-qualification/raw
         run: |
           unexpected=0
-          for suite in machine_arithmetic_binding; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
               set +e
               python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
@@ -80,7 +81,7 @@ jobs:
               set -e
               python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
               expected=passed
-              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available ]]; then
+              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then
                 expected=failed
               fi
               printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
@@ -120,9 +121,9 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}
         run: |
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
-          for suite in machine_arithmetic_binding; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
-              if [[ "$test" == declared_contract_behavior_remains_available ]]; then continue; fi
+              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
                 --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
                 --output "$EVIDENCE_ROOT/attestations/$test"
