@@ -293,7 +293,7 @@ pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -
 /// ```
 pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
     let (arr, n) = match args {
-        [Value::Array(a), Value::Int(n)] => (a.clone(), *n),
+        [Value::Array(a), Value::Int(n)] => (a, *n),
         [Value::Array(_), n] => {
             return Err(format!(
                 "array_windows: second argument must be an int, got {n}"
@@ -731,6 +731,55 @@ println(ws);"#);
     fn windows_budget_preserves_small_and_empty_inputs() {
         assert_eq!(super::window_count_within_budget(5, 3).unwrap(), 3);
         assert_eq!(super::window_count_within_budget(2, 5).unwrap(), 0);
+    }
+
+    #[test]
+    fn windows_budget_accepts_exact_cap() {
+        // 10_000_000 windows of 1 == cap exactly; 1_000 windows of 10_000 == cap exactly.
+        assert_eq!(
+            super::window_count_within_budget(10_000_000, 1).unwrap(),
+            10_000_000
+        );
+        assert_eq!(
+            super::window_count_within_budget(10_999, 10_000).unwrap(),
+            1_000
+        );
+    }
+
+    #[test]
+    fn windows_budget_rejects_one_past_cap() {
+        // 10_000_001 * 1 is one element over the cap.
+        let err = super::window_count_within_budget(10_000_001, 1).unwrap_err();
+        assert!(err.contains("10000001"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn windows_builtin_rejects_quadratic_expansion_without_building_windows() {
+        // 3_163 windows of 3_163 elements ≈ 10.0M, just over the cap.
+        let arr = crate::Value::Array(vec![crate::Value::Int(0); 6_325]);
+        let err = super::builtin_array_windows(&[arr, crate::Value::Int(3_163)]).unwrap_err();
+        assert!(err.contains("max 10000000"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn windows_builtin_accepts_bounded_expansion_at_cap() {
+        // 1_000 windows of 10_000 elements == exactly the cap.
+        let arr = crate::Value::Array(vec![crate::Value::Int(7); 10_999]);
+        let out = super::builtin_array_windows(&[arr, crate::Value::Int(10_000)]).unwrap();
+        match out {
+            crate::Value::Array(ws) => {
+                assert_eq!(ws.len(), 1_000);
+                assert!(matches!(&ws[0], crate::Value::Array(w) if w.len() == 10_000));
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn windows_builtin_empty_when_window_exceeds_input_at_any_size() {
+        let arr = crate::Value::Array(vec![crate::Value::Int(1); 4]);
+        let out = super::builtin_array_windows(&[arr, crate::Value::Int(i64::MAX)]).unwrap();
+        assert!(matches!(out, crate::Value::Array(ws) if ws.is_empty()));
     }
 
     // ── array_take_while / array_drop_while ───────────────────────────────────
