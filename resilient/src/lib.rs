@@ -31806,6 +31806,12 @@ fn execute_file(
                 // is visually underlined.
                 eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
                 if typecheck_strict {
+                    if let Some(path) = emit_contract_cert {
+                        let diagnostic = contract_certificate::emit_diagnostic(&program, filename);
+                        std::fs::write(path, diagnostic).map_err(|error| {
+                            format!("could not write failed-typecheck diagnostics: {error}")
+                        })?;
+                    }
                     return Err(format!("Type check failed: {}", e));
                 }
                 // RES-1088: soft mode — surface the diagnostic but
