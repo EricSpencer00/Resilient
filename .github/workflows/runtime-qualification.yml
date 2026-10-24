@@ -44,7 +44,7 @@ jobs:
             --input resilient-runtime/src/sink.rs \
             --input resilient-runtime/src/live_telemetry.rs \
             --input resilient-runtime/tests/global_hook_serialization.rs -- \
-            cargo test --manifest-path resilient-runtime/Cargo.toml --locked -- --test-threads="$THREADS"
+            cargo test --manifest-path resilient-runtime/Cargo.toml --locked --features vm -- --test-threads="$THREADS"
       - name: Verify evidence after success or failure
         if: always()
         run: python3 agent-scripts/e2e-evidence.py verify "${{ runner.temp }}/runtime-evidence"
