@@ -33107,11 +33107,11 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
         }
     }
 
-    if let Some(root) = source_root {
-        if let Err(error) = proof_sources::verify(&manifest_text, &root) {
-            eprintln!("Error: {error}");
-            return Some(1);
-        }
+    if let Some(root) = source_root
+        && let Err(error) = proof_sources::verify(&manifest_text, &root)
+    {
+        eprintln!("Error: {error}");
+        return Some(1);
     }
 
     if run_z3 && manifest.obligations.is_empty() {
