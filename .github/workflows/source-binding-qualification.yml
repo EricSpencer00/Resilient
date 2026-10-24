@@ -1,0 +1,126 @@
+name: Source binding qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/lib.rs'
+      - 'resilient/src/cert_sign.rs'
+      - 'resilient/src/proof_sources.rs'
+      - 'resilient/src/imports.rs'
+      - 'resilient/tests/source_binding.rs'
+      - '.github/workflows/source-binding-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-binding-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: source input binding (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && '94630f8f45a5b8cd070afa7437ff715a6b293e5e' || github.sha }}
+          fetch-depth: 0
+      - name: Install the same regression input on the production baseline
+        if: matrix.phase == 'baseline'
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin "$CANDIDATE"
+          git show "$CANDIDATE:resilient/tests/source_binding.rs" > resilient/tests/source_binding.rs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: source-binding-qualification
+      - name: Record solver identity
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/source-binding-qualification
+        run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          binary = pathlib.Path(shutil.which('z3'))
+          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
+                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/source-binding-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in signed_inventory_binds_all_parsed_inputs identical_relocated_sources_verify changed_entry_is_rejected changed_import_is_rejected missing_inventory_is_rejected unsigned_inventory_is_rejected malformed_inventory_is_rejected duplicate_inventory_file_is_rejected missing_import_edge_is_rejected unreachable_inventory_file_is_rejected traversal_inventory_path_is_rejected symlink_import_outside_root_is_rejected_before_read cache_and_no_cache_emit_identical_binding legacy_replay_remains_compatible_without_binding; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/source_binding.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test source_binding "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" != legacy_replay_remains_compatible_without_binding ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-binding-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/source-binding-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-binding-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-binding-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
+          for test in signed_inventory_binds_all_parsed_inputs identical_relocated_sources_verify changed_entry_is_rejected changed_import_is_rejected missing_inventory_is_rejected unsigned_inventory_is_rejected malformed_inventory_is_rejected duplicate_inventory_file_is_rejected missing_import_edge_is_rejected unreachable_inventory_file_is_rejected traversal_inventory_path_is_rejected symlink_import_outside_root_is_rejected_before_read cache_and_no_cache_emit_identical_binding; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-binding-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
