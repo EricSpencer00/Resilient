@@ -1,0 +1,12 @@
+{
+  "schema": "resilient-correspondence-expectation-disposition",
+  "version": 1,
+  "fixture": "negative_try_overapprox.rz",
+  "source_sha256": "c178a18b37741c21502bdb92ee6a7ae31b92ca380e50c9c6351a5e5867638cba",
+  "original_expectations_sha256": "9d05e98dac577bef011767a09d323c0f64ebceb0292b924cc474987ccb84fc47",
+  "original_hard_refutation_expectation": "invalid; retained unchanged as historical authored expectation, not acceptance criterion",
+  "effective_disposition": "observation-only in this capture suite; valid source should compile and return x on actual execution, independently covered by arithmetic lane",
+  "reason": "Pure try body returns x without throwing. Handler return0 is an overapproximation alternative, not an established feasible runtime path. SAT in that overapproximation does not justify hard source violation. UNSAT over all alternatives can still justify a conservative proof.",
+  "review": "Root source-only technical finding before hosted confirmation; model not independently established; no human/organizational independence claim",
+  "status": "source prediction; actual hosted confirmation and production correction owned by arithmetic lane"
+}

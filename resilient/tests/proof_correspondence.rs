@@ -203,7 +203,15 @@ fn capture_refutation(name: &str) {
     let solver_path = solver_path.trim();
     let solver_version = Command::new(solver_path).arg("-version").output().unwrap();
     assert!(solver_version.status.success());
-    let record = json!({"schema":"resilient-correspondence-refutation-capture-v1", "fixture":name, "claim":"source/model negative control only; try handler reachability and full correspondence not established", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "solver":{"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable only; complete linkage/environment not established"}, "exit":result.status.code(), "diagnostic":diagnostic});
+    let disposition = if name == "try_overapprox" {
+        serde_json::from_slice::<Value>(
+            &std::fs::read(fixtures.join("try-disposition-review.json")).unwrap(),
+        )
+        .unwrap()
+    } else {
+        json!({"effective_disposition":"source-input counterexample requires specific implementation refutation"})
+    };
+    let record = json!({"schema":"resilient-correspondence-refutation-capture-v1", "expectation_disposition":disposition, "fixture":name, "claim":"source/model negative control only; try handler reachability and full correspondence not established", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "solver":{"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable only; complete linkage/environment not established"}, "exit":result.status.code(), "diagnostic":diagnostic});
     let raw = serde_json::to_vec(&record).unwrap();
     assert!(raw.len() < 256 * 1024, "emitted record bound only");
     let mut stdout = std::io::stdout().lock();
@@ -213,6 +221,9 @@ fn capture_refutation(name: &str) {
     stdout.write_all(&raw).unwrap();
     stdout.write_all(b"\n").unwrap();
     drop(stdout);
+    if name == "try_overapprox" {
+        return; // Output observation only; the old hard-refutation expectation was invalid.
+    }
     assert!(
         !result.status.success(),
         "wrong return was accepted for {name}"
@@ -240,6 +251,6 @@ fn captures_match_arm_wrong_return_refutation() {
     capture_refutation("first_match_guarded");
 }
 #[test]
-fn captures_try_wrong_handler_conservative_refutation() {
+fn observes_try_handler_overapproximation_disposition() {
     capture_refutation("try_overapprox");
 }
