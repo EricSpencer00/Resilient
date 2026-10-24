@@ -489,3 +489,103 @@ fn hardening_embedded_infeasible_entry_is_not_reachable_credit() {
     ]);
     f.audit(&p, "infeasible_obligation");
 }
+
+fn invoke_with_watchdog(f: &Fixture, policy_hash: &str) -> Output {
+    Command::new("timeout")
+        .args(["--kill-after=1s", "4s", "python3"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../agent-scripts/audit-proof-coverage.py"))
+        .arg("--rz")
+        .arg(env!("CARGO_BIN_EXE_rz"))
+        .arg("--cert-dir")
+        .arg(f.root.join("certs"))
+        .arg("--source-root")
+        .arg(f.root.join("inputs"))
+        .arg("--pubkey")
+        .arg(f.root.join("public.pem"))
+        .arg("--policy")
+        .arg(f.root.join("policy.json"))
+        .arg("--policy-sha256")
+        .arg(policy_hash)
+        .args([
+            "--profile",
+            "reviewed-integer-equality-v1",
+            "--timeout-seconds",
+            "1",
+        ])
+        .env("Z3_BINARY", "z3")
+        .output()
+        .unwrap()
+}
+#[test]
+fn hardening_fifo_policy_is_rejected_without_opening_it() {
+    let f = branch();
+    let bytes = canonical(&f.policy(2));
+    let path = f.root.join("policy.json");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let result = invoke_with_watchdog(&f, &hash(&bytes));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(path, bytes).unwrap();
+    assert_ne!(
+        result.status.code(),
+        Some(124),
+        "auditor hung on policy FIFO: {result:?}"
+    );
+    let report: Value = serde_json::from_slice(&result.stdout)
+        .unwrap_or_else(|_| panic!("structured FIFO rejection required: {result:?}"));
+    assert_eq!(report["code"], "non_regular_input", "{report}");
+    assert!(!result.status.success());
+}
+#[test]
+fn hardening_fifo_query_is_rejected_before_replay() {
+    let f = branch();
+    let bytes = canonical(&f.policy(2));
+    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
+    let manifest = f.manifest();
+    let path = f
+        .root
+        .join("certs")
+        .join(manifest["obligations"][0]["cert"].as_str().unwrap());
+    let query = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let result = invoke_with_watchdog(&f, &hash(&bytes));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(path, query).unwrap();
+    assert_ne!(
+        result.status.code(),
+        Some(124),
+        "auditor hung on query FIFO: {result:?}"
+    );
+    let report: Value = serde_json::from_slice(&result.stdout)
+        .unwrap_or_else(|_| panic!("structured FIFO rejection required: {result:?}"));
+    assert_eq!(report["stage"], "binding", "{report}");
+    assert_eq!(report["code"], "non_regular_input", "{report}");
+    assert!(!result.status.success());
+}
+#[test]
+fn hardening_oversized_manifest_has_structured_resource_rejection() {
+    let f = branch();
+    let bytes = canonical(&f.policy(2));
+    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
+    let path = f.root.join("certs/manifest.json");
+    let mut manifest = std::fs::read(&path).unwrap();
+    manifest.resize(2 * 1024 * 1024 + 1, b' ');
+    std::fs::write(path, manifest).unwrap();
+    let result = invoke_with_watchdog(&f, &hash(&bytes));
+    let report: Value = serde_json::from_slice(&result.stdout)
+        .unwrap_or_else(|_| panic!("structured resource rejection required: {result:?}"));
+    assert_eq!(report["code"], "resource_limit", "{report}");
+    assert!(!result.status.success());
+}
