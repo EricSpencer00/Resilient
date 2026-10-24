@@ -1,0 +1,87 @@
+name: VM requires qualification
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/compiler.rs'
+      - 'resilient/src/compiler/requires_entry.rs'
+      - 'resilient/src/bytecode.rs'
+      - 'resilient/src/vm.rs'
+      - 'resilient/tests/vm_requires_entry.rs'
+      - '.github/workflows/vm-requires-qualification.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    name: VM requires (${{ matrix.phase }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          repository: EricSpencer00/Resilient
+          ref: ${{ matrix.phase == 'baseline' && '9f1d870acc5d5ba963a7e27d522e60aa70f7213e' || github.sha }}
+          path: subject
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+      - name: Install hosted solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y z3 libz3-dev clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: subject/resilient
+          key: vm-requires-z3
+      - name: Overlay the exact frozen NEW suite
+        run: |
+          cp candidate/resilient/tests/vm_requires_entry.rs subject/resilient/tests/vm_requires_entry.rs
+          mkdir -p "${{ runner.temp }}/vm-requires-evidence"
+          sha256sum subject/resilient/tests/vm_requires_entry.rs > "${{ runner.temp }}/vm-requires-evidence/suite.sha256"
+      - name: Retain each actual CLI regression and control
+        working-directory: subject
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/vm-requires-evidence
+          VM_REQUIRES_RECORDS: ${{ runner.temp }}/vm-requires-evidence/public-cli
+        run: |
+          cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --test vm_requires_entry --no-run
+          cargo build --manifest-path resilient/Cargo.toml --locked --features z3 --bin rz
+          ./resilient/target/debug/rz --version --verbose > "$EVIDENCE_ROOT/compiler-version.txt"
+          sha256sum resilient/target/debug/rz > "$EVIDENCE_ROOT/compiler.sha256"
+          git rev-parse HEAD HEAD^{tree} > "$EVIDENCE_ROOT/source.txt"
+          z3 --version > "$EVIDENCE_ROOT/solver-version.txt"
+          failed=0
+          for test in $(sed -n 's/^fn \([a-z_]*\)() {.*/\1/p' resilient/tests/vm_requires_entry.rs); do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/tests/$test" \
+              --input resilient/tests/vm_requires_entry.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --test vm_requires_entry "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/tests/$test"
+            expected=0
+            if [ "$PHASE" = baseline ]; then
+              case "$test" in
+                valid_indirect_and_recursive_calls_remain_valid|short_circuit_requires_does_not_evaluate_unreachable_rhs|valid_captured_and_module_entry_controls) ;;
+                *) expected=1 ;;
+              esac
+            fi
+            printf '%s actual=%s expected_failure=%s\n' "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
+            if { [ "$expected" -eq 0 ] && [ "$result" -ne 0 ]; } || { [ "$expected" -eq 1 ] && [ "$result" -eq 0 ]; }; then failed=1; fi
+          done
+          cat "$EVIDENCE_ROOT/outcomes.txt"
+          test "$(wc -l < "$EVIDENCE_ROOT/outcomes.txt")" -eq 15
+          test "$failed" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vm-requires-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/vm-requires-evidence
+          retention-days: 90
