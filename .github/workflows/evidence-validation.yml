@@ -72,6 +72,76 @@ jobs:
                   tree = subprocess.check_output(['git', 'write-tree'], env=env, text=True).strip()
                   assert tree == source['tree'], (source['label'], tree)
           PYCODE
+      - name: Verify retained source-binding regression records
+        run: |
+          (cd qualification/hosted-records/2026-10-source-binding && sha256sum -c SHA256SUMS)
+          python3 - <<'PYCODE'
+          import hashlib, json, os, pathlib, subprocess, tempfile
+          archive = pathlib.Path('qualification/hosted-records/2026-10-source-binding')
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'retained-source-binding'
+          assert not root.exists(), 'record materialization requires a fresh directory'
+          root.mkdir()
+          records = json.loads((archive / 'records.json').read_text())
+          assert records['schema'] == 'resilient-retained-record-files' and records['schema_version'] == 1
+          assert len(records['files']) == 265
+          seen = set()
+          for record in records['files']:
+              relative = pathlib.PurePosixPath(record['path'])
+              assert not relative.is_absolute() and '..' not in relative.parts
+              assert str(relative) == record['path'] and '\\' not in record['path']
+              assert relative.parts[0] in ('baseline', 'final', 'attestations')
+              path = root.joinpath(*relative.parts)
+              assert path.resolve().is_relative_to(root.resolve())
+              assert path not in seen, record['path']
+              seen.add(path)
+              raw = record['text'].encode('utf-8')
+              assert hashlib.sha256(raw).hexdigest() == record['sha256'], record['path']
+              path.parent.mkdir(parents=True, exist_ok=True)
+              with path.open('xb') as output:
+                  output.write(raw)
+          manifests = sorted(root.rglob('manifest.json'))
+          assert len(manifests) == 48
+          for manifest in manifests:
+              subprocess.run(['python3', 'agent-scripts/e2e-evidence.py', 'verify', str(manifest.parent)], check=True)
+          assert (root / 'baseline/solver.json').read_bytes() == (root / 'final/solver.json').read_bytes()
+          attestations = sorted((root / 'attestations').glob('*/attestation.json'))
+          assert len(attestations) == 23
+          for attestation in attestations:
+              test = attestation.parent.name
+              subprocess.run(['python3', 'agent-scripts/e2e-evidence.py', 'verify-attestation', str(attestation.parent),
+                              '--baseline', str(root / 'baseline' / test), '--final', str(root / 'final' / test)], check=True)
+          sources = json.loads((archive / 'sources.json').read_text())
+          for source in sources:
+              patch = archive / source['patch']
+              assert hashlib.sha256(patch.read_bytes()).hexdigest() == source['patch_sha256']
+              with tempfile.TemporaryDirectory() as temporary:
+                  env = dict(os.environ, GIT_INDEX_FILE=str(pathlib.Path(temporary) / 'index'))
+                  subprocess.run(['git', 'read-tree', source['base']], env=env, check=True)
+                  subprocess.run(['git', 'apply', '--cached', str(patch)], env=env, check=True)
+                  tree = subprocess.check_output(['git', 'write-tree'], env=env, text=True).strip()
+                  assert tree == source['tree'], (source['label'], tree)
+          for phase, source in zip(('baseline', 'final'), sources):
+              manifests = sorted((root / phase).glob('*/manifest.json'))
+              assert len(manifests) == 24
+              input_hashes = {}
+              for path in manifests:
+                  manifest = json.loads(path.read_text())
+                  control = path.parent.name == 'legacy_replay_remains_compatible_without_binding'
+                  expected = 'passed' if phase == 'final' or control else 'failed'
+                  assert manifest['result']['status'] == expected
+                  assert manifest['source']['commit'] == source.get('tested_revision', source['base'])
+                  assert manifest['source']['dirty'] == (phase == 'baseline')
+                  assert manifest['source']['worktree_sha256'] == source.get('worktree_sha256')
+                  for declared in manifest['inputs']:
+                      blob = subprocess.check_output(['git', 'show', source['tree'] + ':' + declared['path']])
+                      assert hashlib.sha256(blob).hexdigest() == declared['sha256']
+                      input_hashes[declared['path']] = declared['sha256']
+              if phase == 'baseline':
+                  state = {'tracked_diff_sha256': hashlib.sha256(b'').hexdigest(),
+                           'untracked': [{'path': path, 'sha256': digest} for path, digest in sorted(input_hashes.items())]}
+                  fingerprint = hashlib.sha256((json.dumps(state, sort_keys=True, indent=2) + '\n').encode()).hexdigest()
+                  assert fingerprint == source['worktree_sha256']
+          PYCODE
       - name: Validate the populated host preparation dossier
         run: |
           (cd qualification/host-cli-2026-10 && sha256sum -c SHA256SUMS)

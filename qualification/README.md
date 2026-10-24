@@ -91,3 +91,9 @@ hosted test outcomes to a retained debug compiler, exact source/environment,
 seven operational requirements, failure analysis and four populated preparation
 profiles. Independent/project acceptance remains pending. Its source-bound
 restrictions and original incomplete-archive disposition are retained.
+
+The [source-input binding record](hosted-records/2026-10-source-binding/README.md)
+retains 24 new CLI cases on baseline and candidate, with 23 verified red-green
+attestations and a passing legacy control. The binary-baseline workflow now
+includes both source-binding suites with the seven earlier suites and records
+raw test output, compiler version and resolved dynamic-library identities.

@@ -1,0 +1,1596 @@
+diff --git a/.github/workflows/source-binding-qualification.yml b/.github/workflows/source-binding-qualification.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..6361cc90fca96c30546a999f0b1b8c37dbf55dc7
+--- /dev/null
++++ b/.github/workflows/source-binding-qualification.yml
+@@ -0,0 +1,140 @@
++name: Source binding qualification
++
++on:
++  pull_request:
++    paths:
++      - 'resilient/src/lib.rs'
++      - 'resilient/src/cert_sign.rs'
++      - 'resilient/src/proof_sources.rs'
++      - 'resilient/src/imports.rs'
++      - 'resilient/tests/source_binding.rs'
++      - 'resilient/tests/source_binding_graph.rs'
++      - '.github/workflows/source-binding-qualification.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: source-binding-qualification-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  evidence:
++    name: source input binding (${{ matrix.phase }})
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    strategy:
++      fail-fast: false
++      matrix:
++        phase: [baseline, final]
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ matrix.phase == 'baseline' && '94630f8f45a5b8cd070afa7437ff715a6b293e5e' || github.sha }}
++          fetch-depth: 0
++      - name: Install the same regression input on the production baseline
++        if: matrix.phase == 'baseline'
++        env:
++          CANDIDATE: ${{ github.sha }}
++        run: |
++          git fetch --no-tags origin "$CANDIDATE"
++          git show "$CANDIDATE:resilient/tests/source_binding.rs" > resilient/tests/source_binding.rs
++          git show "$CANDIDATE:resilient/tests/source_binding_graph.rs" > resilient/tests/source_binding_graph.rs
++      - uses: dtolnay/rust-toolchain@stable
++        with:
++          toolchain: 1.99.1
++      - name: Install solver dependencies
++        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: resilient
++          key: source-binding-qualification
++      - name: Record solver identity
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}/source-binding-qualification
++        run: |
++          mkdir -p "$EVIDENCE_ROOT"
++          python3 - <<'PY'
++          import hashlib, json, os, pathlib, shutil, subprocess
++          binary = pathlib.Path(shutil.which('z3'))
++          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
++                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
++                    'libz3_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted({p.resolve() for p in pathlib.Path('/usr/lib/x86_64-linux-gnu').glob('libz3.so*')})}}
++          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
++          PY
++      - name: Record each regression and its control
++        env:
++          PHASE: ${{ matrix.phase }}
++          EVIDENCE_ROOT: ${{ runner.temp }}/source-binding-qualification
++          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
++          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
++        run: |
++          unexpected=0
++          for suite in source_binding source_binding_graph; do
++            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
++              set +e
++              python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
++                --input "resilient/tests/$suite.rs" -- \
++                cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
++                  --test "$suite" "$test" -- --exact --nocapture
++              result=$?
++              set -e
++              python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
++              expected=passed
++              if [[ "$PHASE" == baseline && "$test" != legacy_replay_remains_compatible_without_binding ]]; then
++                expected=failed
++              fi
++              printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
++              if [[ "$expected" == failed && "$result" -eq 0 ]] || [[ "$expected" == passed && "$result" -ne 0 ]]; then
++                unexpected=$((unexpected + 1))
++              fi
++            done
++          done
++          cat "$EVIDENCE_ROOT/outcomes.txt" >> "$GITHUB_STEP_SUMMARY"
++          test "$unexpected" -eq 0
++      - name: Retain source-bound records
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: source-binding-${{ matrix.phase }}-${{ github.sha }}
++          path: ${{ runner.temp }}/source-binding-qualification
++          retention-days: 90
++          if-no-files-found: error
++
++  attest:
++    name: verify replay red-green evidence
++    needs: evidence
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/download-artifact@v4
++        with:
++          name: source-binding-baseline-${{ github.sha }}
++          path: ${{ runner.temp }}/baseline
++      - uses: actions/download-artifact@v4
++        with:
++          name: source-binding-final-${{ github.sha }}
++          path: ${{ runner.temp }}/final
++      - name: Verify paired evidence
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}
++        run: |
++          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
++          for suite in source_binding source_binding_graph; do
++            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
++              if [[ "$test" == legacy_replay_remains_compatible_without_binding ]]; then continue; fi
++              python3 agent-scripts/e2e-evidence.py attest --test "$test" \
++                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
++                --output "$EVIDENCE_ROOT/attestations/$test"
++              python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
++                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
++            done
++          done
++      - uses: actions/upload-artifact@v4
++        with:
++          name: source-binding-attestations-${{ github.sha }}
++          path: ${{ runner.temp }}/attestations
++          retention-days: 90
++          if-no-files-found: error
+diff --git a/qualification/source-binding/README.md b/qualification/source-binding/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc7965e566c024438f104e5079a6b130fc894aeb
+--- /dev/null
++++ b/qualification/source-binding/README.md
+@@ -0,0 +1,46 @@
++# Authenticated source inputs
++
++`rz verify-all certs/ --source-root snapshot/ --pubkey public.pem --z3`
++authenticates the manifest signature, checks the complete frozen source-input
++inventory, then replays certificates. The new flag implies manifest signature
++verification. Legacy verification without this flag keeps its existing behavior.
++
++Certificate emission records SHA-256 and byte length from each exact buffer
++passed to the entry parser or import parser. It signs the entry, file inventory,
++resolved import edges, and builtin module declarations inside `manifest.json`.
++This capture is independent of the incremental compilation cache, including
++`--no-cache`. A file changing between repeated parsing operations is rejected.
++
++The source root is the common canonical ancestor of the entry and imported
++files at emission. Inventory paths are relative to that root. Supply the
++corresponding root of an identical relocated tree to verification; preserve its
++relative directory structure. Absolute paths and parent traversal in the
++inventory are rejected.
++
++Verification parses the source snapshots and checks every import against the
++signed resolution graph, including transitive imports, then checks complete
++file/edge/builtin reachability. It never executes the program, invokes package
++resolution, runs Git, downloads dependencies, or materializes caches. The graph
++freezes the producer's resolved translation unit: this is not evidence that the
++current package manifest, lockfile or registry configuration would resolve the
++same dependencies. Those configuration files are not independently bound by
++this inventory. Builtin modules are implemented by the compiler; bind the
++compiler executable and its libraries separately in the release evidence.
++
++Use a stable, controlled source snapshot. Canonical containment, regular-file
++checks and size checks occur before source reads, but filesystem name checks
++and file opens are not atomic against concurrent filesystem or symlink changes.
++This mechanism does not claim race-resistant access to an adversarially changing
++filesystem.
++
++Version 1 accepts at most 256 inputs, 1,024 import/builtin edges, 10 MiB per
++source, 64 MiB total source bytes, and 64 nested import levels. Reads are bounded
++independently of the signed byte lengths. Cycles, missing inputs, malformed
++inventory, duplicate entries, unused edges and unreachable files fail verification.
++
++This establishes tested authenticated source-content identity and frozen import
++selection. It does not prove source-to-SMT translation correctness, completeness
++of emitted proof obligations, correctness of the signing producer, or external
++qualification acceptance. The paired hosted workflow retains the same new CLI
++regressions on the pinned production baseline and candidate, with real signed
++manifests and solver executable/library identity.
+diff --git a/resilient/src/imports.rs b/resilient/src/imports.rs
+index f6c2b0baa22bfaa2bf6a8ad7e96250af643486c8..060e8d3b454e54e5755f0b7245caa7c95d1aaf3b 100644
+--- a/resilient/src/imports.rs
++++ b/resilient/src/imports.rs
+@@ -51,6 +51,64 @@ pub struct StdImport {
+     pub alias: Option<String>,
+ }
+ 
++pub(crate) struct TracedTarget {
++    pub path: PathBuf,
++    pub namespace: Option<String>,
++}
++
++pub(crate) trait ImportTrace {
++    fn resolve(&mut self, _from: &Path, _specifier: &str) -> Result<Option<TracedTarget>, String> {
++        Ok(None)
++    }
++    fn edge(
++        &mut self,
++        _from: &Path,
++        _specifier: &str,
++        _target: &Path,
++        _namespace: Option<&str>,
++    ) -> Result<(), String> {
++        Ok(())
++    }
++    fn builtin(&mut self, _from: &Path, _module: &str) -> Result<(), String> {
++        Ok(())
++    }
++    fn before_read(&mut self, _path: &Path) -> Result<(), String> {
++        Ok(())
++    }
++    fn parsed(&mut self, _path: &Path, _source: &str) -> Result<(), String> {
++        Ok(())
++    }
++    fn depth(&mut self, _depth: usize) -> Result<(), String> {
++        Ok(())
++    }
++}
++
++struct Untraced;
++impl ImportTrace for Untraced {}
++
++#[cfg(feature = "z3")]
++pub(crate) fn expand_uses_traced(
++    program: &mut Node,
++    entry: &Path,
++    loaded: &mut HashSet<PathBuf>,
++    std_imports: &mut Vec<StdImport>,
++    trace: &mut dyn ImportTrace,
++    allow_lookup: bool,
++) -> Result<(), String> {
++    let base = entry.parent().unwrap_or_else(|| Path::new("."));
++    let mut in_flight = vec![canonicalize_or_self(entry)];
++    expand_recursive(
++        program,
++        base,
++        loaded,
++        std_imports,
++        &mut in_flight,
++        Some(entry),
++        trace,
++        allow_lookup,
++    )
++}
++
+ /// Expand every `Node::Use` in `program`'s top level.
+ ///
+ /// File-based imports are resolved, parsed, and spliced in.
+@@ -75,16 +133,30 @@ pub fn expand_uses_with_std(
+     std_imports: &mut Vec<StdImport>,
+ ) -> Result<(), String> {
+     let mut in_flight: Vec<PathBuf> = Vec::new();
+-    expand_recursive(program, base_dir, loaded, std_imports, &mut in_flight)
++    expand_recursive(
++        program,
++        base_dir,
++        loaded,
++        std_imports,
++        &mut in_flight,
++        None,
++        &mut Untraced,
++        true,
++    )
+ }
+ 
++#[allow(clippy::too_many_arguments)]
+ fn expand_recursive(
+     program: &mut Node,
+     base_dir: &Path,
+     loaded: &mut HashSet<PathBuf>,
+     std_imports: &mut Vec<StdImport>,
+     in_flight: &mut Vec<PathBuf>,
++    importer: Option<&Path>,
++    trace: &mut dyn ImportTrace,
++    allow_lookup: bool,
+ ) -> Result<(), String> {
++    trace.depth(in_flight.len())?;
+     // RES-4110: resolve inline-module globs before file/dependency imports.
+     // This pass removes only `use mod::*` nodes, leaving the existing file
+     // import resolver and its visibility rules unchanged.
+@@ -115,6 +187,9 @@ fn expand_recursive(
+ 
+             // Check for standard library import: `use std::module;`
+             if let Some(module_name) = path.strip_prefix("std::") {
++                if let Some(from) = importer {
++                    trace.builtin(from, module_name)?;
++                }
+                 std_imports.push(StdImport {
+                     module: module_name.to_string(),
+                     alias,
+@@ -122,12 +197,58 @@ fn expand_recursive(
+                 continue;
+             }
+ 
++            // Strict source verification resolves exclusively through authenticated edges.
++            let resolved = if let Some(from) = importer {
++                trace.resolve(from, path)?
++            } else {
++                None
++            };
++            if !allow_lookup && resolved.is_none() {
++                return Err("source binding: missing authenticated import edge".into());
++            }
++            if let Some(resolved) = resolved {
++                let from = importer.ok_or("source binding: missing importer identity")?;
++                trace.edge(from, path, &resolved.path, resolved.namespace.as_deref())?;
++                let canon = canonicalize_or_self(&resolved.path);
++                check_cycle(&canon, in_flight)?;
++                if alias.is_none() && !loaded.insert(canon.clone()) {
++                    continue;
++                }
++                let mut imported = load_and_parse_traced(&resolved.path, trace)?;
++                let dir = resolved.path.parent().unwrap_or_else(|| Path::new("."));
++                in_flight.push(canon);
++                expand_recursive(
++                    &mut imported,
++                    dir,
++                    loaded,
++                    std_imports,
++                    in_flight,
++                    Some(&resolved.path),
++                    trace,
++                    allow_lookup,
++                )?;
++                in_flight.pop();
++                if let Node::Program(stmts) = imported {
++                    append_imported_stmts(
++                        stmts,
++                        &mut expanded,
++                        selectors.as_deref(),
++                        is_pub,
++                        alias.as_deref().or(resolved.namespace.as_deref()),
++                    );
++                }
++                continue;
++            }
++
+             // Check for package dependency import: `use dep::module;`
+             // Falls through to file-path resolution if not a known dep.
+             if let Some((dep_name, module)) = path.split_once("::")
+                 && let Ok(Some(dep_path)) =
+                     crate::pkg_deps::resolve_dep_module(base_dir, dep_name, module)
+             {
++                if let Some(from) = importer {
++                    trace.edge(from, path, &dep_path, Some(dep_name))?;
++                }
+                 let canon = canonicalize_or_self(&dep_path);
+ 
+                 // RES-2540: cycle detection — check in-flight stack.
+@@ -138,7 +259,7 @@ fn expand_recursive(
+                 } else if alias.is_none() {
+                     continue;
+                 }
+-                let imported_program = load_and_parse(&dep_path)?;
++                let imported_program = load_and_parse_traced(&dep_path, trace)?;
+                 let imported_dir = dep_path
+                     .parent()
+                     .map(Path::to_path_buf)
+@@ -151,6 +272,9 @@ fn expand_recursive(
+                     loaded,
+                     std_imports,
+                     in_flight,
++                    importer.map(|_| dep_path.as_path()),
++                    trace,
++                    allow_lookup,
+                 )?;
+                 in_flight.pop();
+                 if let Node::Program(imported_stmts) = imported_program {
+@@ -180,6 +304,9 @@ fn expand_recursive(
+             }
+ 
+             let target = resolve_use_path(base_dir, path)?;
++            if let Some(from) = importer {
++                trace.edge(from, path, &target, None)?;
++            }
+             let canon = canonicalize_or_self(&target);
+ 
+             // RES-2540: cycle detection — check in-flight stack.
+@@ -192,7 +319,7 @@ fn expand_recursive(
+                 loaded.insert(canon.clone());
+             }
+ 
+-            let imported_program = load_and_parse(&target)?;
++            let imported_program = load_and_parse_traced(&target, trace)?;
+             let imported_dir = target
+                 .parent()
+                 .map(Path::to_path_buf)
+@@ -206,6 +333,9 @@ fn expand_recursive(
+                 loaded,
+                 std_imports,
+                 in_flight,
++                importer.map(|_| target.as_path()),
++                trace,
++                allow_lookup,
+             )?;
+             in_flight.pop();
+ 
+@@ -776,7 +906,13 @@ fn import_size_error(path: &Path, size: u64) -> Option<String> {
+     })
+ }
+ 
++#[cfg(test)]
+ fn load_and_parse(path: &Path) -> Result<Node, String> {
++    load_and_parse_traced(path, &mut Untraced)
++}
++
++fn load_and_parse_traced(path: &Path, trace: &mut dyn ImportTrace) -> Result<Node, String> {
++    trace.before_read(path)?;
+     let file = fs::File::open(path)
+         .map_err(|e| format!("failed to read import \"{}\": {}", path.display(), e))?;
+     let file_size = file
+@@ -797,6 +933,7 @@ fn load_and_parse(path: &Path) -> Result<Node, String> {
+     if let Some(err) = import_size_error(path, src.len() as u64) {
+         return Err(err);
+     }
++    trace.parsed(path, &src)?;
+     let (program, errors) = parse(&src);
+     if !errors.is_empty() {
+         return Err(format!(
+diff --git a/resilient/src/lib.rs b/resilient/src/lib.rs
+index 06823f68f4c5b6bb86c249a6fe5067a5d3825f14..ef6a8eff5f58cabf7ac39c4890436bf90682c81b 100644
+--- a/resilient/src/lib.rs
++++ b/resilient/src/lib.rs
+@@ -260,6 +260,8 @@ mod pkg_deps;
+ // `#[cfg(feature = "z3")]` (see write_proof_artifacts / dispatch_verify_*).
+ #[cfg(feature = "z3")]
+ mod cert_sign;
++#[cfg(feature = "z3")]
++mod proof_sources;
+ // RES-198: starter linter. 5 lints with stable codes; consumed
+ // from main() when the `lint <file>` subcommand runs.
+ mod lint;
+@@ -31036,6 +31038,7 @@ fn write_proof_artifacts(
+     certificates: &[typechecker::CapturedCertificate],
+     dir: &Path,
+     source_filename: &str,
++    source_binding: serde_json::Value,
+     sign_key_path: Option<&Path>,
+ ) -> RResult<usize> {
+     fs::create_dir_all(dir).map_err(|e| {
+@@ -31106,7 +31109,12 @@ fn write_proof_artifacts(
+         obligations,
+     };
+     let manifest_path = dir.join("manifest.json");
+-    let manifest_json = cert_sign::format_manifest_json(&manifest);
++    let mut manifest_value: serde_json::Value =
++        serde_json::from_str(&cert_sign::format_manifest_json(&manifest))
++            .map_err(|error| error.to_string())?;
++    manifest_value["source_binding"] = source_binding;
++    let manifest_json =
++        serde_json::to_string_pretty(&manifest_value).map_err(|error| error.to_string())?;
+     fs::write(&manifest_path, &manifest_json)
+         .map_err(|e| format!("could not write {}: {}", manifest_path.display(), e))?;
+ 
+@@ -31519,6 +31527,12 @@ fn execute_file(
+ 
+     let contents =
+         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
++    #[cfg(feature = "z3")]
++    let mut source_capture = if emit_cert_dir.is_some() {
++        Some(proof_sources::Capture::new(Path::new(filename), &contents)?)
++    } else {
++        None
++    };
+ 
+     // RES-355: incremental cache — compute SHA-256 of the source text,
+     // check for a stored entry, and record whether this run hit the
+@@ -31624,9 +31638,23 @@ fn execute_file(
+             loaded.insert(canon);
+         }
+         let mut std_imports = Vec::new();
+-        if let Err(e) =
++        #[cfg(feature = "z3")]
++        let expanded = if let Some(capture) = source_capture.as_mut() {
++            imports::expand_uses_traced(
++                &mut program,
++                Path::new(filename),
++                &mut loaded,
++                &mut std_imports,
++                capture,
++                true,
++            )
++        } else {
+             imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports)
+-        {
++        };
++        #[cfg(not(feature = "z3"))]
++        let expanded =
++            imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports);
++        if let Err(e) = expanded {
+             return Err(format!("Import error: {}", e));
+         }
+         for si in &std_imports {
+@@ -31808,7 +31836,11 @@ fn execute_file(
+         // running there are no obligations to sign.
+         #[cfg(feature = "z3")]
+         if let Some(dir) = emit_cert_dir {
+-            let n = write_proof_artifacts(&tc.certificates, dir, filename, sign_cert_key)?;
++            let binding = source_capture
++                .as_ref()
++                .ok_or("source binding: missing parsed input capture")?
++                .json()?;
++            let n = write_proof_artifacts(&tc.certificates, dir, filename, binding, sign_cert_key)?;
+             println!("\x1B[36mWrote {} verification certificate(s)\x1B[0m", n);
+             if sign_cert_key.is_some() {
+                 println!("\x1B[36mWrote Ed25519 signature\x1B[0m");
+@@ -32972,6 +33004,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+     let mut pubkey_path: Option<PathBuf> = None;
+     let mut run_z3 = false;
+     let mut require_manifest_signature = false;
++    let mut source_root: Option<PathBuf> = None;
+     let mut i = 2;
+     while i < args.len() {
+         let a = &args[i];
+@@ -32984,6 +33017,17 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+             pubkey_path = Some(PathBuf::from(&args[i]));
+         } else if let Some(p) = a.strip_prefix("--pubkey=") {
+             pubkey_path = Some(PathBuf::from(p));
++        } else if a == "--source-root" {
++            i += 1;
++            if i >= args.len() {
++                eprintln!("Error: --source-root requires a directory");
++                return Some(2);
++            }
++            source_root = Some(PathBuf::from(&args[i]));
++            require_manifest_signature = true;
++        } else if let Some(root) = a.strip_prefix("--source-root=") {
++            source_root = Some(PathBuf::from(root));
++            require_manifest_signature = true;
+         } else if a == "--require-manifest-signature" {
+             require_manifest_signature = true;
+         } else if a == "--z3" {
+@@ -33063,6 +33107,13 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+         }
+     }
+ 
++    if let Some(root) = source_root
++        && let Err(error) = proof_sources::verify(&manifest_text, &root)
++    {
++        eprintln!("Error: {error}");
++        return Some(1);
++    }
++
+     if run_z3 && manifest.obligations.is_empty() {
+         eprintln!("Error: --z3 requested but the manifest contains no obligations to replay");
+         return Some(1);
+@@ -34438,7 +34489,7 @@ Run `rz --help` for global flags and other subcommands.
+ const VERIFY_ALL_HELP_TEXT: &str = r#"rz verify-all — re-check every obligation in a manifest
+ 
+ USAGE:
+-    rz verify-all <dir> [--pubkey <path>] [--z3] [--require-manifest-signature]
++    rz verify-all <dir> [--pubkey <path>] [--z3] [--require-manifest-signature] [--source-root <dir>]
+ 
+ STATUS:
+     backend-limited; requires --features z3
+@@ -34451,6 +34502,8 @@ CHECKS:
+ FLAGS:
+         --require-manifest-signature
+                          Require a valid signature over the exact manifest bytes
++        --source-root DIR
++                         Authenticate and verify frozen source inputs under DIR
+         --pubkey PATH    Verify signatures with a PEM public key override
+         --z3             Re-run Z3 on each certificate when the z3 binary is available
+                          Fail if the solver is unavailable or obligations are empty
+diff --git a/resilient/src/proof_sources.rs b/resilient/src/proof_sources.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd0dc21fe6c890952f5dab4ffab4d3f282c351fa
+--- /dev/null
++++ b/resilient/src/proof_sources.rs
+@@ -0,0 +1,392 @@
++//! Frozen translation inputs are collected from the buffers actually parsed.
++use crate::imports::{ImportTrace, TracedTarget};
++use serde_json::{Value, json};
++use std::collections::{BTreeMap, BTreeSet, HashSet};
++use std::fs;
++use std::io::Read;
++use std::path::{Component, Path, PathBuf};
++
++const MAX_FILES: usize = 256;
++const MAX_EDGES: usize = 1024;
++const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
++const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
++
++#[derive(Clone, PartialEq, Eq)]
++struct Input {
++    sha256: String,
++    bytes: u64,
++}
++type Edges = BTreeMap<(PathBuf, String), (PathBuf, Option<String>)>;
++
++#[derive(Default)]
++pub(crate) struct Capture {
++    files: BTreeMap<PathBuf, Input>,
++    edges: Edges,
++    builtins: BTreeSet<(PathBuf, String)>,
++    entry: PathBuf,
++}
++
++fn fail(message: impl std::fmt::Display) -> String {
++    format!("source binding: {message}")
++}
++fn canonical(path: &Path) -> Result<PathBuf, String> {
++    fs::canonicalize(path).map_err(fail)
++}
++fn input(source: &str) -> Input {
++    Input {
++        sha256: crate::cert_sign::sha256_hex(source.as_bytes()),
++        bytes: source.len() as u64,
++    }
++}
++
++impl Capture {
++    pub(crate) fn new(entry: &Path, source: &str) -> Result<Self, String> {
++        let mut capture = Self {
++            entry: canonical(entry)?,
++            ..Self::default()
++        };
++        capture.parsed(entry, source)?;
++        Ok(capture)
++    }
++    pub(crate) fn json(&self) -> Result<Value, String> {
++        let mut root = self
++            .entry
++            .parent()
++            .ok_or_else(|| fail("entry has no parent"))?
++            .to_path_buf();
++        while !self.files.keys().all(|path| path.starts_with(&root)) {
++            if !root.pop() {
++                return Err(fail("no common input root"));
++            }
++        }
++        let relative = |path: &Path| -> Result<String, String> {
++            let path = path.strip_prefix(&root).map_err(fail)?;
++            let text = path
++                .to_str()
++                .ok_or_else(|| fail("input path is not UTF-8"))?
++                .replace(std::path::MAIN_SEPARATOR, "/");
++            safe_path(&text)?;
++            Ok(text)
++        };
++        let mut files = Vec::new();
++        for (path, file) in &self.files {
++            files.push(json!({"path":relative(path)?,"sha256":file.sha256,"bytes":file.bytes}));
++        }
++        let mut edges = Vec::new();
++        for ((from, specifier), (target, namespace)) in &self.edges {
++            edges.push(json!({"from":relative(from)?,"specifier":specifier,"target":relative(target)?,"namespace":namespace}));
++        }
++        let mut builtins = Vec::new();
++        for (from, module) in &self.builtins {
++            builtins.push(json!({"from":relative(from)?,"module":module}));
++        }
++        Ok(
++            json!({"version":1,"entry":relative(&self.entry)?,"files":files,"imports":edges,"builtins":builtins}),
++        )
++    }
++}
++
++impl ImportTrace for Capture {
++    fn parsed(&mut self, path: &Path, source: &str) -> Result<(), String> {
++        let path = canonical(path)?;
++        let value = input(source);
++        if value.bytes > MAX_FILE_BYTES {
++            return Err(fail("input exceeds per-file byte limit"));
++        }
++        if let Some(previous) = self.files.get(&path) {
++            if previous != &value {
++                return Err(fail("input changed between parsing operations"));
++            }
++            return Ok(());
++        }
++        if self.files.len() >= MAX_FILES
++            || self.files.values().map(|v| v.bytes).sum::<u64>() + value.bytes > MAX_TOTAL_BYTES
++        {
++            return Err(fail("input inventory resource limit exceeded"));
++        }
++        self.files.insert(path, value);
++        Ok(())
++    }
++    fn edge(
++        &mut self,
++        from: &Path,
++        specifier: &str,
++        target: &Path,
++        namespace: Option<&str>,
++    ) -> Result<(), String> {
++        let key = (canonical(from)?, specifier.to_string());
++        let value = (canonical(target)?, namespace.map(str::to_string));
++        if let Some(previous) = self.edges.get(&key) {
++            if previous != &value {
++                return Err(fail("import resolution changed during compilation"));
++            }
++            return Ok(());
++        }
++        if self.edges.len() + self.builtins.len() >= MAX_EDGES {
++            return Err(fail("import edge limit exceeded"));
++        }
++        self.edges.insert(key, value);
++        Ok(())
++    }
++    fn builtin(&mut self, from: &Path, module: &str) -> Result<(), String> {
++        self.builtins.insert((canonical(from)?, module.into()));
++        if self.edges.len() + self.builtins.len() > MAX_EDGES {
++            return Err(fail("import edge limit exceeded"));
++        }
++        Ok(())
++    }
++    fn depth(&mut self, depth: usize) -> Result<(), String> {
++        if depth > 64 {
++            Err(fail("import depth limit exceeded"))
++        } else {
++            Ok(())
++        }
++    }
++}
++
++fn safe_path(text: &str) -> Result<PathBuf, String> {
++    let path = Path::new(text);
++    if text.is_empty()
++        || text.len() > 4096
++        || text.contains('\\')
++        || text.contains(':')
++        || path.is_absolute()
++        || path
++            .components()
++            .any(|part| !matches!(part, Component::Normal(_)))
++        || text
++            .split('/')
++            .any(|part| part.is_empty() || part == "." || part == "..")
++    {
++        return Err(fail("inventory paths must be normalized relative paths"));
++    }
++    Ok(path.to_path_buf())
++}
++fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
++    value
++        .get(key)
++        .and_then(Value::as_str)
++        .filter(|v| !v.is_empty() && v.len() <= 4096)
++        .ok_or_else(|| fail(format!("missing or invalid {key}")))
++}
++fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
++    value
++        .get(key)
++        .and_then(Value::as_array)
++        .ok_or_else(|| fail(format!("missing or invalid {key}")))
++}
++
++struct Replay {
++    root: PathBuf,
++    files: BTreeMap<PathBuf, Input>,
++    edges: Edges,
++    builtins: BTreeSet<(PathBuf, String)>,
++    seen_files: BTreeSet<PathBuf>,
++    seen_edges: BTreeSet<(PathBuf, String)>,
++    seen_builtins: BTreeSet<(PathBuf, String)>,
++}
++
++impl Replay {
++    fn relative(&self, path: &Path) -> Result<PathBuf, String> {
++        let path = canonical(path)?;
++        if !path.starts_with(&self.root) {
++            return Err(fail("input escapes chosen source root"));
++        }
++        path.strip_prefix(&self.root)
++            .map(Path::to_path_buf)
++            .map_err(fail)
++    }
++    fn contained_file(&self, path: &Path) -> Result<(), String> {
++        let relative = self.relative(path)?;
++        if !self.files.contains_key(&relative) {
++            return Err(fail("undeclared input"));
++        }
++        let metadata = fs::metadata(path).map_err(fail)?;
++        if !metadata.is_file() {
++            return Err(fail("input is not a regular file"));
++        }
++        let expected = &self.files[&relative];
++        if metadata.len() != expected.bytes || metadata.len() > MAX_FILE_BYTES {
++            return Err(fail("input byte length mismatch or limit exceeded"));
++        }
++        Ok(())
++    }
++}
++
++impl ImportTrace for Replay {
++    fn resolve(&mut self, from: &Path, specifier: &str) -> Result<Option<TracedTarget>, String> {
++        let from = self.relative(from)?;
++        let key = (from, specifier.into());
++        let (target, namespace) = self
++            .edges
++            .get(&key)
++            .ok_or_else(|| fail("parsed import has no authenticated edge"))?;
++        self.seen_edges.insert(key);
++        let target = self.root.join(target);
++        self.contained_file(&target)?;
++        Ok(Some(TracedTarget {
++            path: target,
++            namespace: namespace.clone(),
++        }))
++    }
++    fn builtin(&mut self, from: &Path, module: &str) -> Result<(), String> {
++        let key = (self.relative(from)?, module.into());
++        if !self.builtins.contains(&key) {
++            return Err(fail("parsed builtin has no authenticated declaration"));
++        }
++        self.seen_builtins.insert(key);
++        Ok(())
++    }
++    fn before_read(&mut self, path: &Path) -> Result<(), String> {
++        self.contained_file(path)
++    }
++    fn parsed(&mut self, path: &Path, source: &str) -> Result<(), String> {
++        let path = self.relative(path)?;
++        if self.files.get(&path) != Some(&input(source)) {
++            return Err(fail("input content mismatch"));
++        }
++        self.seen_files.insert(path);
++        Ok(())
++    }
++    fn depth(&mut self, depth: usize) -> Result<(), String> {
++        if depth > 64 {
++            Err(fail("import depth limit exceeded"))
++        } else {
++            Ok(())
++        }
++    }
++}
++
++pub(crate) fn verify(manifest: &str, root: &Path) -> Result<(), String> {
++    let manifest: Value = serde_json::from_str(manifest).map_err(fail)?;
++    let binding = manifest
++        .get("source_binding")
++        .filter(|v| v.is_object())
++        .ok_or_else(|| fail("manifest has no input inventory"))?;
++    if binding.get("version").and_then(Value::as_u64) != Some(1) {
++        return Err(fail("unsupported inventory version"));
++    }
++    let entry = safe_path(text(binding, "entry")?)?;
++    let raw_files = array(binding, "files")?;
++    let raw_edges = array(binding, "imports")?;
++    let raw_builtins = array(binding, "builtins")?;
++    if raw_files.is_empty()
++        || raw_files.len() > MAX_FILES
++        || raw_edges.len() + raw_builtins.len() > MAX_EDGES
++    {
++        return Err(fail("inventory resource limit exceeded"));
++    }
++    let mut files = BTreeMap::new();
++    let mut total = 0;
++    for file in raw_files {
++        let path = safe_path(text(file, "path")?)?;
++        let sha256 = text(file, "sha256")?;
++        if sha256.len() != 64
++            || !sha256
++                .bytes()
++                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
++        {
++            return Err(fail("malformed SHA-256"));
++        }
++        let bytes = file
++            .get("bytes")
++            .and_then(Value::as_u64)
++            .ok_or_else(|| fail("invalid input byte length"))?;
++        if bytes > MAX_FILE_BYTES {
++            return Err(fail("per-file byte limit exceeded"));
++        }
++        total += bytes;
++        if total > MAX_TOTAL_BYTES {
++            return Err(fail("total byte limit exceeded"));
++        }
++        if files
++            .insert(
++                path,
++                Input {
++                    sha256: sha256.into(),
++                    bytes,
++                },
++            )
++            .is_some()
++        {
++            return Err(fail("duplicate inventory input"));
++        }
++    }
++    if !files.contains_key(&entry) {
++        return Err(fail("entry missing from inventory"));
++    }
++    let mut edges = Edges::new();
++    for edge in raw_edges {
++        let from = safe_path(text(edge, "from")?)?;
++        let target = safe_path(text(edge, "target")?)?;
++        let specifier = text(edge, "specifier")?.to_string();
++        let namespace = match edge.get("namespace") {
++            Some(Value::Null) => None,
++            Some(Value::String(s)) if !s.is_empty() && s.len() <= 4096 => Some(s.clone()),
++            _ => return Err(fail("invalid import namespace")),
++        };
++        if !files.contains_key(&from) || !files.contains_key(&target) {
++            return Err(fail("import edge names undeclared input"));
++        }
++        if edges
++            .insert((from, specifier), (target, namespace))
++            .is_some()
++        {
++            return Err(fail("duplicate import edge"));
++        }
++    }
++    let mut builtins = BTreeSet::new();
++    for builtin in raw_builtins {
++        let from = safe_path(text(builtin, "from")?)?;
++        let module = text(builtin, "module")?.to_string();
++        if !files.contains_key(&from) || !builtins.insert((from, module)) {
++            return Err(fail("invalid or duplicate builtin declaration"));
++        }
++    }
++    let root = canonical(root)?;
++    if !root.is_dir() {
++        return Err(fail("chosen source root is not a directory"));
++    }
++    let mut replay = Replay {
++        root,
++        files,
++        edges,
++        builtins,
++        seen_files: BTreeSet::new(),
++        seen_edges: BTreeSet::new(),
++        seen_builtins: BTreeSet::new(),
++    };
++    // Check every declared path before opening any source, including symlinks and FIFOs.
++    for path in replay.files.keys() {
++        replay.contained_file(&replay.root.join(path))?;
++    }
++    let entry = replay.root.join(entry);
++    let file = fs::File::open(&entry).map_err(fail)?;
++    let mut source = String::new();
++    file.take(MAX_FILE_BYTES + 1)
++        .read_to_string(&mut source)
++        .map_err(fail)?;
++    replay.parsed(&entry, &source)?;
++    let (mut program, errors) = crate::parse(&source);
++    if !errors.is_empty() {
++        return Err(fail("entry parser rejected input"));
++    }
++    let mut loaded = HashSet::new();
++    loaded.insert(canonical(&entry)?);
++    crate::imports::expand_uses_traced(
++        &mut program,
++        &entry,
++        &mut loaded,
++        &mut Vec::new(),
++        &mut replay,
++        false,
++    )
++    .map_err(fail)?;
++    if replay.seen_files.len() != replay.files.len()
++        || replay.seen_edges.len() != replay.edges.len()
++        || replay.seen_builtins.len() != replay.builtins.len()
++    {
++        return Err(fail("unreachable input or unused import edge"));
++    }
++    Ok(())
++}
+diff --git a/resilient/tests/source_binding.rs b/resilient/tests/source_binding.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3740f20b266829f938911c0153525cabe22e58f3
+--- /dev/null
++++ b/resilient/tests/source_binding.rs
+@@ -0,0 +1,267 @@
++//! Authenticated frozen translation inputs, independently checked through the CLI.
++#![cfg(feature = "z3")]
++
++use ed25519_dalek::SigningKey;
++use ed25519_dalek::ed25519::signature::Signer;
++use sha2::{Digest, Sha256};
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++fn hex(bytes: &[u8]) -> String {
++    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
++}
++
++struct Fixture {
++    root: PathBuf,
++    key: SigningKey,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        static NEXT: AtomicUsize = AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "source_binding_{}_{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir_all(root.join("inputs")).unwrap();
++        let key = SigningKey::generate(&mut rand_core::OsRng);
++        for (name, label, bytes) in [
++            ("private.pem", "PRIVATE", key.to_bytes()),
++            ("public.pem", "PUBLIC", key.verifying_key().to_bytes()),
++        ] {
++            std::fs::write(
++                root.join(name),
++                format!(
++                    "-----BEGIN ED25519 {label} KEY-----\n{}\n-----END ED25519 {label} KEY-----\n",
++                    hex(&bytes)
++                ),
++            )
++            .unwrap();
++        }
++        std::fs::write(
++            root.join("inputs/program.rz"),
++            "use \"dep.rz\"; let n = 0; while n < 3 invariant n >= 0 { n = n + 1; }",
++        )
++        .unwrap();
++        std::fs::write(
++            root.join("inputs/dep.rz"),
++            "pub fn identity(int x) -> int { return x; }",
++        )
++        .unwrap();
++        let fixture = Self { root, key };
++        fixture.emit("certs", true);
++        fixture
++    }
++
++    fn emit(&self, destination: &str, no_cache: bool) {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
++        command
++            .arg("-t")
++            .arg("--emit-certificate")
++            .arg(self.root.join(destination))
++            .arg("--sign-cert")
++            .arg(self.root.join("private.pem"))
++            .arg(self.root.join("inputs/program.rz"));
++        if no_cache {
++            command.arg("--no-cache");
++        }
++        let output = command.output().unwrap();
++        assert!(output.status.success(), "{output:?}");
++    }
++
++    fn manifest(&self) -> serde_json::Value {
++        serde_json::from_slice(&std::fs::read(self.root.join("certs/manifest.json")).unwrap())
++            .unwrap()
++    }
++
++    fn resign(&self, edit: impl FnOnce(&mut serde_json::Value)) {
++        let mut value = self.manifest();
++        edit(&mut value);
++        let bytes = serde_json::to_vec(&value).unwrap();
++        std::fs::write(
++            self.root.join("certs/manifest.sig"),
++            hex(&self.key.sign(&bytes).to_bytes()),
++        )
++        .unwrap();
++        std::fs::write(self.root.join("certs/manifest.json"), bytes).unwrap();
++    }
++
++    fn check(&self, root: Option<&Path>, expected: bool) {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
++        command
++            .arg("verify-all")
++            .arg(self.root.join("certs"))
++            .arg("--pubkey")
++            .arg(self.root.join("public.pem"))
++            .arg("--z3")
++            .env("Z3_BINARY", "z3");
++        if let Some(root) = root {
++            command.arg("--source-root").arg(root);
++        }
++        let output = command.output().unwrap();
++        assert_eq!(output.status.success(), expected, "{output:?}");
++        if !expected {
++            let error = String::from_utf8_lossy(&output.stderr);
++            assert!(
++                error.contains("source binding") || error.contains("manifest signature"),
++                "{output:?}"
++            );
++        }
++    }
++
++    fn strict(&self, expected: bool) {
++        self.check(Some(&self.root.join("inputs")), expected);
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.root);
++    }
++}
++
++#[test]
++fn signed_inventory_binds_all_parsed_inputs() {
++    let f = Fixture::new();
++    let value = f.manifest();
++    let binding = &value["source_binding"];
++    assert_eq!(binding["version"], 1);
++    assert_eq!(binding["entry"], "program.rz");
++    let files = binding["files"].as_array().unwrap();
++    assert_eq!(files.len(), 2);
++    for file in files {
++        let bytes =
++            std::fs::read(f.root.join("inputs").join(file["path"].as_str().unwrap())).unwrap();
++        assert_eq!(file["sha256"], format!("{:x}", Sha256::digest(&bytes)));
++        assert_eq!(file["bytes"], bytes.len() as u64);
++    }
++    f.strict(true);
++}
++
++#[test]
++fn identical_relocated_sources_verify() {
++    let f = Fixture::new();
++    let relocated = f.root.join("relocated");
++    std::fs::create_dir(&relocated).unwrap();
++    for file in ["program.rz", "dep.rz"] {
++        std::fs::copy(f.root.join("inputs").join(file), relocated.join(file)).unwrap();
++    }
++    f.check(Some(&relocated), true);
++}
++
++#[test]
++fn changed_entry_is_rejected() {
++    let f = Fixture::new();
++    std::fs::write(f.root.join("inputs/program.rz"), "let changed = 1;").unwrap();
++    f.strict(false);
++}
++
++#[test]
++fn changed_import_is_rejected() {
++    let f = Fixture::new();
++    std::fs::write(
++        f.root.join("inputs/dep.rz"),
++        "pub fn identity(int x) -> int { return 0; }",
++    )
++    .unwrap();
++    f.strict(false);
++}
++
++#[test]
++fn missing_inventory_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m.as_object_mut().unwrap().remove("source_binding");
++    });
++    f.strict(false);
++}
++
++#[test]
++fn unsigned_inventory_is_rejected() {
++    let f = Fixture::new();
++    std::fs::remove_file(f.root.join("certs/manifest.sig")).unwrap();
++    f.strict(false);
++}
++
++#[test]
++fn malformed_inventory_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m["source_binding"]["files"][0]["sha256"] = "bad".into();
++    });
++    f.strict(false);
++}
++
++#[test]
++fn duplicate_inventory_file_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        let files = m["source_binding"]["files"].as_array_mut().unwrap();
++        files.push(files[0].clone());
++    });
++    f.strict(false);
++}
++
++#[test]
++fn missing_import_edge_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m["source_binding"]["imports"] = serde_json::json!([]);
++    });
++    f.strict(false);
++}
++
++#[test]
++fn unreachable_inventory_file_is_rejected() {
++    let f = Fixture::new();
++    std::fs::write(f.root.join("inputs/unreachable.rz"), "let unused = 1;").unwrap();
++    f.resign(|m| { m["source_binding"]["files"].as_array_mut().unwrap().push(serde_json::json!({"path":"unreachable.rz", "sha256":format!("{:x}",Sha256::digest(b"let unused = 1;")),"bytes":15})); });
++    f.strict(false);
++}
++
++#[test]
++fn traversal_inventory_path_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m["source_binding"]["files"][0]["path"] = "../outside.rz".into();
++    });
++    f.strict(false);
++}
++
++#[cfg(unix)]
++#[test]
++fn symlink_import_outside_root_is_rejected_before_read() {
++    let f = Fixture::new();
++    let dep = f.root.join("inputs/dep.rz");
++    std::fs::rename(&dep, f.root.join("outside.rz")).unwrap();
++    std::os::unix::fs::symlink(f.root.join("outside.rz"), dep).unwrap();
++    f.strict(false);
++}
++
++#[test]
++fn cache_and_no_cache_emit_identical_binding() {
++    let f = Fixture::new();
++    f.emit("cached", false);
++    f.emit("cache_hit", false);
++    let binding = f.manifest()["source_binding"].clone();
++    assert!(!binding.is_null());
++    for directory in ["cached", "cache_hit"] {
++        let m: serde_json::Value = serde_json::from_slice(
++            &std::fs::read(f.root.join(directory).join("manifest.json")).unwrap(),
++        )
++        .unwrap();
++        assert_eq!(m["source_binding"], binding);
++    }
++}
++
++#[test]
++fn legacy_replay_remains_compatible_without_binding() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m.as_object_mut().unwrap().remove("source_binding");
++    });
++    std::fs::remove_file(f.root.join("certs/manifest.sig")).unwrap();
++    f.check(None, true);
++}
+diff --git a/resilient/tests/source_binding_graph.rs b/resilient/tests/source_binding_graph.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f2a497cfeffbf94393f64dc7266ff937b804754
+--- /dev/null
++++ b/resilient/tests/source_binding_graph.rs
+@@ -0,0 +1,336 @@
++//! Authenticated frozen translation inputs, independently checked through the CLI.
++#![cfg(feature = "z3")]
++
++use ed25519_dalek::SigningKey;
++use ed25519_dalek::ed25519::signature::Signer;
++use sha2::{Digest, Sha256};
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++fn hex(bytes: &[u8]) -> String {
++    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
++}
++
++struct Fixture {
++    root: PathBuf,
++    key: SigningKey,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        static NEXT: AtomicUsize = AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "source_binding_graph_{}_{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir_all(root.join("inputs")).unwrap();
++        let key = SigningKey::generate(&mut rand_core::OsRng);
++        for (name, label, bytes) in [
++            ("private.pem", "PRIVATE", key.to_bytes()),
++            ("public.pem", "PUBLIC", key.verifying_key().to_bytes()),
++        ] {
++            std::fs::write(
++                root.join(name),
++                format!(
++                    "-----BEGIN ED25519 {label} KEY-----\n{}\n-----END ED25519 {label} KEY-----\n",
++                    hex(&bytes)
++                ),
++            )
++            .unwrap();
++        }
++        std::fs::write(
++            root.join("inputs/program.rz"),
++            "use \"dep.rz\"; let n = 0; while n < 3 invariant n >= 0 { n = n + 1; }",
++        )
++        .unwrap();
++        std::fs::write(
++            root.join("inputs/dep.rz"),
++            "pub fn identity(int x) -> int { return x; }",
++        )
++        .unwrap();
++        let fixture = Self { root, key };
++        fixture.emit("certs", true);
++        fixture
++    }
++
++    fn emit(&self, destination: &str, no_cache: bool) {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
++        command
++            .arg("-t")
++            .arg("--emit-certificate")
++            .arg(self.root.join(destination))
++            .arg("--sign-cert")
++            .arg(self.root.join("private.pem"))
++            .arg(self.root.join("inputs/program.rz"));
++        if no_cache {
++            command.arg("--no-cache");
++        }
++        let output = command.output().unwrap();
++        assert!(output.status.success(), "{output:?}");
++    }
++
++    fn manifest(&self) -> serde_json::Value {
++        serde_json::from_slice(&std::fs::read(self.root.join("certs/manifest.json")).unwrap())
++            .unwrap()
++    }
++
++    fn resign(&self, edit: impl FnOnce(&mut serde_json::Value)) {
++        let mut value = self.manifest();
++        edit(&mut value);
++        let bytes = serde_json::to_vec(&value).unwrap();
++        std::fs::write(
++            self.root.join("certs/manifest.sig"),
++            hex(&self.key.sign(&bytes).to_bytes()),
++        )
++        .unwrap();
++        std::fs::write(self.root.join("certs/manifest.json"), bytes).unwrap();
++    }
++
++    fn check(&self, root: Option<&Path>, expected: bool) {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
++        command
++            .arg("verify-all")
++            .arg(self.root.join("certs"))
++            .arg("--pubkey")
++            .arg(self.root.join("public.pem"))
++            .arg("--z3")
++            .env("Z3_BINARY", "z3");
++        if let Some(root) = root {
++            command.arg("--source-root").arg(root);
++        }
++        let output = command.output().unwrap();
++        assert_eq!(output.status.success(), expected, "{output:?}");
++        if !expected {
++            let error = String::from_utf8_lossy(&output.stderr);
++            assert!(
++                error.contains("source binding") || error.contains("manifest signature"),
++                "{output:?}"
++            );
++        }
++    }
++
++    fn strict(&self, expected: bool) {
++        self.check(Some(&self.root.join("inputs")), expected);
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.root);
++    }
++}
++
++#[test]
++fn coherently_omitted_import_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        m["source_binding"]["files"]
++            .as_array_mut()
++            .unwrap()
++            .retain(|file| file["path"] != "dep.rz");
++        m["source_binding"]["imports"] = serde_json::json!([]);
++    });
++    f.strict(false);
++}
++
++#[test]
++fn duplicate_edge_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        let edges = m["source_binding"]["imports"].as_array_mut().unwrap();
++        edges.push(edges[0].clone());
++    });
++    f.strict(false);
++}
++
++#[test]
++fn extra_edge_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| {
++        let mut edge = m["source_binding"]["imports"][0].clone();
++        edge["specifier"] = "unused.rz".into();
++        m["source_binding"]["imports"]
++            .as_array_mut()
++            .unwrap()
++            .push(edge);
++    });
++    f.strict(false);
++}
++
++#[test]
++fn unsupported_version_and_empty_inventory_are_rejected() {
++    for invalid in [
++        serde_json::json!({"version":2,"entry":"program.rz","files":[],"imports":[],"builtins":[]}),
++        serde_json::json!({"version":1,"entry":"program.rz","files":[],"imports":[],"builtins":[]}),
++    ] {
++        let f = Fixture::new();
++        f.resign(|m| m["source_binding"] = invalid);
++        f.strict(false);
++    }
++}
++
++#[test]
++fn absolute_target_is_rejected() {
++    let f = Fixture::new();
++    f.resign(|m| m["source_binding"]["imports"][0]["target"] = "/outside.rz".into());
++    f.strict(false);
++}
++
++#[test]
++fn missing_source_and_invalid_root_are_rejected() {
++    let f = Fixture::new();
++    std::fs::remove_file(f.root.join("inputs/dep.rz")).unwrap();
++    f.strict(false);
++    f.check(Some(&f.root.join("inputs/program.rz")), false);
++}
++
++#[test]
++fn nested_diamond_graph_relocates_with_its_common_root() {
++    let f = Fixture::new();
++    let root = f.root.join("inputs");
++    std::fs::create_dir(root.join("nested")).unwrap();
++    std::fs::write(
++        root.join("program.rz"),
++        "use \"nested/left.rz\"; use \"right.rz\"; let n=0; while n<3 invariant n>=0 { n=n+1; }",
++    )
++    .unwrap();
++    std::fs::write(root.join("nested/left.rz"), "use \"../dep.rz\";").unwrap();
++    std::fs::write(root.join("right.rz"), "use \"dep.rz\";").unwrap();
++    f.emit("certs", true);
++    f.strict(true);
++    let relocated = f.root.join("relocated");
++    std::fs::create_dir_all(relocated.join("nested")).unwrap();
++    for file in ["program.rz", "dep.rz", "nested/left.rz", "right.rz"] {
++        std::fs::copy(root.join(file), relocated.join(file)).unwrap();
++    }
++    f.check(Some(&relocated), true);
++}
++
++#[cfg(unix)]
++#[test]
++fn package_resolution_graph_does_not_invoke_git() {
++    use std::os::unix::fs::PermissionsExt;
++    let f = Fixture::new();
++    let root = f.root.join("inputs");
++    let source = std::fs::read_to_string(root.join("program.rz"))
++        .unwrap()
++        .replace("\"dep.rz\"", "pkg::module");
++    std::fs::write(root.join("program.rz"), &source).unwrap();
++    std::fs::write(root.join("resilient.toml"),"[package]\nname=\"sentinel\"\n[dependencies]\npkg={git=\"https://invalid.example/repository\"}\n").unwrap();
++    f.resign(|m| {
++        for file in m["source_binding"]["files"].as_array_mut().unwrap() {
++            if file["path"] == "program.rz" {
++                file["sha256"] = format!("{:x}", Sha256::digest(source.as_bytes())).into();
++                file["bytes"] = (source.len() as u64).into();
++            }
++        }
++        m["source_binding"]["imports"][0]["specifier"] = "pkg::module".into();
++        m["source_binding"]["imports"][0]["namespace"] = "pkg".into();
++    });
++    let bin = f.root.join("bin");
++    std::fs::create_dir(&bin).unwrap();
++    let marker = f.root.join("git-invoked");
++    std::fs::write(
++        bin.join("git"),
++        format!(
++            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
++            marker.display()
++        ),
++    )
++    .unwrap();
++    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
++    let output = Command::new(env!("CARGO_BIN_EXE_rz"))
++        .arg("verify-all")
++        .arg(f.root.join("certs"))
++        .arg("--source-root")
++        .arg(root)
++        .arg("--pubkey")
++        .arg(f.root.join("public.pem"))
++        .env(
++            "PATH",
++            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
++        )
++        .output()
++        .unwrap();
++    assert!(output.status.success(), "{output:?}");
++    assert!(!marker.exists());
++}
++#[cfg(unix)]
++#[test]
++fn outside_root_fifo_is_rejected_without_opening_it() {
++    let f = Fixture::new();
++    let fifo = f.root.join("outside-fifo");
++    assert!(
++        Command::new("mkfifo")
++            .arg(&fifo)
++            .status()
++            .unwrap()
++            .success()
++    );
++    let dep = f.root.join("inputs/dep.rz");
++    std::fs::remove_file(&dep).unwrap();
++    std::os::unix::fs::symlink(fifo, dep).unwrap();
++    bounded_rejection(&f);
++}
++
++fn bounded_rejection(f: &Fixture) {
++    use std::process::Stdio;
++    use std::time::{Duration, Instant};
++    let mut child = Command::new(env!("CARGO_BIN_EXE_rz"))
++        .arg("verify-all")
++        .arg(f.root.join("certs"))
++        .arg("--source-root")
++        .arg(f.root.join("inputs"))
++        .arg("--pubkey")
++        .arg(f.root.join("public.pem"))
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .spawn()
++        .unwrap();
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        if child.try_wait().unwrap().is_some() {
++            break;
++        }
++        if Instant::now() >= deadline {
++            child.kill().unwrap();
++            let _ = child.wait();
++            panic!(
++                "source binding rejection blocked while reading an out-of-root input or traversing a cycle"
++            );
++        }
++        std::thread::sleep(Duration::from_millis(10));
++    }
++    let output = child.wait_with_output().unwrap();
++    assert!(!output.status.success(), "{output:?}");
++    assert!(
++        String::from_utf8_lossy(&output.stderr).contains("source binding"),
++        "{output:?}"
++    );
++}
++
++#[test]
++fn cyclic_graph_and_excessive_inventory_are_bounded() {
++    let f = Fixture::new();
++    let source = "use \"program.rz\";";
++    std::fs::write(f.root.join("inputs/dep.rz"), source).unwrap();
++    f.resign(|m| {
++        for file in m["source_binding"]["files"].as_array_mut().unwrap() { if file["path"]=="dep.rz" {file["sha256"]=format!("{:x}",Sha256::digest(source.as_bytes())).into();file["bytes"]=(source.len() as u64).into();} }
++        m["source_binding"]["imports"].as_array_mut().unwrap().push(serde_json::json!({"from":"dep.rz","specifier":"program.rz","target":"program.rz","namespace":null}));
++    });
++    bounded_rejection(&f);
++    let f = Fixture::new();
++    f.resign(|m| {
++        let file = m["source_binding"]["files"][0].clone();
++        m["source_binding"]["files"] = (0..257)
++            .map(|i| {
++                let mut file = file.clone();
++                file["path"] = format!("file-{i}.rz").into();
++                file
++            })
++            .collect();
++    });
++    bounded_rejection(&f);
++}
