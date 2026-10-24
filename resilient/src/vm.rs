@@ -120,6 +120,8 @@ pub enum VmError {
     /// `recovers_to` final-state-counterexample wording) — see
     /// `Op::ContractViolation`.
     ContractViolation(String),
+    /// A false requires clause, retaining function/clause identity in its diagnostic.
+    RequiresViolation(String),
 }
 
 impl VmError {
@@ -192,7 +194,9 @@ impl std::fmt::Display for VmError {
             VmError::CheckedFailure(variant) => {
                 write!(f, "vm: checked failure: {}", variant)
             }
-            VmError::ContractViolation(msg) => write!(f, "{}", msg),
+            VmError::ContractViolation(msg) | VmError::RequiresViolation(msg) => {
+                write!(f, "{}", msg)
+            }
         }
     }
 }
@@ -598,6 +602,27 @@ fn drain_deferred_calls(
         return Err(e);
     }
     Ok(())
+}
+
+fn format_requires_violation(
+    chunk: &Chunk,
+    name_const: u16,
+    clause_const: u16,
+) -> Result<String, VmError> {
+    let string = |index: u16| match chunk.constants.get(index as usize) {
+        Some(Value::String(value)) => Ok(value.as_str()),
+        _ => Err(VmError::ConstantOutOfBounds(index)),
+    };
+    let name = string(name_const)?;
+    let clause = string(clause_const)?;
+    let prefix = if crate::rich_diag_enabled() {
+        "[E0010] "
+    } else {
+        ""
+    };
+    Ok(format!(
+        "{prefix}Contract violation in fn {name}: requires {clause} failed"
+    ))
 }
 
 /// RES-4041: build the `Contract violation in fn ...` diagnostic for
@@ -2543,6 +2568,16 @@ fn run_dispatch_loop(
                 };
                 return Err(VmError::AssumeViolated(msg));
             }
+            Op::RequiresViolation {
+                name_const,
+                clause_const,
+            } => {
+                return Err(VmError::RequiresViolation(format_requires_violation(
+                    chunk,
+                    name_const,
+                    clause_const,
+                )?));
+            }
             Op::ContractViolation {
                 name_const,
                 clause_const,
@@ -3786,6 +3821,7 @@ fn op_to_index(op: Op) -> usize {
         Op::StoreStatic(_) => OP_KIND_STORE_STATIC,
         Op::LoadStatic(_) => OP_KIND_LOAD_STATIC,
         Op::ContractViolation { .. } => OP_KIND_CONTRACT_VIOLATION,
+        Op::RequiresViolation { .. } => OP_KIND_REQUIRES_VIOLATION,
     }
 }
 
@@ -3843,7 +3879,8 @@ const OP_KIND_OPT_CHAIN_UNWRAP: usize = 61;
 /// through `drain_deferred_calls`, so both dispatch strategies preserve the
 /// same live-local and LIFO semantics.
 const OP_KIND_DEFER_PUSH: usize = 62;
-const HANDLER_TABLE_LEN: usize = 63;
+const OP_KIND_REQUIRES_VIOLATION: usize = 63;
+const HANDLER_TABLE_LEN: usize = 64;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -3912,6 +3949,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_LOAD_STATIC] = h_load_static;
     table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
     table[OP_KIND_DEFER_PUSH] = h_defer_push;
+    table[OP_KIND_REQUIRES_VIOLATION] = h_requires_violation;
     table
 };
 
@@ -5243,6 +5281,21 @@ fn h_assume_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         other => format!("assumption failed: {}", other),
     };
     Err(VmError::AssumeViolated(msg))
+}
+
+fn h_requires_violation(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::RequiresViolation {
+        name_const,
+        clause_const,
+    } = op
+    else {
+        unreachable!()
+    };
+    Err(VmError::RequiresViolation(format_requires_violation(
+        state.current_chunk()?,
+        name_const,
+        clause_const,
+    )?))
 }
 
 fn h_contract_violation(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
