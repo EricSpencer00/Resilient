@@ -31809,7 +31809,12 @@ fn execute_file(
                 eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
                 if typecheck_strict {
                     if let Some(path) = emit_contract_cert {
-                        let diagnostic = contract_certificate::emit_diagnostic(&program, filename);
+                        let diagnostic = contract_certificate::emit_diagnostic(
+                            &program,
+                            filename,
+                            "failed",
+                            "typecheck-rejected",
+                        );
                         std::fs::write(path, diagnostic).map_err(|error| {
                             format!("could not write failed-typecheck diagnostics: {error}")
                         })?;
@@ -31865,7 +31870,22 @@ fn execute_file(
     // honestly to `unknown` verdicts on non-z3 builds.
     if let Some(path) = emit_contract_cert {
         let json = if typecheck_failed || !want_typecheck || use_jit {
-            contract_certificate::emit_diagnostic(&program, filename)
+            contract_certificate::emit_diagnostic(
+                &program,
+                filename,
+                if !want_typecheck {
+                    "skipped"
+                } else if typecheck_failed {
+                    "failed"
+                } else {
+                    "passed"
+                },
+                if use_jit {
+                    "unsupported-execution-backend"
+                } else {
+                    "typecheck-unvalidated"
+                },
+            )
         } else {
             contract_certificate::emit(&program, filename)
         };

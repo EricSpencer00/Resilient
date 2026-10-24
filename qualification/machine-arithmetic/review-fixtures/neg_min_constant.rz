@@ -1,0 +1,7 @@
+fn boundary(int x) -> int
+    requires -(-9223372036854775807 - 1) == (-9223372036854775807 - 1)
+    ensures result == x
+{
+    return x;
+}
+boundary(0);
