@@ -4,6 +4,7 @@ on:
     paths:
       - 'scripts/install.sh'
       - '.github/tests/installer_contract.py'
+      - '.github/tests/installer_failure_contract.py'
       - '.github/workflows/installer-qualification.yml'
       - '.github/workflows/release.yml'
       - 'docs/_layouts/landing.html'
@@ -27,6 +28,8 @@ jobs:
           set -e
           python3 agent-scripts/e2e-evidence.py verify "${{ runner.temp }}/installer-evidence"
           exit "$result"
+      - name: Preserve prior installation on failure
+        run: python3 .github/tests/installer_failure_contract.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
