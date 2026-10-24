@@ -142,6 +142,7 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
     let _ = writeln!(out, "  \"schema\": \"{}\",", json_escape(SCHEMA));
     let _ = writeln!(out, "  \"schema_version\": {},", SCHEMA_VERSION);
     let _ = writeln!(out, "  \"source\": \"{}\",", json_escape(source_path));
+    #[cfg(feature = "z3")]
     let _ = writeln!(
         out,
         "  \"implementation_profile\": \"{}\",",
