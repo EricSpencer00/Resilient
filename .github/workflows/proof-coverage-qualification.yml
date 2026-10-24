@@ -1,0 +1,138 @@
+name: Expected proof coverage qualification
+
+on:
+  pull_request:
+    paths:
+      - 'agent-scripts/audit-proof-coverage.py'
+      - 'resilient/tests/proof_coverage_audit.rs'
+      - '.github/workflows/proof-coverage-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proof-coverage-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: requested implementation coverage (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && '9f1d870acc5d5ba963a7e27d522e60aa70f7213e' || github.sha }}
+          fetch-depth: 0
+      - name: Install the same regression input on the production baseline
+        if: matrix.phase == 'baseline'
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin "$CANDIDATE"
+          git show "$CANDIDATE:resilient/tests/proof_coverage_audit.rs" > resilient/tests/proof_coverage_audit.rs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: proof-coverage-qualification
+      - name: Record solver identity
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/proof-coverage-qualification
+        run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          binary = pathlib.Path(shutil.which('z3'))
+          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
+                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    'libz3_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted({p.resolve() for p in pathlib.Path('/usr/lib/x86_64-linux-gnu').glob('libz3.so*')})}}
+          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/proof-coverage-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+          COVERAGE_RECORD_DIR: ${{ runner.temp }}/proof-coverage-qualification/fixtures
+        run: |
+          unexpected=0
+          for suite in proof_coverage_audit; do
+            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
+              set +e
+              python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+                --input "resilient/tests/$suite.rs" -- \
+                cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                  --test "$suite" "$test" -- --exact --nocapture 2>&1 | tee "$EVIDENCE_ROOT/$test.stdout"
+              result=${PIPESTATUS[0]}
+              set -e
+              python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+              expected=passed
+              if [[ "$PHASE" == baseline && "$test" != legacy_replay_accepts_the_mixed_subset_control ]]; then
+                expected=failed
+              fi
+              printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
+              if [[ "$expected" == failed && "$result" -eq 0 ]] || [[ "$expected" == passed && "$result" -ne 0 ]]; then
+                unexpected=$((unexpected + 1))
+              fi
+            done
+          done
+          cat "$EVIDENCE_ROOT/outcomes.txt" >> "$GITHUB_STEP_SUMMARY"
+          test "$unexpected" -eq 0
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-coverage-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/proof-coverage-qualification
+          include-hidden-files: true
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proof-coverage-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: proof-coverage-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
+          for suite in proof_coverage_audit; do
+            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
+              if [[ "$test" == legacy_replay_accepts_the_mixed_subset_control ]]; then continue; fi
+              python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+                --output "$EVIDENCE_ROOT/attestations/$test"
+              python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proof-coverage-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          include-hidden-files: true
+          retention-days: 90
+          if-no-files-found: error
