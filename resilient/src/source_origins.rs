@@ -1,12 +1,13 @@
 //! Opt-in physical parser metadata for one immutable, caller-labelled buffer.
 //! This module never resolves imports, checks types, or executes a program.
 //!
-//! Supplemental resource/lexer policy v1 (separate from the frozen CLI vectors):
+//! Supplemental resource/lexer policy v2 (separate from the frozen CLI vectors):
 //! use the real legacy scanner plus the existing Parser, regardless of the
 //! normal build's lexer selection. This is not normal Logos parity evidence.
 //! After the original global preflight, require at most 128 tokens in each
-//! Function-keyword region; only a Function at the same/lower delimiter depth
-//! starts a new region. The prefix before the first Function is also bounded.
+//! declaration-shaped Function region; only Function followed by Identifier at
+//! the same/lower delimiter depth starts a new region. Function types/closures
+//! cannot reset the budget. The prefix before the first declaration is bounded.
 //! Long otherwise-valid syntax is conservatively withheld with
 //! `resource-limit` / `expression-segment-tokens`; normal parsing is unchanged.
 //! Output collection stops once its serialized lower bound exceeds the cap,
@@ -687,6 +688,43 @@ fn read_source(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+/// Supplemental policy v2: inspect the cached real tokens, not another lexer.
+/// Function types recurse through return annotations without nesting delimiters,
+/// so only declaration-shaped `fn NAME` can establish a new physical region.
+fn shape_exceeded(tokens: &[(Token, Span)]) -> bool {
+    let mut depth = 0usize;
+    let mut region_depth = None;
+    let mut region_tokens = 0usize;
+    for (index, (token, _)) in tokens.iter().enumerate() {
+        if *token == Token::Eof {
+            break;
+        }
+        if *token == Token::Function
+            && matches!(tokens.get(index + 1), Some((Token::Identifier(_), _)))
+            && region_depth.is_none_or(|base| depth <= base)
+        {
+            region_depth = Some(depth);
+            region_tokens = 0;
+        }
+        region_tokens += 1;
+        if region_tokens > 128 {
+            return true;
+        }
+        match token {
+            Token::LeftBrace
+            | Token::LeftParen
+            | Token::LeftBracket
+            | Token::HashLeftBrace
+            | Token::HashLeftBracket => depth += 1,
+            Token::RightBrace | Token::RightParen | Token::RightBracket => {
+                depth = depth.saturating_sub(1)
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn produce(source: SourceUnit) -> Result<Value, Error> {
     // The physical profile explicitly uses the real legacy scanner even when
     // normal compilation selects Logos; no cross-lexer parity is claimed.
@@ -696,11 +734,6 @@ fn produce(source: SourceUnit) -> Result<Value, Error> {
     let mut depth = 0usize;
     let mut delimiters = Vec::new();
     let mut mismatched_delimiter = false;
-    // Supplemental metadata shape policy v1. A nested Function token cannot
-    // reset the enclosing region, including closures and function-type syntax.
-    let mut region_depth = None;
-    let mut region_tokens = 0usize;
-    let mut shape_exceeded = false;
     let mut functions = 0usize;
     let mut clauses = 0usize;
     let mut unsupported_preparse = source.text.starts_with("#!");
@@ -727,12 +760,6 @@ fn produce(source: SourceUnit) -> Result<Value, Error> {
         // Attribute parsing can mutate global registries. Unsupported metadata
         // syntax must not enter that parser path, even on a rejected unit.
         unsupported_preparse |= matches!(token, Token::At | Token::HashLeftBracket);
-        if token == Token::Function && region_depth.is_none_or(|base| depth <= base) {
-            region_depth = Some(depth);
-            region_tokens = 0;
-        }
-        region_tokens += 1;
-        shape_exceeded |= region_tokens > 128;
         if matches!(
             token,
             Token::LeftBrace
@@ -777,6 +804,12 @@ fn produce(source: SourceUnit) -> Result<Value, Error> {
             }
         }
         if source.range(span.start.offset, span.end.offset).is_none() {
+            if let Some(reason) = status.reason {
+                return Err(Error {
+                    lexical: Some(reason),
+                    ..Error::parse("incomplete physical lexeme")
+                });
+            }
             return Err(Error::parse("nonphysical lexer extent"));
         }
         tokens.push((token, span));
@@ -794,7 +827,7 @@ fn produce(source: SourceUnit) -> Result<Value, Error> {
     }
     // Evaluate only after the original global token/depth/keyword preflight,
     // so its frozen resource-precedence requirements remain unchanged.
-    if shape_exceeded {
+    if shape_exceeded(&tokens) {
         return Err(Error::limit("expression-segment-tokens"));
     }
     if unsupported_preparse {
@@ -937,6 +970,30 @@ mod tests {
             "fn outer() {{ fn inner() {{ {} }} }}",
             "0;".repeat(100)
         ));
+    }
+
+    #[test]
+    fn function_return_type_keywords_do_not_reset_region_budget() {
+        expect_shape_limit(format!("fn f() -> {}int {{}}", "fn() -> ".repeat(1000)));
+    }
+
+    #[test]
+    fn incomplete_string_extents_preserve_actual_lexical_reason() {
+        for opening in ["\"", "r\"", "\"\"\"", "r\"\"\""] {
+            let source = format!("fn f() {{ let s = {opening}never closed");
+            let result = produce(SourceUnit::new(
+                source,
+                "fixtures/unclosed-string.rz".into(),
+            ));
+            assert!(matches!(
+                result,
+                Err(Error {
+                    code: "parse-error",
+                    lexical: Some("unterminated-string"),
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

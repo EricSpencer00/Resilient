@@ -17,8 +17,9 @@
     "serialized_output_bytes_including_newline": 524288,
     "function_region_tokens_before_parser": 128
   },
-  "function_region_rule": "A Function token at the same or lower physical delimiter depth begins a new region; nested function tokens do not reset an outer region. The prefix before the first function is also bounded. This supplemental metadata-only limit is checked after original global preflight and lexical completion; error.limit is expression-segment-tokens.",
+  "function_region_rule": "Only a Function token immediately followed by an Identifier token at the same or lower physical delimiter depth begins a new region. Anonymous function/type tokens followed by LeftParen and nested declaration tokens do not reset an outer region. The prefix before the first named function is also bounded. This supplemental metadata-only limit is checked after original global preflight and lexical completion; error.limit is expression-segment-tokens.",
   "input_policy": "stable owned filesystem: reject final symlinks and nonregular paths before open; recheck opened regular handle and use bounded read; concurrent path replacement/TOCTOU protection is excluded",
   "whole_unit_rejection": "no accepted origin containers after lexical incompletion, embedded NUL, parse/recovery failure, unsupported profile grammar or resource excess",
-  "claim_limit": "physical metadata only; no binding-instance resolution, source authentication, proof eligibility, completeness, qualification or certification claim"
+  "claim_limit": "physical metadata only; no binding-instance resolution, source authentication, proof eligibility, completeness, qualification or certification claim",
+  "supplemental_policy_revision": 2
 }
