@@ -679,6 +679,7 @@ mod loop_bound;
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
 // with proof certificates.
 mod contract_verify;
+mod machine_arithmetic;
 // RES-4218: rejects an `ensures` clause that Z3 refutes against the
 // function's own body (counterexample in hand). Consumes
 // `contract_verify`'s body-aware path from the typechecker.

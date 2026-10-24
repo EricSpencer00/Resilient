@@ -142,12 +142,30 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
     let _ = writeln!(out, "  \"schema\": \"{}\",", json_escape(SCHEMA));
     let _ = writeln!(out, "  \"schema_version\": {},", SCHEMA_VERSION);
     let _ = writeln!(out, "  \"source\": \"{}\",", json_escape(source_path));
+    let _ = writeln!(
+        out,
+        "  \"implementation_profile\": \"{}\",",
+        if crate::machine_arithmetic::wrap_mode() {
+            crate::machine_arithmetic::PROFILE
+        } else {
+            "unsupported-overflow-mode"
+        }
+    );
     out.push_str("  \"functions\": [\n");
 
     let mut first_fn = true;
     if let Node::Program(stmts) = program {
         for stmt in stmts {
-            let Node::Function { name, .. } = &stmt.node else {
+            let Node::Function {
+                name,
+                parameters,
+                return_type,
+                requires,
+                ensures,
+                body,
+                ..
+            } = &stmt.node
+            else {
                 continue;
             };
             if !first_fn {
@@ -169,6 +187,32 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(out, "      \"provenance\": [{tags_json}],");
+            #[cfg(feature = "z3")]
+            if crate::contract_verify::machine_profile(
+                parameters,
+                return_type.as_deref(),
+                requires,
+                ensures,
+                body,
+            ) {
+                let mut diagnostics = Vec::new();
+                for (clause, ensures) in ensures.iter().enumerate() {
+                    if let Some(queries) =
+                        crate::contract_verify::implementation_queries(ensures, requires, body)
+                    {
+                        for (path, query) in queries.into_iter().enumerate() {
+                            diagnostics.push(format!("{{\"clause\":{clause},\"path\":{path},\"result\":\"{}\",\"query\":\"{}\"}}", match query.verdict { Some(true) => "unsat", Some(false) => "sat", None => "unknown" }, json_escape(&query.query)));
+                        }
+                    }
+                }
+                let _ = writeln!(
+                    out,
+                    "      \"implementation_queries\": [{}],",
+                    diagnostics.join(",")
+                );
+            }
+            #[cfg(not(feature = "z3"))]
+            let _ = (parameters, return_type, requires, ensures, body);
             out.push_str("      \"clauses\": [\n");
             let mut first_clause = true;
             for v in verdicts.iter().filter(|v| &v.function_name == name) {
