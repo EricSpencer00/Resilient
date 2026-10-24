@@ -235,6 +235,41 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
     out
 }
 
+/// A failed typecheck cannot grant program-level proof credit, even when
+/// individual parsed formulas happen to be valid. Raw queries remain diagnostics.
+pub(crate) fn emit_diagnostic(program: &Node, source_path: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&emit(program, source_path))
+    else {
+        return String::from("{\"diagnostic_only\":true,\"typecheck_status\":\"failed\"}");
+    };
+    value["diagnostic_only"] = serde_json::Value::Bool(true);
+    value["typecheck_status"] = serde_json::Value::String("failed".into());
+    if let Some(functions) = value["functions"].as_array_mut() {
+        for function in functions {
+            if let Some(clauses) = function["clauses"].as_array_mut() {
+                for clause in clauses {
+                    if let Some(object) = clause.as_object_mut() {
+                        object.remove("smtlib2");
+                        if object.get("verdict").is_some_and(|v| v == "pass") {
+                            object.insert(
+                                "verdict".into(),
+                                serde_json::Value::String("unknown".into()),
+                            );
+                            if object.contains_key("basis") {
+                                object.insert(
+                                    "basis".into(),
+                                    serde_json::Value::String("clause-only".into()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    value.to_string()
+}
+
 /// C-E5: typed failure modes for certificate verification. Every
 /// path through [`verify_schema_version`] / [`verify_signed`] returns
 /// one of these instead of panicking — a malformed or tampered
