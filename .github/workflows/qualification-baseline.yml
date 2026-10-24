@@ -1,0 +1,90 @@
+name: Qualification binary baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-binary-baseline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: qualification-binary-baseline
+      - name: Run qualification suites against the retained binary
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/qualification-baseline
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/tests" \
+            --input Cargo.lock \
+            --input resilient/tests/contract_replay_roundtrip.rs \
+            --input resilient/tests/manifest_authentication.rs \
+            --input resilient/tests/loop_certificate_roundtrip.rs \
+            --input resilient/tests/finite_loop_certificate_guards.rs \
+            --input resilient/tests/solver_replay_bounds.rs \
+            --input resilient/tests/solver_replay_required.rs \
+            --input resilient/tests/solver_replay_conformance.rs -- \
+            cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+              --test contract_replay_roundtrip --test manifest_authentication \
+              --test loop_certificate_roundtrip --test finite_loop_certificate_guards \
+              --test solver_replay_bounds --test solver_replay_required --test solver_replay_conformance
+          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/tests"
+      - name: Identify and retain the tested host compiler
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/qualification-baseline
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, platform, shutil, subprocess
+          root = pathlib.Path(os.environ['EVIDENCE_ROOT'])
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+          metadata = json.loads(command('cargo', 'metadata', '--manifest-path', 'resilient/Cargo.toml', '--no-deps', '--format-version', '1'))
+          compiler = pathlib.Path(metadata['target_directory']) / 'debug' / 'rz'
+          shutil.copy2(compiler, root / 'rz')
+          def digest(path):
+              return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+          record = {
+              'source_revision': command('git', 'rev-parse', 'HEAD'),
+              'source_tree': command('git', 'rev-parse', 'HEAD^{tree}'),
+              'compiler_sha256': digest(root / 'rz'),
+              'profile': 'debug; host CLI; not a release or embedded-target qualification',
+              'features': ['z3'], 'locked': True,
+              'cargo_lock_sha256': digest('Cargo.lock'),
+              'rustc': command('rustc', '-vV'), 'cargo': command('cargo', '-V'),
+              'platform': platform.platform(), 'machine': platform.machine(),
+              'runner_image': {key: os.environ.get(key) for key in ('ImageOS', 'ImageVersion')},
+              'z3_version': command('z3', '-version'),
+              'z3_sha256': digest(shutil.which('z3')),
+              'libz3_sha256': digest('/usr/lib/x86_64-linux-gnu/libz3.so'),
+              'run_url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'],
+          }
+          (root / 'binary-identity.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          (root / 'SHA256SUMS').write_text(''.join(digest(path) + '  ' + str(path.relative_to(root)) + '\n' for path in sorted(root.rglob('*')) if path.is_file()))
+          PY
+          (cd "$EVIDENCE_ROOT" && sha256sum -c SHA256SUMS)
+      - name: Retain evidence even after failed tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-binary-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/qualification-baseline
+          retention-days: 90
+          if-no-files-found: error
