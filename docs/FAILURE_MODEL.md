@@ -76,11 +76,13 @@ the surrounding function needs no `fails` clause of its own. A partially
 handled call still requires the leftover variants on the caller's
 signature — there's no way to silently swallow a variant.
 
-**Runtime behavior (RES-775):** with the tree-walking interpreter, the
-compiler can inject a declared checked failure deterministically (used for
-testing recovery paths); the injected failure enters the callee's `try`
-site as if the callee had actually raised that variant, so the matching
-`catch` arm executes.
+**Runtime behavior (RES-775):** ordinary `try` blocks use deterministic
+checked-failure injection to exercise recovery paths in the tree-walking
+interpreter and bytecode VM. After evaluating a call's arguments, a call
+with a nonempty `fails` list injects its first declared variant before the
+callee body executes. The nearest enclosing matching `catch` handles that
+variant; an unmatched variant propagates outward. This injection is part
+of ordinary `try` execution, rather than an optional test flag.
 
 Checked failures are a distinct mechanism from `Result<T, E>` — they are
 part of the function's *type signature* and checked by the typechecker
