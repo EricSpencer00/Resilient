@@ -1,0 +1,3 @@
+fn identity(int x) -> int ensures result == x {
+    try { return x; } catch Failure { return x; }
+}
