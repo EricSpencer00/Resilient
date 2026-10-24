@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
 import signal
 import stat
 import sys
@@ -288,7 +289,7 @@ class Parser:
                     alias = self.identifier()
                 self.take(';')
                 import_path = PurePosixPath(self.path).parent / specifier[1]
-                target = relative(str(import_path))
+                target = relative(posixpath.normpath(str(import_path)))
                 self.imports.append({'from': self.path, 'specifier': specifier[1], 'namespace': alias, 'target': target})
             else:
                 reject('unsupported_grammar', 'unknown declaration or executable entry syntax: ' + str(token))
@@ -308,15 +309,18 @@ def inventory(args):
     if digest(graph_raw) != args.graph_sha256:
         reject('graph_hash_mismatch', 'trusted source graph digest differs')
     graph = json.loads(graph_raw, object_pairs_hook=unique)
-    if (not isinstance(graph, dict) or graph.get('version') != 1 or graph.get('builtins') != []
+    if (not isinstance(graph, dict) or type(graph.get('version')) is not int or graph['version'] != 1 or graph.get('builtins') != []
             or not isinstance(graph.get('files'), list) or not 1 <= len(graph['files']) <= 32
             or not isinstance(graph.get('imports'), list) or len(graph['imports']) > 256):
         reject('invalid_graph', 'bounded version1 local graph required')
     entry = relative(graph.get('entry'))
     root = Path(args.source_root).resolve(strict=True)
-    files, declarations, sites, imports, names, total = [], [], [], [], set(), 0
+    files, declarations, sites, imports, names, total, token_count = [], [], [], [], set(), 0, 0
     for file in graph['files']:
-        if not isinstance(file, dict):
+        if (not isinstance(file, dict) or set(file) != {'path', 'bytes', 'sha256'}
+                or type(file.get('bytes')) is not int or not 0 <= file['bytes'] <= MAX_FILE
+                or not isinstance(file.get('sha256'), str) or len(file['sha256']) != 64
+                or any(char not in '0123456789abcdef' for char in file['sha256'])):
             reject('invalid_graph', 'invalid file record')
         name = relative(file.get('path'))
         if name in names:
@@ -330,6 +334,9 @@ def inventory(args):
         if file != actual:
             reject('source_hash_mismatch', name)
         parser = Parser(name, raw)
+        token_count += len(parser.tokens)
+        if token_count > MAX_TOKENS:
+            reject('resource_limit', 'whole graph token bound exceeded')
         parser.declarations_block()
         files.append(actual)
         declarations.extend(parser.declarations)
