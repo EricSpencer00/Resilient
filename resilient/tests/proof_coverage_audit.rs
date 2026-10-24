@@ -251,7 +251,13 @@ fn duplicate_path_is_rejected_after_valid_authentication() {
     let f = branch();
     let p = f.policy(2);
     let mut m = f.manifest();
-    let entry = m["obligations"][0].clone();
+    let mut entry = m["obligations"][0].clone();
+    std::fs::copy(
+        f.root.join("certs").join(entry["cert"].as_str().unwrap()),
+        f.root.join("certs/duplicate_valid.smt2"),
+    )
+    .unwrap();
+    entry["cert"] = json!("duplicate_valid.smt2");
     m["obligations"].as_array_mut().unwrap().push(entry);
     f.save_manifest(&m);
     f.replay();
@@ -281,6 +287,12 @@ fn valid_unsat_query_with_wrong_path_guard_is_rejected() {
     let mut m = f.manifest();
     let mut first = m["obligations"][0].clone();
     first["idx"] = json!(1);
+    std::fs::copy(
+        f.root.join("certs").join(first["cert"].as_str().unwrap()),
+        f.root.join("certs/wrong_guard_valid.smt2"),
+    )
+    .unwrap();
+    first["cert"] = json!("wrong_guard_valid.smt2");
     m["obligations"][1] = first;
     f.save_manifest(&m);
     f.replay();
