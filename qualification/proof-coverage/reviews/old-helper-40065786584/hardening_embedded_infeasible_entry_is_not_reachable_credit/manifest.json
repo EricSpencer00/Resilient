@@ -1,0 +1,53 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "proof_coverage_audit",
+    "hardening_embedded_infeasible_entry_is_not_reachable_credit",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "40d771d8eef69c21f04f67e392a021d8fb845ca9f71336a375340e699b593d7c"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/proof_coverage_audit.rs",
+      "sha256": "fb6784849f97b759565deec3ad726d3fb550dc180066891b205e0383c8a35a03"
+    }
+  ],
+  "result": {
+    "exit_code": 101,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "failed"
+      },
+      {
+        "name": "hardening_embedded_infeasible_entry_is_not_reachable_credit",
+        "status": "failed"
+      }
+    ],
+    "status": "failed"
+  },
+  "run_id": "7adfcbbd0814d94d1f34274a9f9e2081e3da8d9fdcb18983c9dae3d5dece1cd3",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "3efcbaf7ba1c61959dbd07e396d8599bbf6b4116",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}

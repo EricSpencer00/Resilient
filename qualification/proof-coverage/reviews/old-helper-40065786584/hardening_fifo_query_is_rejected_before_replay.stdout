@@ -1,0 +1,22 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'hardening_fifo_query_is_rejected_before_replay' (6906) panicked at resilient/tests/proof_coverage_audit.rs:575:5:
+assertion `left == right` failed: {"code":"authentication_timeout","detail":"subprocess deadline exceeded","stage":"authentication"}
+  left: String("authentication")
+ right: "binding"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hardening_fifo_query_is_rejected_before_replay ... FAILED
+
+failures:
+
+failures:
+    hardening_fifo_query_is_rejected_before_replay
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 1.23s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/hardening_fifo_query_is_rejected_before_replay
+E2E evidence verified: f68b121275ff2fbf96c430393bc3cea632c8c81834f83cd8f3bbf34d5a8c724a

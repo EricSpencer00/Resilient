@@ -1,0 +1,16 @@
+{
+  "run": 40065786584,
+  "source_commit": "3efcbaf7ba1c61959dbd07e396d8599bbf6b4116",
+  "source_tree": "0595b98df6c1f28c04784ce38f007ebf0b086845",
+  "base_commit": "9f1d870acc5d5ba963a7e27d522e60aa70f7213e",
+  "cases": [
+    "hardening_changed_trusted_solver_is_rejected",
+    "hardening_embedded_infeasible_entry_is_not_reachable_credit",
+    "hardening_fifo_policy_is_rejected_without_opening_it",
+    "hardening_fifo_query_is_rejected_before_replay",
+    "hardening_oversized_manifest_has_structured_resource_rejection",
+    "integration_zeroarity_bv_branch_checkpoints_are_supported",
+    "integration_bv_wrong_guard_rejects_valid_unsat_subset"
+  ],
+  "claim": "Seven actual old-helper defects; separate from 27 absent-auditor baseline failures. Solver executable/version and libz3 digest retained; complete dynamic linkage not established."
+}

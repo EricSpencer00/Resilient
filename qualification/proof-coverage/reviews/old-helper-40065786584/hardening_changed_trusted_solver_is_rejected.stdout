@@ -1,0 +1,22 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'hardening_changed_trusted_solver_is_rejected' (6762) panicked at resilient/tests/proof_coverage_audit.rs:448:5:
+assertion `left == right` failed: {"auxiliary_nonimplementation_obligations":0,"claim":"only the supplied independently reviewed policy; not automatic source completeness","code":"covered","compiler_sha256":"5331176124a023ad9eb0b1021955048af7045659e6893095ec64db4b62bddad4","policy_sha256":"f689fed49fec45707dd7fff25b6f5502ceaa9ffab07478294d8b17dcf49b818c","profile":"reviewed-integer-equality-v1","sites":[{"antecedent":"sat","obligation":["covered:ensures:0","ensures_implementation",0],"query_sha256":"abe15a038ddf7030e017c41a7cde6198eb9f2eecb0bf05cfcb7d42a1d298c004","site":{"clause":0,"declaration":"program::covered","path":"then","source":"program.rz"}},{"antecedent":"sat","obligation":["covered:ensures:0","ensures_implementation",1],"query_sha256":"87a73b8651270f9de617023169ce83e2f24ecca472bfbc1c3a4c372e72ff0891","site":{"clause":0,"declaration":"program::covered","path":"else","source":"program.rz"}}],"solver_sha256":"a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3","source_graph_sha256":"df37fe7e65a2e5df79c299d9ec3b397809df7ba20adc70f62828fbf44f740bb6","stage":"coverage","unselected":[]}
+  left: String("coverage")
+ right: "binding"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hardening_changed_trusted_solver_is_rejected ... FAILED
+
+failures:
+
+failures:
+    hardening_changed_trusted_solver_is_rejected
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.44s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/hardening_changed_trusted_solver_is_rejected
+E2E evidence verified: 621694f48ba951701bf62e4d6cdb2bb4b38bf6f0660659224306e2725a75cf28
