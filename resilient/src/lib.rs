@@ -31106,13 +31106,26 @@ fn write_proof_artifacts(
         obligations,
     };
     let manifest_path = dir.join("manifest.json");
-    fs::write(&manifest_path, cert_sign::format_manifest_json(&manifest))
+    let manifest_json = cert_sign::format_manifest_json(&manifest);
+    fs::write(&manifest_path, &manifest_json)
         .map_err(|e| format!("could not write {}: {}", manifest_path.display(), e))?;
 
     // RES-194: sign the batch (for RES-194's verify-cert path).
     // The per-obligation sigs written into the manifest above
     // handle the RES-195 finer-grained check — both are kept.
     if let Some(pk) = priv_b {
+        let manifest_signature = cert_sign::sign_payload(&pk, manifest_json.as_bytes());
+        let manifest_signature_path = dir.join("manifest.sig");
+        fs::write(
+            &manifest_signature_path,
+            cert_sign::format_signature_hex(&manifest_signature),
+        )
+        .map_err(|error| {
+            format!(
+                "could not write {}: {error}",
+                manifest_signature_path.display()
+            )
+        })?;
         let payload = cert_sign::compute_cert_payload(dir)?;
         let sig = cert_sign::sign_payload(&pk, &payload);
         let sig_path = dir.join("cert.sig");
@@ -32958,6 +32971,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     let mut dir_path: Option<PathBuf> = None;
     let mut pubkey_path: Option<PathBuf> = None;
     let mut run_z3 = false;
+    let mut require_manifest_signature = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
@@ -32970,6 +32984,8 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
             pubkey_path = Some(PathBuf::from(&args[i]));
         } else if let Some(p) = a.strip_prefix("--pubkey=") {
             pubkey_path = Some(PathBuf::from(p));
+        } else if a == "--require-manifest-signature" {
+            require_manifest_signature = true;
         } else if a == "--z3" {
             run_z3 = true;
         } else if dir_path.is_none() {
@@ -33007,7 +33023,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     // obligation actually has a sig — avoids wasting work when
     // the manifest is entirely unsigned.
     let any_signed = manifest.obligations.iter().any(|o| o.sig.is_some());
-    let pub_b: Option<[u8; 32]> = if any_signed {
+    let pub_b: Option<[u8; 32]> = if any_signed || require_manifest_signature {
         let pem_text = match pubkey_path {
             Some(p) => match fs::read_to_string(&p) {
                 Ok(s) => s,
@@ -33028,6 +33044,24 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     } else {
         None
     };
+
+    if require_manifest_signature {
+        let Some(public_key) = pub_b.as_ref() else {
+            eprintln!("Error: manifest signature requires a public key");
+            return Some(1);
+        };
+        match cert_sign::verify_manifest_signature(&dir, manifest_text.as_bytes(), public_key) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("Error: manifest signature mismatch");
+                return Some(1);
+            }
+            Err(error) => {
+                eprintln!("Error: manifest signature verification failed: {error}");
+                return Some(1);
+            }
+        }
+    }
 
     if run_z3 && manifest.obligations.is_empty() {
         eprintln!("Error: --z3 requested but the manifest contains no obligations to replay");
@@ -34404,7 +34438,7 @@ Run `rz --help` for global flags and other subcommands.
 const VERIFY_ALL_HELP_TEXT: &str = r#"rz verify-all — re-check every obligation in a manifest
 
 USAGE:
-    rz verify-all <dir> [--pubkey <path>] [--z3]
+    rz verify-all <dir> [--pubkey <path>] [--z3] [--require-manifest-signature]
 
 STATUS:
     backend-limited; requires --features z3
@@ -34415,6 +34449,8 @@ CHECKS:
     Replay requires nonempty obligations; a missing or failed solver is an error.
 
 FLAGS:
+        --require-manifest-signature
+                         Require a valid signature over the exact manifest bytes
         --pubkey PATH    Verify signatures with a PEM public key override
         --z3             Re-run Z3 on each certificate when the z3 binary is available
                          Fail if the solver is unavailable or obligations are empty
