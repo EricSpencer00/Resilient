@@ -150,3 +150,23 @@ fn empty_iteration_has_no_executed_obligations() {
         no_proof(source, true);
     }
 }
+
+#[test]
+fn final_body_does_not_create_a_nonexistent_check() {
+    for source in [
+        "for x in [1] invariant x >= 0 { x = -1; }",
+        "for x in [1] { invariant x >= 0; x = -1; }",
+    ] {
+        Fixture::new(source).replay(2);
+    }
+}
+
+#[test]
+fn next_element_rebinds_before_its_invariant_check() {
+    for source in [
+        "for x in [1, 2] invariant x >= 0 { x = -1; }",
+        "for x in [1, 2] { invariant x >= 0; x = -1; }",
+    ] {
+        Fixture::new(source).replay(3);
+    }
+}
