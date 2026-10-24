@@ -224,8 +224,6 @@ fn walk(
             let Some(elements) = literal_int_array(iterable) else {
                 return;
             };
-            let mut assigned: BTreeSet<&str> = BTreeSet::new();
-            collect_assigned_names(body, &mut assigned);
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 try_prove_for_in_invariant(
                     tc,
@@ -234,7 +232,6 @@ fn walk(
                     body,
                     &elements,
                     &entry_bindings,
-                    &assigned,
                     span,
                     next_idx,
                     timeout_ms,
@@ -373,10 +370,12 @@ fn try_prove_invariant(
     }
 }
 
-/// Prove a loop invariant over a finite literal integer array. The base
-/// obligation is identical to a `while` invariant; each inductive obligation
-/// specializes the loop binding to one concrete element before asking the
-/// existing weakest-precondition prover to discharge the body.
+/// Symbolically execute a finite literal array from the known entry state.
+/// Invariants are checked after each element is bound, before the body runs.
+/// The base query checks the first entry; each step checks the current entry
+/// and (when present) the next entry after body execution and rebinding. These
+/// overlapping checkpoints preserve the base/step capture layout; they are
+/// not distinct source invariants or a requirement on the final body state.
 #[cfg(feature = "z3")]
 #[allow(clippy::too_many_arguments)]
 fn try_prove_for_in_invariant(
@@ -386,68 +385,85 @@ fn try_prove_for_in_invariant(
     body: &Node,
     elements: &[i64],
     bindings: &HashMap<String, i64>,
-    assigned: &BTreeSet<&str>,
     loop_span: &Span,
     next_idx: &mut usize,
     timeout_ms: u32,
     verbose: bool,
 ) {
-    // Iteration-binding semantics need a separate model; do not certify them
-    // merely because the newly reachable annotation passes the accumulator model.
-    let mut uses_iteration_binding = false;
-    crate::uniqueness_walk::visit(invariant, &mut |node| {
-        if let Node::Identifier { name, .. } = node {
-            uses_iteration_binding |= name == loop_name;
-        }
-    });
-    if elements.is_empty() || uses_iteration_binding || assigned.contains(loop_name) {
+    // There is no executed checkpoint for an empty iterable, so no proof is
+    // emitted. Bound trace expansion keeps best-effort verification finite.
+    if elements.is_empty() || elements.len() > 128 {
         return;
     }
+    let Node::Block { stmts, .. } = body else {
+        return;
+    };
+    let mut state: HashMap<String, Node> = bindings
+        .iter()
+        .map(|(name, value)| (name.clone(), integer_node(*value)))
+        .collect();
+    state.insert(loop_name.to_string(), integer_node(elements[0]));
+    let Some(first_entry) = finite_state_expression(invariant, &state) else {
+        return;
+    };
     let prove = if tc.captures_proofs() {
         crate::verifier_z3::prove_tautology_with_certificate
     } else {
         crate::verifier_z3::prove_tautology_with_axioms_and_timeout
     };
-
-    let (base_proven, base_cert, _timed) = prove(invariant, bindings, &[], timeout_ms);
+    // State expressions already capture entry constants. Passing the outer
+    // bindings again would reintroduce a shadowed iteration name.
+    let no_bindings = HashMap::new();
+    let (base_proven, base_cert, _) = prove(&first_entry, &no_bindings, &[], timeout_ms);
     if !base_proven || (tc.captures_proofs() && base_cert.is_none()) {
         return;
     }
-
-    let mut step_bindings: HashMap<String, i64> = HashMap::with_capacity(bindings.len());
-    for (key, value) in bindings {
-        if key != loop_name && !assigned.contains(key.as_str()) {
-            step_bindings.insert(key.clone(), *value);
-        }
-    }
-    let wp = match weakest_precondition(body, invariant) {
-        Some(q) => q,
-        None => return,
-    };
-    let true_node = Node::BooleanLiteral {
-        value: true,
-        span: Span::default(),
-    };
+    let mut current_entry = first_entry;
     let mut step_certs = Vec::with_capacity(elements.len());
-    for element in elements {
-        let specialized = substitute(
-            &wp,
-            loop_name,
-            &Node::IntegerLiteral {
-                value: *element,
+    for index in 0..elements.len() {
+        for stmt in stmts {
+            match stmt {
+                Node::Assignment { name, value, .. } => {
+                    let Some(value) = finite_state_expression(value, &state) else {
+                        return;
+                    };
+                    state.insert(name.clone(), value);
+                }
+                Node::InvariantStatement { .. } => {}
+                _ => return,
+            }
+        }
+        let next_entry = if let Some(element) = elements.get(index + 1) {
+            // A write to the iteration variable belongs to this iteration;
+            // the next actual element replaces it before the next check.
+            state.insert(loop_name.to_string(), integer_node(*element));
+            let Some(entry) = finite_state_expression(invariant, &state) else {
+                return;
+            };
+            Some(entry)
+        } else {
+            None
+        };
+        let goal = match &next_entry {
+            Some(entry) => Node::InfixExpression {
+                left: Box::new(current_entry.clone()),
+                operator: "&&",
+                right: Box::new(entry.clone()),
                 span: Span::default(),
             },
-        );
-        let goal = build_implication(invariant, &true_node, &specialized);
-        let (step_proven, step_cert, _timed) = prove(&goal, &step_bindings, &[], timeout_ms);
-        if !step_proven || (tc.captures_proofs() && step_cert.is_none()) {
+            None => current_entry.clone(),
+        };
+        let (proven, cert, _) = prove(&goal, &no_bindings, &[], timeout_ms);
+        if !proven || (tc.captures_proofs() && cert.is_none()) {
             return;
         }
-        if let Some(cert) = step_cert {
+        if let Some(cert) = cert {
             step_certs.push(cert.smt2);
         }
+        if let Some(entry) = next_entry {
+            current_entry = entry;
+        }
     }
-
     let idx = *next_idx;
     *next_idx += 1;
     tc.push_loop_invariant_certificates(
@@ -455,7 +471,6 @@ fn try_prove_for_in_invariant(
         base_cert.map_or_else(String::new, |cert| cert.smt2),
         step_certs,
     );
-
     let inv_span = invariant_span(invariant).unwrap_or(loop_span);
     if verbose {
         eprintln!(
@@ -463,6 +478,48 @@ fn try_prove_for_in_invariant(
             inv_span.start.line, inv_span.start.column
         );
     }
+}
+
+#[cfg(feature = "z3")]
+fn integer_node(value: i64) -> Node {
+    Node::IntegerLiteral {
+        value,
+        span: Span::default(),
+    }
+}
+
+/// Substitute a snapshot simultaneously: stored expressions refer to the
+/// original entry state and must never be rebound by a later assignment.
+#[cfg(feature = "z3")]
+fn finite_state_expression(node: &Node, state: &HashMap<String, Node>) -> Option<Node> {
+    let expression = match node {
+        Node::Identifier { name, .. } => state.get(name).unwrap_or(node).clone(),
+        Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => node.clone(),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            span,
+        } => Node::InfixExpression {
+            left: Box::new(finite_state_expression(left, state)?),
+            operator,
+            right: Box::new(finite_state_expression(right, state)?),
+            span: *span,
+        },
+        Node::PrefixExpression {
+            operator,
+            right,
+            span,
+        } => Node::PrefixExpression {
+            operator,
+            right: Box::new(finite_state_expression(right, state)?),
+            span: *span,
+        },
+        _ => return None,
+    };
+    let mut nodes = 0;
+    crate::uniqueness_walk::visit(&expression, &mut |_| nodes += 1);
+    (nodes <= 32_768).then_some(expression)
 }
 
 /// `let NAME = INT_LITERAL` — extract the literal value.
