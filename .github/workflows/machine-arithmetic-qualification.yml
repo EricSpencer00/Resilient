@@ -108,6 +108,13 @@ jobs:
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/machine-arithmetic-qualification
         run: python3 qualification/machine-arithmetic/capture_queries.py resilient/target/debug/rz "$EVIDENCE_ROOT/raw" "$EVIDENCE_ROOT/signed-queries"
+      - name: Observe independent source-review fixtures
+        if: matrix.phase == 'final'
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/machine-arithmetic-qualification
+        run: |
+          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/review-observations-e2e" --input qualification/machine-arithmetic/review_observations.py -- python3 qualification/machine-arithmetic/review_observations.py resilient/target/debug/rz "$EVIDENCE_ROOT/review-observations"
+          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/review-observations-e2e"
       - name: Retain source-bound records
         if: always()
         uses: actions/upload-artifact@v4
