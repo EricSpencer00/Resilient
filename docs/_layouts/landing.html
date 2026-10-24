@@ -279,12 +279,7 @@ main();</pre>
 
         <div class="rl-terminal-v2">
           <div class="rl-terminal-v2__prompt">$ rz --emit-certificate ./certs ident_round.rz</div>
-<pre class="rl-terminal-v2__out"><span class="t-cert">→</span>  <span class="t-mu">Exported obligation</span>
-./certs/ident_round__decl__0.smt2
-
-<span class="t-cert">→</span>  <span class="t-mu">Replay the query with Z3</span>
-z3 -smt2 ./certs/ident_round__decl__0.smt2
-<span class="t-ok">unsat</span></pre>
+<pre class="rl-terminal-v2__out">Wrote 1 verification certificate(s) to certs</pre>
         </div>
       </div>
 
@@ -293,8 +288,9 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
           <code>requires</code> states what must hold on entry.
           <code>ensures</code> states what must hold on exit. The Z3 backend
           checks supported obligations. Request SMT&#8209;LIB2 export with
-          <code>--emit-certificate</code>, then replay the emitted query
-          independently with Z3.
+          <code>--emit-certificate</code>. Replay the example query with
+          <code>z3 -smt2 ./certs/ident_round__decl__0.smt2</code>
+          using a separately installed Z3 command-line tool.
         </p>
 
         <ul class="rl-contracts__list">
