@@ -45,6 +45,7 @@ jobs:
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_export_boundary.rs" > resilient/tests/machine_arithmetic_export_boundary.rs
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_runtime_guards.rs" > resilient/tests/machine_arithmetic_runtime_guards.rs
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_rejected_report.rs" > resilient/tests/machine_arithmetic_rejected_report.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_branch_profile.rs" > resilient/tests/machine_arithmetic_branch_profile.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -71,7 +72,7 @@ jobs:
         env:
           BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
           LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-        run: cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --no-run --test machine_arithmetic_binding --test machine_arithmetic_boundaries --test machine_arithmetic_const_boundary --test machine_arithmetic_signed_replay --test machine_arithmetic_free_names --test machine_arithmetic_export_boundary --test machine_arithmetic_runtime_guards --test machine_arithmetic_rejected_report
+        run: cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --no-run --test machine_arithmetic_binding --test machine_arithmetic_boundaries --test machine_arithmetic_const_boundary --test machine_arithmetic_signed_replay --test machine_arithmetic_free_names --test machine_arithmetic_export_boundary --test machine_arithmetic_runtime_guards --test machine_arithmetic_rejected_report --test machine_arithmetic_branch_profile
       - name: Record each regression and its control
         env:
           PHASE: ${{ matrix.phase }}
@@ -81,7 +82,7 @@ jobs:
           MACHINE_ARITHMETIC_RECORDS: ${{ runner.temp }}/machine-arithmetic-qualification/raw
         run: |
           unexpected=0
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report machine_arithmetic_branch_profile; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
               set +e
               python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
@@ -91,8 +92,9 @@ jobs:
               result=$?
               set -e
               python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+              python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); cases=[o for o in v["result"]["outcomes"] if o["name"] != "command"]; assert len(cases)==1 and cases[0]["name"]==sys.argv[2], cases' "$EVIDENCE_ROOT/$test/manifest.json" "$test"
               expected=passed
-              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then
+              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile ]]; then
                 expected=failed
               fi
               if [[ "$PHASE" == final && "$test" == vm_runtime_requires_control ]]; then expected=failed; fi
@@ -145,9 +147,9 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}
         run: |
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report machine_arithmetic_branch_profile; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
-              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then continue; fi
+              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile ]]; then continue; fi
               if [[ "$test" == vm_runtime_requires_control ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
                 --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \

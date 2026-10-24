@@ -1986,7 +1986,7 @@ pub(crate) fn machine_query(
         for node in &axioms[entry_count..] { guards(ctx, node, &mut path_defined, &bindings)?; }
         for node in std::iter::once(goal).chain(evaluated.iter().copied()) { guards(ctx, node, &mut value_defined, &bindings)?; }
         fn conjunction<'c>(ctx: &'c z3::Context, values: &[Bool<'c>]) -> Bool<'c> {
-            Bool::and(ctx, &values.iter().collect::<Vec<_>>())
+            if values.is_empty() { Bool::from_bool(ctx, true) } else { Bool::and(ctx, &values.iter().collect::<Vec<_>>()) }
         }
         let entry = conjunction(ctx, &assumptions[..entry_count]);
         let path = conjunction(ctx, &assumptions[entry_count..]);
@@ -2001,12 +2001,13 @@ pub(crate) fn machine_query(
         solver.set_params(&params);
         let claim = Bool::and(ctx, &[&safety, &entry.implies(&path.implies(&formula))]);
         solver.assert(&claim.not());
+        let asserted_session = solver.to_string();
         let verdict = match solver.check() { z3::SatResult::Unsat => Some(true), z3::SatResult::Sat => Some(false), z3::SatResult::Unknown => None };
         let counterexample = if verdict == Some(false) { extract_counterexample_bv_width(ctx, &solver, goal, axioms, &bindings, 64) } else { None };
         let mut query = format!("; implementation-profile: {}\n; arithmetic-semantics: bytecode-vm; other-backends-unqualified\n(set-logic QF_BV)\n", crate::machine_arithmetic::PROFILE);
         // Solver display retains exact declarations/assertions, including any
         // let sharing, rather than rebuilding a second formula for replay.
-        query.push_str(&solver.to_string());
+        query.push_str(&asserted_session);
         query.push_str("\n(check-sat)\n");
         Some(MachineQuery { verdict, query, counterexample })
     })
