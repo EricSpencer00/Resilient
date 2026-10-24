@@ -7,6 +7,7 @@ on:
       - 'resilient/src/typechecker.rs'
       - 'resilient/src/verifier_z3.rs'
       - 'resilient/tests/finite_loop_binding_replay.rs'
+      - 'qualification/finite-loop/**'
       - '.github/workflows/finite-loop-binding-qualification.yml'
   workflow_dispatch:
 
@@ -75,6 +76,10 @@ jobs:
               test "$result" -eq 0
             fi
           done
+      - name: Retain independently replayed query examples
+        if: matrix.phase == 'final'
+        run: |
+          python3 qualification/finite-loop/capture_queries.py resilient/target/debug/rz "${{ runner.temp }}/finite-loop-binding-qualification/raw-queries"
       - name: Retain source-bound records
         if: always()
         uses: actions/upload-artifact@v4
