@@ -1,0 +1,61 @@
+{
+  "run": 40055340145,
+  "job": 120756985416,
+  "source_revision": "6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+  "compiler_sha256": "314632ab21416bfa826be8af6852744865cfef673375ac073b912d90887a4358",
+  "suite_count": 7,
+  "test_count": 33,
+  "failed": 0,
+  "ignored": 0,
+  "requirements": [
+    {
+      "requirement": "QHOST-001",
+      "source": "resilient/tests/contract_replay_roundtrip.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "contract_replay_roundtrip::straight_return_replays; contract_replay_roundtrip::branch_returns_replay_separately; contract_replay_roundtrip::constant_return_replays; contract_replay_roundtrip::false_postcondition_is_rejected",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-002",
+      "source": "resilient/tests/manifest_authentication.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "manifest_authentication::strict_replay_accepts_the_complete_signed_manifest; manifest_authentication::strict_replay_rejects_removed_obligations; manifest_authentication::strict_replay_rejects_reordered_obligations; manifest_authentication::strict_replay_rejects_changed_program_identity; manifest_authentication::strict_replay_rejects_missing_manifest_signature; manifest_authentication::strict_replay_rejects_wrong_manifest_key; manifest_authentication::legacy_replay_does_not_require_a_manifest_signature; manifest_authentication::compiler_signs_the_manifest_for_strict_replay",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-003",
+      "source": "resilient/tests/loop_certificate_roundtrip.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "loop_certificate_roundtrip::while_invariant_certificates_replay_with_real_solver; loop_certificate_roundtrip::finite_loop_certificates_replay_with_real_solver; loop_certificate_roundtrip::false_loop_invariant_does_not_emit_a_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-004",
+      "source": "resilient/tests/finite_loop_certificate_guards.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "finite_loop_certificate_guards::shadowed_iteration_binding_is_not_certified; finite_loop_certificate_guards::changing_iteration_binding_is_not_certified; finite_loop_certificate_guards::valid_iteration_binding_retains_runtime_check; finite_loop_certificate_guards::empty_iteration_does_not_claim_an_executed_invariant_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-005",
+      "source": "resilient/tests/solver_replay_bounds.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "solver_replay_bounds::replay_rejects_response_after_deadline; solver_replay_bounds::replay_rejects_oversized_whitespace_after_unsat; solver_replay_bounds::replay_rejects_invalid_timeout_configuration; solver_replay_bounds::replay_accepts_clean_response_within_budget",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-006",
+      "source": "resilient/tests/solver_replay_required.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "solver_replay_required::requested_replay_rejects_missing_absolute_solver; solver_replay_required::requested_replay_rejects_solver_absent_from_path; solver_replay_required::requested_replay_rejects_empty_obligation_set; solver_replay_required::hash_only_verification_does_not_require_solver",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-007",
+      "source": "resilient/tests/solver_replay_conformance.rs at 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+      "test": "solver_replay_conformance::replay_accepts_one_clean_unsat_response; solver_replay_conformance::replay_rejects_unsat_from_failed_process; solver_replay_conformance::replay_rejects_conflicting_or_extra_responses; solver_replay_conformance::replay_rejects_stderr_even_after_unsat; solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat; solver_replay_conformance::replay_rejects_nonproof_responses",
+      "result": "pass",
+      "evidence_control": "validation"
+    }
+  ]
+}

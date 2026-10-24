@@ -72,6 +72,26 @@ jobs:
                   tree = subprocess.check_output(['git', 'write-tree'], env=env, text=True).strip()
                   assert tree == source['tree'], (source['label'], tree)
           PYCODE
+      - name: Validate the populated host preparation dossier
+        run: |
+          (cd qualification/host-cli-2026-10 && sha256sum -c SHA256SUMS)
+          python3 - <<'PYTHON'
+          import json, re, subprocess
+          result = subprocess.run(
+              ['python3', 'scripts/check_qualification.py',
+               'qualification/host-cli-2026-10/package.json'],
+              text=True, capture_output=True)
+          print(result.stdout)
+          report = json.loads(result.stdout)
+          assert result.returncode == 1 and report['status'] == 'gaps'
+          assert report['certified'] is False
+          allowed = (': evidence not reviewed', ': missing reviewer', ': missing review_record',
+                     ': evidence_control must reference reviewed evidence')
+          unexpected = [gap for gap in report['gaps'] if not (
+              gap.endswith(allowed) or re.fullmatch(
+                  r'open_issues: [0-9]+ unresolved; resolve before intake completion', gap))]
+          assert not unexpected, unexpected
+          PYTHON
       - name: Verify any produced bundles after failure
         if: always()
         env:

@@ -85,3 +85,9 @@ The [saved-query replay record](certificate-replay/README.md) contains a real
 red/green regression run, operational requirements, failure analysis and actual
 Z3 observations for a pinned Linux baseline. Its scope and remaining gaps are
 explicit; it is an input to review, not an approved qualification package.
+
+The [host certificate/replay dossier](host-cli-2026-10/README.md) binds 33 actual
+hosted test outcomes to a retained debug compiler, exact source/environment,
+seven operational requirements, failure analysis and four populated preparation
+profiles. Independent/project acceptance remains pending. Its source-bound
+restrictions and original incomplete-archive disposition are retained.
