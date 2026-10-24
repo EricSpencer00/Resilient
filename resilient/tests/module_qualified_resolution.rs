@@ -220,3 +220,47 @@ fn same_member_name_keeps_distinct_qualified_contracts() {
         "7\n-7",
     );
 }
+
+#[test]
+fn qualified_module_call_resolves_before_declaration() {
+    positive(
+        "forward_module",
+        "println(m::f(7)); mod m { fn f(int x) -> int { return x; } }",
+        None,
+        "7",
+    );
+}
+#[test]
+fn qualified_member_argument_type_is_checked() {
+    negative(
+        "qualified_argument",
+        "mod m { fn f(int x) -> int { return x; } } println(m::f(\"wrong\"));",
+        None,
+        "expected int",
+    );
+}
+#[test]
+fn module_sibling_and_recursion_have_local_frontend_bindings() {
+    // Frontend binding only: runtime sibling/recursive lookup is separately observed above.
+    let out = run(
+        "local_type_bindings",
+        "mod m { fn f(int x) -> int { return helper(x); } fn helper(int x) -> int { return x; } fn count(int x) -> int { if x <= 0 { return 0; } return count(x - 1); } }",
+        None,
+        &["-t"],
+        "typecheck-only-no-runtime-credit",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+#[test]
+fn local_sibling_binding_does_not_resolve_outer_same_name() {
+    negative(
+        "local_shadow",
+        "fn helper(int x) -> int { return x; } mod m { fn helper(string x) -> string { return x; } fn f(int x) -> int { return helper(x); } }",
+        None,
+        "expected string",
+    );
+}
