@@ -1,0 +1,33 @@
+{
+  "schema": "resilient-source-origins-requirements-freeze/v1",
+  "phase": "frozen-test-only-preimplementation-feature-absence-baseline",
+  "source_base": "386cf95d6f593d729789ec529207eec0b15dbc6d",
+  "driver_sha256": "3f03a8d6a18e3e11fd91e5dc1e1c9f9cd11243477b03c4bee533063bb72191de",
+  "spec_sha256": "659de97e52b78533b7b26597502a683bf5d94fd318f1a77de4b03d264baf1d04",
+  "vectors_sha256": "2c7077ecf8910b864e44c3cc27f2330fd0a3bc907d49116c419cd81d4e49b9e1",
+  "accepted_vectors": 9,
+  "physical_declarations": 13,
+  "physical_sites": 16,
+  "new_tests": 6,
+  "producer_implemented": false,
+  "baseline_disposition": "missing command is feature absence, never compiler semantic red",
+  "historical_reviewed_driver_sha256": "e4f6b1161009d4cc016221dba650a853e123ebb8754cfcf0ee1227d6b4d91841",
+  "final_delta": "two lines enforce reviewed524288byte stdout bound for accepted/rejected reports",
+  "original_five_vectors": "unchanged from private v1; extra vectors are separate",
+  "input_threat_model": "stable owned filesystem; no concurrent path replacement/TOCTOU guarantee",
+  "sources": {
+    "execution-entry.rz": "c7f707bd08cc3b0aafb2f97917c32ec50751b79260804870f0acee6d079d58f9",
+    "interleaved.rz": "e5d62e7a4f3d17858ce9aa9e723e4e5ac880b8d122b29bb7cf7def5da35d89ea",
+    "method-zero.rz": "5c81e6f8e4900e8e285f6a6eb76aadface292cf435d23cedccd2e5b5cc5aa498",
+    "modules.rz": "3ae3c95d89dec941d1a7a0dbce01f186ab53e32d5ed5260c23567ee134ce1f9f",
+    "nested-scope.rz": "236404eda3ce09bd7059aff4c19ec35a37ec9aa1501f4556cb04e338173bb676",
+    "no-execution.rz": "0b3bb5571798ce42edd046fe463fea338db611d778d9e051a11e8555502c341a",
+    "parenthesized-trivia.rz": "4f03ebba9f941a72b5d63d160505fa6f03a5a470bc019a934e255e16537d8091",
+    "recovery-requires.rz": "eb8b863bd6d21913e8bca37f4976ae767ab30502689745761fc6a338e86e5614",
+    "recovery.rz": "399418d996edcb6538b78cb82440a2dc0e5bf149f07e6e8f04e730359a0779cb",
+    "repeated.rz": "9b311d92a9ed51e11bc3d394328ae0575c89ba4170c31b667d0c7d388e8c4d85",
+    "unsupported.rz": "c340c9a173adbabecc8f17059477dd5f77e35f6aba8bcf94eb0184eccbccdac3",
+    "use-alias.rz": "3b9541063a6edad3399dd10660da10ff97b461fff88868ff2206ecdac97dcaf4",
+    "utf8.rz": "de10bb1199afbc05ca5a55750e527d8a3687c919a6c25352587b0fffb3229d36"
+  }
+}
