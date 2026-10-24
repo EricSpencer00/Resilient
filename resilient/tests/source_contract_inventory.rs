@@ -1,6 +1,6 @@
 //! Independent inventory requirements are frozen separately from compiler output.
 #![cfg(unix)]
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
