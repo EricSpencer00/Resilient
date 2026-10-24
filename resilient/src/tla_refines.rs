@@ -6,7 +6,8 @@
 //! function has at most one mapping. For refined call paths, it also enforces
 //! the locked contract-required rule for `extern fn`: both a `requires` and an
 //! `ensures` clause must be present before the path can be modeled. TLA+ file
-//! loading, action discovery, and proof checking remain later increments.
+//! loading and lexical action discovery are checked for file-backed sources.
+//! Semantic refinement proof checking remains a later increment.
 
 use crate::Node;
 use std::collections::{HashMap, HashSet};
@@ -190,9 +191,9 @@ fn check_external_targets(source_path: &str, mappings: &[RefinesMapping]) -> Res
 }
 
 fn tla_defines_action(source: &str, action: &str) -> bool {
-    let mut in_block_comment = false;
+    let mut block_depth = 0;
     for line in source.lines() {
-        let code = strip_tla_comments(line, &mut in_block_comment);
+        let code = strip_tla_comments(line, &mut block_depth);
         let Some((left, _)) = code.split_once("==") else {
             continue;
         };
@@ -208,27 +209,39 @@ fn tla_defines_action(source: &str, action: &str) -> bool {
     false
 }
 
-fn strip_tla_comments(line: &str, in_block_comment: &mut bool) -> String {
+fn strip_tla_comments(line: &str, block_depth: &mut usize) -> String {
     let mut output = String::new();
-    let mut rest = line;
-    loop {
-        if *in_block_comment {
-            let Some(end) = rest.find("*)") else {
-                break;
-            };
-            *in_block_comment = false;
-            rest = &rest[end + 2..];
-        } else if let Some(start) = rest.find("(*") {
-            output.push_str(&rest[..start]);
-            *in_block_comment = true;
-            rest = &rest[start + 2..];
-        } else {
-            if let Some(start) = rest.find("\\*") {
-                output.push_str(&rest[..start]);
-            } else {
-                output.push_str(rest);
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if *block_depth > 0 {
+            if ch == '(' && chars.peek() == Some(&'*') {
+                chars.next();
+                *block_depth += 1;
+            } else if ch == '*' && chars.peek() == Some(&')') {
+                chars.next();
+                *block_depth -= 1;
             }
+        } else if quoted {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+        } else if ch == '\\' && chars.peek() == Some(&'*') {
             break;
+        } else if ch == '(' && chars.peek() == Some(&'*') {
+            chars.next();
+            *block_depth = 1;
+            // Removing a comment must not join separate identifier fragments.
+            output.push(' ');
+        } else {
+            quoted = ch == '"';
+            output.push(ch);
         }
     }
     output
