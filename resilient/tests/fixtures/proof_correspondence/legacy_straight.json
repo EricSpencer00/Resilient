@@ -1,0 +1,55 @@
+{
+  "schema": "resilient-structural-source-checkpoints",
+  "version": 1,
+  "profile": "legacy-lia-identity-v1",
+  "source": {
+    "path": "program.rz",
+    "sha256": "527159883e8af9699d7fdbef01e27fbf027b7e777a3ee31c106cbac573b370c2",
+    "bytes": 60
+  },
+  "qualified_declaration": "program::identity",
+  "clause": 0,
+  "paths": [
+    {
+      "id": "entry",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 0
+      },
+      "domain": "true",
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    }
+  ],
+  "claim": "Manually source-authored exact legacy-LIA path/return checkpoints. No BV reinterpretation, automatic source enumeration, or whole-query equivalence oracle. Source expectation authored before this fixture query capture."
+}

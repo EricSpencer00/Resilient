@@ -1,0 +1,1 @@
+fn identity(int x) -> int ensures result == x { return x; }
