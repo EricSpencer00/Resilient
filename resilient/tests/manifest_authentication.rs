@@ -157,7 +157,11 @@ fn legacy_replay_does_not_require_a_manifest_signature() {
 fn compiler_signs_the_manifest_for_strict_replay() {
     let fixture = Fixture::new();
     let source = fixture.0.join("program.rz");
-    std::fs::write(&source, "fn add(int a, int b) requires a > 0 requires b > 0 ensures result > a { return a + b; } add(1, 2);").unwrap();
+    std::fs::write(
+        &source,
+        "let n = 0; while n < 3 invariant n >= 0 { n = n + 1; }",
+    )
+    .unwrap();
     let certs = fixture.0.join("generated");
     let output = Command::new(env!("CARGO_BIN_EXE_rz"))
         .args(["--no-cache", "-t", "--emit-certificate"])

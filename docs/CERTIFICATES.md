@@ -221,3 +221,9 @@ per-obligation behavior and does not authenticate the enumeration. Manifest
 signing authenticates what the signer emitted; it does not establish that every
 source requirement was discovered, translated correctly or proven. The existing
 solver deadlines, output limits and strict UNSAT acceptance still apply.
+
+Saved-query emission currently covers captured query artifacts; it does not
+export implementation-grounded postcondition proofs from the separate
+contract-report path. A successful compilation can therefore emit an empty
+manifest. Requested solver replay rejects that empty set. Qualification claims
+must name the supported producer path and the obligations actually retained.

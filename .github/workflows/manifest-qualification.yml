@@ -28,8 +28,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.phase == 'baseline' && '8a5bdac10da8f8ab3cdaee8175a97bb5b8754861' || github.sha }}
+          ref: ${{ matrix.phase == 'baseline' && '1ba035737f057197a40dbd10400fdac051210e22' || github.sha }}
           fetch-depth: 0
+      - name: Install the same regression input on the production baseline
+        if: matrix.phase == 'baseline'
+        env:
+          CANDIDATE: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin "$CANDIDATE"
+          git show "$CANDIDATE:resilient/tests/manifest_authentication.rs" > resilient/tests/manifest_authentication.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1

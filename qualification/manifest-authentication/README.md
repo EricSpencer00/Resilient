@@ -7,9 +7,16 @@ completeness or external qualification approval under any safety standard.
 
 The public CLI suite `manifest_authentication` covers complete signed manifests,
 removed and reordered obligations, changed program identity, missing signatures,
-wrong keys, compiler signing and legacy compatibility. The frozen baseline is
-`8a5bdac10da8f8ab3cdaee8175a97bb5b8754861`. Its hosted run recorded seven failures
-and one passing legacy control: [baseline execution](https://github.com/EricSpencer00/Resilient/actions/runs/40048323027/job/120735070127).
+wrong keys, compiler signing and legacy compatibility. The production baseline is
+`1ba035737f057197a40dbd10400fdac051210e22`, with only the candidate's regression
+test file overlaid. Evidence records that test-only working-tree change and
+its input hash; the compiler source remains the baseline revision.
+The first development run recorded seven failures and one passing legacy
+control: [baseline execution](https://github.com/EricSpencer00/Resilient/actions/runs/40048323027/job/120735070127).
+The generated-bundle fixture was then corrected to use an already-supported
+loop proof, retaining the signature and real-solver assertions. The paired
+workflow reruns that corrected input against both production revisions.
+
 The failures establish that the proposed strict mode and emitted manifest
 signature were absent; they do not claim legacy mode promised those checks.
 
