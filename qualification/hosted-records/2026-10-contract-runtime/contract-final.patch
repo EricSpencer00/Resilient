@@ -1,0 +1,384 @@
+diff --git a/.github/workflows/contract-replay-qualification.yml b/.github/workflows/contract-replay-qualification.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe962ec7b41113367bc219419752546ad80882c5
+--- /dev/null
++++ b/.github/workflows/contract-replay-qualification.yml
+@@ -0,0 +1,120 @@
++name: Contract replay qualification
++
++on:
++  pull_request:
++    paths:
++      - 'resilient/src/contract_verify.rs'
++      - 'resilient/src/contract_verify/**'
++      - 'resilient/src/typechecker.rs'
++      - 'resilient/src/verifier_z3.rs'
++      - 'resilient/tests/contract_replay_roundtrip.rs'
++      - '.github/workflows/contract-replay-qualification.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: contract-replay-qualification-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  evidence:
++    name: contract replay (${{ matrix.phase }})
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    strategy:
++      fail-fast: false
++      matrix:
++        phase: [baseline, final]
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ matrix.phase == 'baseline' && 'c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694' || github.sha }}
++          fetch-depth: 0
++      - uses: dtolnay/rust-toolchain@stable
++        with:
++          toolchain: 1.99.1
++      - name: Install solver dependencies
++        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: resilient
++          key: contract-replay-qualification
++      - name: Record solver identity
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}/contract-replay-qualification
++        run: |
++          mkdir -p "$EVIDENCE_ROOT"
++          python3 - <<'PY'
++          import hashlib, json, os, pathlib, shutil, subprocess
++          binary = pathlib.Path(shutil.which('z3'))
++          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
++                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
++                    'libz3_sha256': hashlib.sha256(pathlib.Path('/usr/lib/x86_64-linux-gnu/libz3.so').read_bytes()).hexdigest()}
++          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
++          PY
++      - name: Record each regression and its control
++        env:
++          PHASE: ${{ matrix.phase }}
++          EVIDENCE_ROOT: ${{ runner.temp }}/contract-replay-qualification
++          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
++          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
++        run: |
++          for test in straight_return_replays branch_returns_replay_separately constant_return_replays false_postcondition_is_rejected; do
++            set +e
++            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
++              --input resilient/tests/contract_replay_roundtrip.rs -- \
++              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
++                --test contract_replay_roundtrip "$test" -- --exact --nocapture
++            result=$?
++            set -e
++            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
++            if [[ "$PHASE" == baseline && "$test" != false_postcondition_is_rejected ]]; then
++              test "$result" -ne 0
++            else
++              test "$result" -eq 0
++            fi
++          done
++      - name: Retain source-bound records
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: contract-replay-${{ matrix.phase }}-${{ github.sha }}
++          path: ${{ runner.temp }}/contract-replay-qualification
++          retention-days: 90
++          if-no-files-found: error
++
++  attest:
++    name: verify replay red-green evidence
++    needs: evidence
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/download-artifact@v4
++        with:
++          name: contract-replay-baseline-${{ github.sha }}
++          path: ${{ runner.temp }}/baseline
++      - uses: actions/download-artifact@v4
++        with:
++          name: contract-replay-final-${{ github.sha }}
++          path: ${{ runner.temp }}/final
++      - name: Verify paired evidence
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}
++        run: |
++          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
++          for test in straight_return_replays branch_returns_replay_separately constant_return_replays; do
++            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
++              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
++              --output "$EVIDENCE_ROOT/attestations/$test"
++            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
++              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
++          done
++      - uses: actions/upload-artifact@v4
++        with:
++          name: contract-replay-attestations-${{ github.sha }}
++          path: ${{ runner.temp }}/attestations
++          retention-days: 90
++          if-no-files-found: error
+diff --git a/qualification/contract-replay/README.md b/qualification/contract-replay/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bc8f4bee14a176248e231403acc38013eb96854e
+--- /dev/null
++++ b/qualification/contract-replay/README.md
+@@ -0,0 +1,24 @@
++# Implementation postcondition replay evidence
++
++The `ensures_implementation` records in `--emit-certificate` bundles retain
++independent SMT queries for the existing symbolic body model. Each record names
++the function and declared ensures-clause index; its index identifies the modeled
++return path. Every modeled path must prove before any record for that clause is
++exported. Constant and cached verdicts are regenerated with actual solver input.
++
++The hosted contract replay workflow compares the test-only baseline
++`c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694` against the candidate using identical
++CLI tests and pinned Rust 1.99.1. Three regressions cover straight returns,
++branch-specific returns and constant returns; a false postcondition remains a
++rejected control. The tests require signed-manifest verification, actual Z3
++replay, exact path counts and one solver session per query. Source-bound evidence
++and independently verified red/green attestations are retained for 90 days.
++
++These queries use the current translator's mathematical integer model and the
++existing symbolic evaluator's supported pure bodies. They do not establish
++machine-integer overflow behavior, compiler/code-generation correctness, or
++coverage of unsupported bodies. Clauses without `result`, unsupported models,
++unknown verdicts and missing certificates are not represented as implementation
++proofs. Consumers still need a separately reviewed inventory of required source
++obligations; authenticating an exported enumeration does not establish that it
++is complete. Qualification acceptance remains scoped to the assessed tool use.
+diff --git a/resilient/src/contract_verify.rs b/resilient/src/contract_verify.rs
+index 2a1b47c1d19e14d5e0412a7b0395bd6373f330bd..81a74d4f28b6ddd1aa524f4fa39230f39d888f52 100644
+--- a/resilient/src/contract_verify.rs
++++ b/resilient/src/contract_verify.rs
+@@ -295,6 +295,60 @@ pub(crate) fn prove_ensures(
+     (prove_clause(clause, requires), ProofBasis::ClauseOnly)
+ }
+ 
++/// Replay artifacts retain each modeled path as an independent solver session.
++#[cfg(feature = "z3")]
++pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> Option<Vec<String>> {
++    use symbolic_eval::ResultPath;
++    if !symbolic_eval::mentions_result(clause) {
++        return None;
++    }
++    let paths = match symbolic_eval::model_body(body)? {
++        ResultModel::Straight { ret } => vec![ResultPath {
++            condition: None,
++            ret,
++        }],
++        ResultModel::Branch {
++            condition,
++            then_ret,
++            else_ret,
++        } => vec![
++            ResultPath {
++                condition: Some(condition.clone()),
++                ret: then_ret,
++            },
++            ResultPath {
++                condition: Some(Box::new(symbolic_eval::negate(&condition))),
++                ret: else_ret,
++            },
++        ],
++        ResultModel::Paths { paths } => paths,
++    };
++    if paths.is_empty() {
++        return None;
++    }
++    paths
++        .into_iter()
++        .map(|path| {
++            let obligation = symbolic_eval::substitute_result(clause, &path.ret);
++            let mut axioms = requires.to_vec();
++            if let Some(condition) = path.condition {
++                axioms.push(*condition);
++            }
++            let (proven, certificate, _) = crate::verifier_z3::prove_tautology_with_certificate(
++                &obligation,
++                &std::collections::HashMap::new(),
++                &axioms,
++                CLAUSE_TIMEOUT_MS,
++            );
++            if proven {
++                certificate.map(|certificate| certificate.smt2)
++            } else {
++                None
++            }
++        })
++        .collect()
++}
++
+ /// Combine the two per-branch verdicts of an `if/else` case split: the
+ /// clause holds for the whole function only if it holds on *both*
+ /// reachable branches. A refutation on either branch refutes the
+diff --git a/resilient/src/typechecker.rs b/resilient/src/typechecker.rs
+index 10f930a8b67edb15f2083cdebcd9e6c8aae2f751..2b6864f30df825d4b5dacc417cb7ff9f0340b035 100644
+--- a/resilient/src/typechecker.rs
++++ b/resilient/src/typechecker.rs
+@@ -7280,6 +7280,36 @@ impl TypeChecker {
+                 // without `--features z3` — the prover degrades to
+                 // Unknown and nothing can reach the refuted state.
+                 crate::ensures_refutation::check(program, source_path)?;
++                #[cfg(feature = "z3")]
++                if self.emit_certificates
++                    && let Node::Program(statements) = program
++                {
++                    for statement in statements {
++                        if let Node::Function {
++                            name,
++                            requires,
++                            ensures,
++                            body,
++                            ..
++                        } = &statement.node
++                        {
++                            for (clause, ensures) in ensures.iter().enumerate() {
++                                if let Some(paths) =
++                                    crate::contract_verify::replay_ensures(ensures, requires, body)
++                                {
++                                    for (idx, smt2) in paths.into_iter().enumerate() {
++                                        self.certificates.push(CapturedCertificate {
++                                            fn_name: format!("{name}:ensures:{clause}"),
++                                            kind: "ensures_implementation",
++                                            idx,
++                                            smt2,
++                                        });
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
+                 // RES-1612 gate: pass scans for `Node::TryCatch`.
+                 if markers.has_try_catch {
+                     crate::try_catch::check(program, source_path)?;
+diff --git a/resilient/tests/contract_replay_roundtrip.rs b/resilient/tests/contract_replay_roundtrip.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b8007091b0e12b9577f71bae6d06662cfcb75e8e
+--- /dev/null
++++ b/resilient/tests/contract_replay_roundtrip.rs
+@@ -0,0 +1,116 @@
++//! Implementation-grounded contract proofs must survive the same signed replay used by consumers.
++#![cfg(feature = "z3")]
++
++use ed25519_dalek::SigningKey;
++use std::path::PathBuf;
++use std::process::Command;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++struct Fixture(PathBuf);
++
++impl Fixture {
++    fn new(source: &str) -> Self {
++        static NEXT: AtomicUsize = AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "res_contract_roundtrip_{}_{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir(&root).unwrap();
++        std::fs::write(root.join("program.rz"), source).unwrap();
++        let key = SigningKey::generate(&mut rand_core::OsRng);
++        for (name, label, bytes) in [
++            ("private.pem", "PRIVATE", key.to_bytes()),
++            ("public.pem", "PUBLIC", key.verifying_key().to_bytes()),
++        ] {
++            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
++            std::fs::write(root.join(name), format!(
++                "-----BEGIN ED25519 {label} KEY-----\n{hex}\n-----END ED25519 {label} KEY-----\n"
++            )).unwrap();
++        }
++        Self(root)
++    }
++
++    fn emit(&self) -> std::process::Output {
++        Command::new(env!("CARGO_BIN_EXE_rz"))
++            .args(["--no-cache", "-t", "--emit-certificate"])
++            .arg(self.0.join("certs"))
++            .arg("--sign-cert")
++            .arg(self.0.join("private.pem"))
++            .arg(self.0.join("program.rz"))
++            .output()
++            .unwrap()
++    }
++
++    fn replay(&self, subproofs: usize) {
++        let emitted = self.emit();
++        assert!(emitted.status.success(), "emit: {emitted:?}");
++        for command in ["verify-cert", "verify-all"] {
++            let mut verify = Command::new(env!("CARGO_BIN_EXE_rz"));
++            verify
++                .arg(command)
++                .arg(self.0.join("certs"))
++                .arg("--pubkey")
++                .arg(self.0.join("public.pem"));
++            if command == "verify-all" {
++                verify
++                    .arg("--require-manifest-signature")
++                    .arg("--z3")
++                    .env("Z3_BINARY", "z3");
++            }
++            let output = verify.output().unwrap();
++            assert!(output.status.success(), "{command}: {output:?}");
++        }
++        let manifest: serde_json::Value =
++            serde_json::from_slice(&std::fs::read(self.0.join("certs/manifest.json")).unwrap())
++                .unwrap();
++        let obligations: Vec<_> = manifest["obligations"]
++            .as_array()
++            .unwrap()
++            .iter()
++            .filter(|o| o["kind"] == "ensures_implementation")
++            .collect();
++        assert_eq!(
++            obligations.len(),
++            subproofs,
++            "every implementation path must be retained"
++        );
++        for obligation in obligations {
++            let query = std::fs::read_to_string(
++                self.0
++                    .join("certs")
++                    .join(obligation["cert"].as_str().unwrap()),
++            )
++            .unwrap();
++            assert_eq!(query.matches("(check-sat)").count(), 1, "{query}");
++            assert!(obligation["sig"].is_string());
++        }
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.0);
++    }
++}
++
++#[test]
++fn straight_return_replays() {
++    Fixture::new("fn identity(int x) -> int ensures result == x { return x; }").replay(1);
++}
++
++#[test]
++fn branch_returns_replay_separately() {
++    Fixture::new("fn maximum(int x, int y) -> int ensures result >= x && result >= y { if x > y { return x; } else { return y; } }").replay(2);
++}
++
++#[test]
++fn constant_return_replays() {
++    Fixture::new("fn seven() -> int ensures result == 7 { return 7; }").replay(1);
++}
++
++#[test]
++fn false_postcondition_is_rejected() {
++    let fixture = Fixture::new("fn wrong(int x) -> int ensures result > x { return x; }");
++    assert!(!fixture.emit().status.success());
++}

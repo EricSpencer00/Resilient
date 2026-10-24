@@ -1,0 +1,26 @@
+[
+  {
+    "label": "contract-baseline",
+    "commit": "c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694",
+    "base": "3094e7d7e8e4313a3801ef9cefc1406bc2be6002",
+    "tree": "c540400bbf95c0b66549128a366d2a52d02bf3fa",
+    "patch": "contract-baseline.patch",
+    "dirty": false
+  },
+  {
+    "label": "contract-final",
+    "commit": "dd68821162438478c65bbbdb4f1cff52f9e09afd",
+    "base": "3094e7d7e8e4313a3801ef9cefc1406bc2be6002",
+    "tree": "9b744dbc1c60dfb7a0876145bb47d7bbd0b4b86e",
+    "patch": "contract-final.patch",
+    "dirty": false
+  },
+  {
+    "label": "runtime",
+    "commit": "6b4eda17bb9a5be4be42d301c9d9044d85dc2cab",
+    "base": "3094e7d7e8e4313a3801ef9cefc1406bc2be6002",
+    "tree": "4767aa5e7bf6e065e9b0008f6709dd5e843a3c0b",
+    "patch": "runtime.patch",
+    "dirty": false
+  }
+]

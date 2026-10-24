@@ -1,0 +1,1617 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient-runtime/Cargo.toml",
+    "--locked",
+    "--features",
+    "vm",
+    "--",
+    "--test-threads=1"
+  ],
+  "evidence_sha256": {
+    "summary.md": "5711e4d10bef910012afbf463a36466b780b4ff713403b823148010d12e62400"
+  },
+  "inputs": [
+    {
+      "path": "resilient-runtime/src/gpio.rs",
+      "sha256": "932ab1bb586fbd00968fbf692ffadc166bb5b476dfba44cc7674e2d9064d2e95"
+    },
+    {
+      "path": "resilient-runtime/src/live_telemetry.rs",
+      "sha256": "23d13096f4fb6399f48f1ea173ecdde568b0797803d8b87c9fd6dd66751e2d40"
+    },
+    {
+      "path": "resilient-runtime/src/sink.rs",
+      "sha256": "caae62a20b8a3df77b790dd194d118f88f94f8a1f741c3b5d53e7f94f79e2c64"
+    },
+    {
+      "path": "resilient-runtime/tests/global_hook_serialization.rs",
+      "sha256": "ceada51d74e6f3cba93b2ba30a19d049bd6b83cc4f930fbcb61cee28bb91d6c7"
+    }
+  ],
+  "result": {
+    "exit_code": 0,
+    "outcomes": [
+      {
+        "name": "append_after_chain_move_returns_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "buffer::tests::float_buffer_exposes_stable_inline_storage",
+        "status": "passed"
+      },
+      {
+        "name": "buffer::tests::integer_buffer_checks_length_and_mutation",
+        "status": "passed"
+      },
+      {
+        "name": "buffer::tests::length_cannot_exceed_capacity",
+        "status": "passed"
+      },
+      {
+        "name": "buffer::tests::zero_capacity_buffer_is_valid_and_empty",
+        "status": "passed"
+      },
+      {
+        "name": "command",
+        "status": "passed"
+      },
+      {
+        "name": "decoded_callee_try_frame_cannot_leak_into_later_failure",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::builder_functions_match_method_outputs",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_append_fills_to_capacity",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_append_increments_len",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_append_resets_external_next_pointer",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_get_out_of_bounds_returns_none",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_head_ptr_points_at_first_descriptor",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_links_descriptors_through_next_pointer",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_oversized_capacity_is_invalid",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_starts_empty",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::chain_zero_capacity_is_invalid",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_accepts_largest_aligned_lengths",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_accepts_max_length",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_accepts_non_wrapping_address_boundary",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_byte_width_accepts_any_alignment",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_halfword_width_requires_2_byte_alignment",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_rejects_destination_range_wrap",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_rejects_oversized_length",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_rejects_partial_transfer_beats",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_rejects_source_range_wrap",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_rejects_zero_length",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_word_width_rejects_unaligned_dest",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::descriptor_new_word_width_rejects_unaligned_source",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::dma_width_alignment_matches_bytes_per_beat",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::empty_chain_start_has_null_head",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::empty_chain_total_bytes_is_zero",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::free_function_start_preserves_descriptor_links",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::large_chain_linking_all_descriptors",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::max_then_one_more_bytes_overflow",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::simulated_engine_walks_chain_and_copies_bytes",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::single_descriptor_chain_next_is_null",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::start_transfer_keeps_head_pointer_valid",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::start_transfer_preserves_descriptor_count",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::start_transfer_preserves_every_descriptor_link",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::total_bytes_sums_across_chain",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::transfer_descriptor_walks_chain",
+        "status": "passed"
+      },
+      {
+        "name": "dma::tests::zero_length_is_always_rejected",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::add_basic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::add_wraps_on_overflow",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::div_basic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::div_by_very_small_value_not_panic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::div_by_zero_returns_none",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::div_near_zero_one_by_near_one",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::fixed_32_32_arithmetic_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::fixed_32_32_construction",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_exact_min_value",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_nan_returns_none",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_negative_saturation",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_round_trips_exact_values",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_rounds_to_nearest",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_saturates_at_max",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_saturates_at_min",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_saturation_at_boundary",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_very_large_value_saturates",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_very_small_negative_saturates",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_float_with_d_ge_64_returns_none_no_panic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_int_negative_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_int_overflow_returns_none",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_int_rejects_signed_scale_overflow",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::from_int_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::invalid_width_rejected_by_from_int",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::invalid_width_rejected_by_new",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::mul_basic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::mul_correct_scaling_for_64bit",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::mul_negative_overflow_wraps",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::neg_at_min_wraps_to_itself",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::neg_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::one_point_six_three_preserves_negative_one_boundary",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::one_point_six_three_truncates_subunit_values_toward_zero",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::one_valid_config_still_ok",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::one_with_d_ge_64_returns_none_no_panic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::ordering_is_value_ordering",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::out_of_range_raw_rejected_for_32bit",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::sub_basic",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::valid_32bit_width",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::valid_64bit_width",
+        "status": "passed"
+      },
+      {
+        "name": "fixed::tests::zero_constants",
+        "status": "passed"
+      },
+      {
+        "name": "flat_loader_rejects_unreachable_out_of_range_branch_targets",
+        "status": "passed"
+      },
+      {
+        "name": "from_raw_neutralizes_invalid_widths",
+        "status": "passed"
+      },
+      {
+        "name": "from_raw_preserves_unchecked_values_for_valid_widths",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::gpio_pin_methods_offer_fallible_no_panic_paths",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::input_read_isolates_pins_within_port",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::input_read_returns_driven_level",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::invalid_pin_errors",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::moder_bits_are_updated_per_pin_without_disturbing_neighbours",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::moder_clears_back_to_input_from_output",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::output_set_high_writes_low_half_of_bsrr",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::output_set_low_writes_upper_half_of_bsrr",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::output_toggle_inverts_the_pin_via_odr",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_16_rejected",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_fifteen_input_valid",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_fifteen_output_valid",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_handles_carry_port_and_pin_accessors",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_zero_input_valid",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::pin_zero_output_valid",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::port_index_is_stable",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::stm32f4_mode_bit_values_match_reference_manual",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::stm32f4_port_addresses_match_reference_manual",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::stm32f4_register_offsets_match_reference_manual",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::typestate_round_trip_in_out_in",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::typestate_round_trip_out_in_out",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::typestate_transition_input_to_output",
+        "status": "passed"
+      },
+      {
+        "name": "gpio::tests::typestate_transition_output_to_input",
+        "status": "passed"
+      },
+      {
+        "name": "heap::inert_tests::peak_is_zero_without_alloc_feature",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::critical_section_nesting_restores_state",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::mixed_nested_styles",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::nested_with_critical_section_closure",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::nvic_irq_bounds_are_checked_before_mmio",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::priority_constants_ordered",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::priority_new_boundary_values",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::priority_ordering",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::priority_range",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::priority_to_nvic_byte",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::triple_nested_critical_sections",
+        "status": "passed"
+      },
+      {
+        "name": "interrupt::tests::with_critical_section_returns_value",
+        "status": "passed"
+      },
+      {
+        "name": "invalid_width_metadata_does_not_overflow_at_compile_time",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::backend_swap_replaces_target",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::clear_then_emit_is_noop",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::emit_delivers_to_installed_backend",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::emit_noops_without_backend",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::has_backend_false_after_clear",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::has_backend_starts_false",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::has_backend_true_after_set",
+        "status": "passed"
+      },
+      {
+        "name": "live_telemetry::tests::multiple_emit_calls_accumulate",
+        "status": "passed"
+      },
+      {
+        "name": "moved_chain_accessors_hide_stale_descriptor_links",
+        "status": "passed"
+      },
+      {
+        "name": "moved_populated_chain_fails_closed_before_dma_start",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::disable_clears_bit",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::enable_is_idempotent",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::enable_multiple_ports_independent",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::enable_sets_bit",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::integration_enable_then_is_enabled",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::invalid_bit_is_rejected_without_touching_register",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::is_enabled_reflects_state",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::stm32f4_gpio_enable_bits",
+        "status": "passed"
+      },
+      {
+        "name": "rcc::tests::stm32f4_gpio_enable_register_is_ahb1enr",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/fixed.rs - fixed::Fixed<N,D>::from_int (line 140)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/fixed.rs - fixed::Fixed<N,D>::to_int (line 166)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/gpio.rs - gpio::GpioPin (line 192) - compile fail",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/gpio.rs - gpio::Stm32f4 (line 469) - compile",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/heap.rs - heap::peak_bytes (line 67)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/interrupt.rs - interrupt (line 28)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/rcc.rs - rcc (line 12) - compile",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/sink.rs - sink (line 24)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/timer.rs - timer (line 13)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/uart.rs - uart::uart_init (line 372)",
+        "status": "ignored"
+      },
+      {
+        "name": "resilient-runtime/src/vm.rs - vm (line 40)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/loader.rs - vm::loader::load_and_run (line 123)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/loader.rs - vm::loader::load_and_run_with_functions (line 163)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/loader.rs - vm::loader::load_and_run_with_functions_and_closures (line 256)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/loader.rs - vm::loader::load_and_run_with_functions_and_tries (line 351)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/serde.rs - vm::serde (line 50)",
+        "status": "passed"
+      },
+      {
+        "name": "resilient-runtime/src/vm/serde.rs - vm::serde::decode_program (line 729)",
+        "status": "passed"
+      },
+      {
+        "name": "set_local_keeps_nonzero_capacity_bounds_behavior",
+        "status": "passed"
+      },
+      {
+        "name": "set_local_rejects_zero_call_capacity_without_panicking",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::empty_string_write_succeeds",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::failing_sink_surfaces_write_failed",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::multiple_writes_accumulate",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::print_first_write_fails_propagates",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::print_without_sink_returns_nosink_error",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::print_writes_to_installed_sink",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::println_appends_newline",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::println_fails_on_first_message_write",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::println_message_succeeds_but_newline_fails",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::println_multiple_lines_with_newlines",
+        "status": "passed"
+      },
+      {
+        "name": "sink::tests::set_sink_replaces_previous_installation",
+        "status": "passed"
+      },
+      {
+        "name": "sink_serializes_parallel_writes_and_fails_closed_on_reentry",
+        "status": "passed"
+      },
+      {
+        "name": "telemetry_serializes_parallel_events_and_fails_closed_on_reentry",
+        "status": "passed"
+      },
+      {
+        "name": "tests::bool_equality_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_arithmetic_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_division_by_zero_yields_inf_not_error",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_eq_uses_bit_compare_so_nan_equals_itself",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_inf_differs_from_neg_inf",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_nan_bit_equality_reflexive",
+        "status": "passed"
+      },
+      {
+        "name": "tests::float_nan_created_different_ways_are_bitwise_equal",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_add_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_add_wraps_at_min_boundary",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_add_wraps_large_values",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_add_wraps_on_overflow",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_div_by_zero_is_clean_error",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_div_min_by_neg_one_wraps_without_panic",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_mul_wraps_on_overflow",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_sub_and_mul",
+        "status": "passed"
+      },
+      {
+        "name": "tests::int_sub_wraps_at_min_boundary",
+        "status": "passed"
+      },
+      {
+        "name": "tests::mixed_eq_is_type_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "tests::mixed_int_float_is_type_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "tests::type_mismatch_on_int_plus_bool",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::bad_pwm_duty_rejected",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::callback_clear_via_none",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::delay_ms_blocks_until_elapsed",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::delay_ms_on_running_timer_errors",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::elapsed_us_saturates_at_u64_max",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::exact_max_timers_allocation",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::exhaustion_after_max_timers",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::extreme_one_shot_window_still_fires_once",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::extreme_periodic_window_has_bounded_callback_delivery",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::init_and_release_round_trip",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::multiple_timers_independent",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::one_shot_fires_once_and_auto_stops",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::one_shot_re_arms_on_restart",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::operations_on_released_id_error",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::over_megahertz_rejected",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::periodic_callback_fires_each_period",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::periodic_callback_handles_multi_period_tick",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_duty_500_is_50_percent",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_duty_cycle_period_callback_fires",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_full_duty_1000_stays_high",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_full_duty_is_always_high",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_level_on_non_pwm_errors",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_level_reflects_duty",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_zero_duty_0_stays_low",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::pwm_zero_duty_is_always_low",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::reset_zeroes_counters",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::slot_reuse_after_release",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::start_already_running_is_noop",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::stop_on_stopped_is_noop",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::stop_pauses_then_start_resumes",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::timer_id_index_is_observable",
+        "status": "passed"
+      },
+      {
+        "name": "timer::tests::zero_frequency_rejected",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::all_data_bits_round_trip",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::all_parity_modes_round_trip",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::all_stop_bits_round_trip",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::available_empty_at_start",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::available_reports_rx_depth",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::baud_zero_rejected_at_init",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::bytes_counters_independent",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::common_baud_rates_accepted",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::config_builder_overrides",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::config_defaults_to_8n1",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::config_is_copy_so_callers_can_reuse",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::empty_read_buf_is_a_noop",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::empty_write_is_a_noop",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::framing_combo_7e2",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::framing_combo_9n1",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::hardware_error_mid_read",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::hardware_error_on_write_first_byte",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::init_applies_config_to_transport",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::init_propagates_transport_unsupported",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::init_rejects_zero_baud_before_transport",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::loopback_byte_by_byte",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::loopback_round_trips_message",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::read_byte_returns_first_byte",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::read_drains_seeded_rx",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::read_partial_buffer_multiple_bytes",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::read_surfaces_hardware_error",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::write_byte_round_trips",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::write_partial_success_on_pressure",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::write_pushes_bytes_into_tx",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::write_spins_through_tx_pressure",
+        "status": "passed"
+      },
+      {
+        "name": "uart::tests::write_surfaces_hardware_error",
+        "status": "passed"
+      },
+      {
+        "name": "valid_width_metadata_is_unchanged",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_bad_magic_is_decode_failed_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_committed_closure_fixture_round_trips_through_real_decoder_and_vm",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_committed_closure_with_arguments_fixture",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_committed_fixture_round_trips_through_real_decoder_and_vm",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_inline_encoded_program",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_program_using_locals",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_stack_overflow_propagates_as_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_too_many_instrs_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_truncated_input_is_decode_failed_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_vm_error_propagates_as_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_with_functions_bad_magic_is_decode_failed_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_with_functions_calls_a_function",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_with_functions_no_functions_still_runs_main",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_with_functions_recursion_depth_exhaustion_is_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::loader::tests::load_and_run_with_functions_too_many_funcs_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_bad_bool_byte_is_bad_operand_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_bad_magic_is_bad_magic_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_bad_tag_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_bad_value_tag_is_bad_operand_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_empty_input_is_truncated_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_instr_count_exceeding_output_capacity_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_instr_count_lying_huge_is_too_many_instrs_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_never_panics_on_mutated_valid_encoding",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_never_panics_on_random_bytes",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_rejects_trailing_bytes_after_flat_program",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_truncated_header_is_truncated_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_truncated_mid_operand_is_truncated_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_truncated_mid_tag_stream_is_truncated_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::decode_unsupported_version_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::encode_empty_program_into_header_sized_buffer_succeeds",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::encode_into_undersized_buffer_is_buffer_too_small_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::encode_into_zero_length_buffer_is_buffer_too_small_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::encode_never_panics_on_undersized_buffers",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_accepts_valid_control_flow_references",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_never_panics_on_random_bytes",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_all_invalid_branch_targets",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_all_invalid_function_references",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_function_local_operands_out_of_range",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_invalid_function_references",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_invalid_try_handler_references",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_out_of_range_function_handler_pc",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_out_of_range_function_jump",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_out_of_range_handler_pc",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_out_of_range_main_jump",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_rejects_trailing_bytes_after_function_table",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_too_many_func_instrs_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_too_many_funcs_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_decode_wrong_version_is_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_roundtrip_no_functions",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_roundtrip_with_closure_function_and_vm_executes_it",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::program_roundtrip_with_functions_and_vm_executes_it",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_all_opcodes",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_all_value_variants",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_arithmetic_precedence_program",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_closure_value",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_empty_program",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_loop_program_and_it_still_executes_correctly",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_make_closure_and_call_closure",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_max_local_and_jump_operands",
+        "status": "passed"
+      },
+      {
+        "name": "vm::serde::tests::roundtrip_pop_and_tail_call",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::add_int_constants",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::arithmetic_precedence_program",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::bad_jump_target_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_closure_on_non_closure_value_is_type_mismatch_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_closure_with_bad_func_idx_is_function_out_of_bounds",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_inside_try_dispatches_to_matching_catch_arm",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_inside_try_with_no_fails_variant_runs_normally",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_inside_try_with_no_matching_arm_is_uncaught_checked_failure",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_outside_try_declaring_fails_runs_normally",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_passes_arguments_into_callee_locals",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_rejects_arity_larger_than_function_frame_without_writing_locals",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_returns_a_constant",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_to_out_of_range_function_index_is_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_under_bare_run_with_no_function_table_is_function_out_of_bounds",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_with_multiple_arguments_preserves_order",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::call_with_too_few_stack_values_for_arity_is_stack_underflow",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::checked_failure_unwinds_across_nested_call_frames",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::closure_call_rejects_capture_and_arity_overflowing_frame",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::closure_calling_fails_declaring_function_inside_try_dispatches_to_catch",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::closure_capture_is_by_value_not_live_shared",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::closure_stored_in_local_and_called_later_is_first_class",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::comparisons_produce_bool",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::enter_try_beyond_tries_capacity_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::enter_try_out_of_range_handler_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::eq_uses_bit_compare_so_nan_equals_itself",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::exit_try_on_empty_try_stack_is_tolerated_not_an_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::falling_off_end_without_return_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::float_arithmetic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::float_div_by_zero_yields_inf_not_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::forged_closure_handle_cannot_read_unallocated_capture_slot",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::int_add_wraps_on_overflow_no_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::int_div_by_zero_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::int_div_min_by_neg_one_wraps_without_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::int_rem_by_zero_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::jump_if_true_takes_branch",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::locals_out_of_bounds_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::loop_sums_one_to_five_via_jump",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::lt_on_bool_is_type_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::make_closure_and_call_closure_adds_capture_and_arg",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::make_closure_beyond_closures_capacity_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::make_closure_with_capture_count_over_max_is_type_mismatch_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::neg_int_and_float",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::neg_int_min_wraps_no_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::neg_on_bool_is_type_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::nested_calls_resume_correct_caller",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::nested_postcheck_calling_another_function_is_supported",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::not_negates_bool",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::not_on_int_is_type_mismatch",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::pop_discards_unused_call_result",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::pop_on_empty_stack_is_underflow_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::postcheck_call_stack_overflow_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::postcheck_non_bool_result_is_postcheck_violation_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::postcheck_rejects_frame_without_room_for_return_value",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::postcheck_runs_on_return_and_passes_when_result_satisfies_it",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::postcheck_violation_aborts_the_run_as_a_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::recursion_beyond_call_depth_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::recursive_call_within_depth_budget_succeeds",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::rem_int_and_float",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::return_on_empty_stack_is_underflow_not_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::set_local_out_of_bounds_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::set_local_seeds_before_run",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::stack_overflow_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::stack_underflow_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::store_and_load_local",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::store_local_out_of_bounds_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::tail_call_bad_function_index_is_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::tail_call_recursion_runs_in_constant_frame_space",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::tail_call_rejects_invalid_frame_before_constructing_a_reverse_range",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::tail_call_returns_to_original_caller",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::tail_call_with_missing_args_is_underflow_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::type_mismatch_add_int_bool_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::type_mismatch_branch_on_non_bool_is_a_typed_error_not_a_panic",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::vneq_is_negation_of_veq",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::zero_call_frame_capacity_is_a_typed_error",
+        "status": "passed"
+      },
+      {
+        "name": "vm::tests::zero_capacity_locals_still_runs_arithmetic",
+        "status": "passed"
+      }
+    ],
+    "status": "passed"
+  },
+  "run_id": "409e6054bc84ee484d975a82cfa50a9d71bf19f941840df2c52f0b4362b9d02e",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "6b4eda17bb9a5be4be42d301c9d9044d85dc2cab",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}
