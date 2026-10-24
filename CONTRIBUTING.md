@@ -219,6 +219,58 @@ arguments. If the test command fails, the runner still writes and verifies the
 failure artifact before returning that command's exit status. Run the verify
 command separately to validate the bundle after a failure.
 
+### Red-green evidence for end-to-end regressions
+
+For a regression fix, retain two execution bundles for the same
+test: a failing baseline recorded before the implementation changes, and a
+passing run after it. Use distinct output directories so the red bundle is not
+replaced by the green run:
+
+```bash
+INPUTS="--input Cargo.toml --input Cargo.lock --input resilient/Cargo.toml \
+  --input resilient/tests/it/<test_file>.rs"
+CMD="-- cargo test --manifest-path resilient/Cargo.toml --test it <test_name>"
+
+# 1. Add the regression test, run it before touching the implementation, and
+#    keep the bundle: the test must fail as a test failure.
+python3 agent-scripts/e2e-evidence.py run --output target/e2e-artifacts/red \
+  $INPUTS $CMD
+
+# 2. Implement the fix and commit it. Run the same command with the same inputs.
+python3 agent-scripts/e2e-evidence.py run --output target/e2e-artifacts/green \
+  $INPUTS $CMD
+
+# 3. Combine the two bundles and verify the combined evidence.
+python3 agent-scripts/e2e-evidence.py attest --test <test_name> \
+  --baseline target/e2e-artifacts/red --final target/e2e-artifacts/green
+python3 agent-scripts/e2e-evidence.py verify-attestation \
+  target/e2e-artifacts/red-green \
+  --baseline target/e2e-artifacts/red --final target/e2e-artifacts/green
+```
+
+The pairing checks consistency of recorded observations. It does not prove
+chronological test-first order, authenticate the runner, establish that all test
+fixtures were declared, or record the complete process environment. Review those
+properties separately before relying on the record for qualification.
+
+`attest` accepts the pair only when all of these hold:
+
+- The baseline records `<test_name>` as a failed test outcome, and no other
+  test fails. A build, launch, or harness failure does not count as red; those
+  runs have no outcome for the target test.
+- The final run records `<test_name>` as passed with exit status 0.
+- Both runs use the same command, declared inputs, and toolchain versions.
+  Test and fixture files must be declared with `--input` and must be identical
+  in both runs.
+- The two runs have different run IDs, so the implementation source or revision
+  changed between them.
+
+The output is `target/e2e-artifacts/red-green`: `attestation.json` embeds both
+run manifests and their checksums, `summary.md` is the human-readable report,
+and `checksums.sha256` covers the other two files. Re-running `attest` on the
+same inputs produces identical output. Passing `--baseline` and `--final` to
+`verify-attestation` re-verifies both source bundles against the attestation.
+
 ### Direct regression coverage
 
 Shipped language features and shipped CLI workflows should keep at least
@@ -538,3 +590,8 @@ Use this to confirm a cross-compile change works before tagging.
 - For security concerns, reach out to the maintainers privately
 
 Thank you for contributing to Resilient! 🚀
+
+The `Evidence validation` GitHub Actions workflow runs the collector and
+attestation regressions and validates retained qualification bundles. Its
+artifacts retain the workflow source identity and results for 90 days; copy
+accepted records to the project-controlled evidence repository before expiry.
