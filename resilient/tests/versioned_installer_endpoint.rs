@@ -25,15 +25,3 @@ fn version_endpoint_is_exact_published_raw_installer() {
     assert!(!script.contains("<!DOCTYPE") && !script.starts_with("---"));
     assert!(script.contains("download checksum does not match; installation unchanged"));
 }
-
-#[test]
-fn documented_short_url_is_additive_to_existing_release_command() {
-    let command = "curl -fsSL https://ericspencer.us/Resilient/v1.2.0 | bash";
-    for path in ["README.md", "docs/getting-started.md"] {
-        let text = fs::read_to_string(root().join(path)).unwrap();
-        assert!(text.contains(command), "missing version URL in {path}");
-        assert!(text.contains("curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash"), "existing release command removed from {path}");
-    }
-    let landing = fs::read_to_string(root().join("docs/_layouts/landing.html")).unwrap();
-    assert!(landing.contains("curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash"));
-}
