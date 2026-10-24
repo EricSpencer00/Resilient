@@ -1427,10 +1427,11 @@ impl Lexer {
         }
         'tokens: loop {
             self.skip_whitespace();
-            if self.ch == '\0' && self.position < self.input.len() {
-                if let Some(status) = status.as_deref_mut() {
-                    status.fail("embedded-nul");
-                }
+            if self.ch == '\0'
+                && self.position < self.input.len()
+                && let Some(status) = status.as_deref_mut()
+            {
+                status.fail("embedded-nul");
             }
             // Capture where this token STARTS so `Parser` can attribute
             // errors to the correct file:line:col.
@@ -5110,10 +5111,10 @@ impl Parser {
 
         self.origin_start_body();
         let body = self.parse_block_statement();
-        if !param_prefix.is_empty() {
-            if let Some(observer) = self.origins.as_mut() {
-                observer.reject_profile();
-            }
+        if !param_prefix.is_empty()
+            && let Some(observer) = self.origins.as_mut()
+        {
+            observer.reject_profile();
         }
         self.origin_finish_declaration();
         // RES-2600: prepend any struct-pattern destructure bindings.
@@ -5870,10 +5871,10 @@ impl Parser {
         }
         self.origin_start_body();
         let body = self.parse_block_statement();
-        if !method_prefix.is_empty() {
-            if let Some(observer) = self.origins.as_mut() {
-                observer.reject_profile();
-            }
+        if !method_prefix.is_empty()
+            && let Some(observer) = self.origins.as_mut()
+        {
+            observer.reject_profile();
         }
         self.origin_finish_declaration();
         // RES-2600: prepend struct-pattern destructure bindings.
