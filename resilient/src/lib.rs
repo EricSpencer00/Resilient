@@ -29157,9 +29157,29 @@ impl Interpreter {
                 // None means "use the initial body/parameters by reference".
                 let mut mtco_body: Option<Box<Node>> = None;
                 let mut mtco_params: Option<Vec<(String, String)>> = None;
+                let mut mtco_requires: Option<Vec<Node>> = None;
+                let mut entry_name = name.clone();
+                let mut reentry = false;
                 // RES-2790: the TCO loop yields Result so that body errors
                 // don't bypass deferred expressions. Defers always fire.
                 let body_outcome: Result<Value, String> = 'tco: loop {
+                    // Trampoline transitions are actual function entries too.
+                    // Parameters have been rebound before the next iteration;
+                    // evaluate the current target's guard before its body.
+                    if reentry {
+                        for clause in mtco_requires.as_deref().unwrap_or(requires.as_slice()) {
+                            let value = match interpreter.eval(clause) {
+                                Ok(value) => value,
+                                Err(error) => break 'tco Err(error),
+                            };
+                            if !interpreter.is_truthy(&value) {
+                                break 'tco Err(render_requires_violation_error(
+                                    &entry_name,
+                                    clause,
+                                ));
+                            }
+                        }
+                    }
                     let cur_body: &Node = mtco_body.as_deref().unwrap_or(body.as_ref());
                     let body_result = match interpreter.eval(cur_body) {
                         Ok(v) => v,
@@ -29179,6 +29199,7 @@ impl Interpreter {
                             for ((_, param_name), arg_value) in cur_params.iter().zip(new_args) {
                                 interpreter.env.set(param_name.clone(), arg_value);
                             }
+                            reentry = true;
                             continue 'tco;
                         }
                         Value::MutualTailCall {
@@ -29200,6 +29221,8 @@ impl Interpreter {
                                     callee
                                 ));
                             };
+                            mtco_requires = Some(fv.requires.clone());
+                            entry_name = callee.clone();
                             let p = (*fv.parameters).clone();
                             let b = Box::new((*fv.body).clone());
                             for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
@@ -29208,6 +29231,7 @@ impl Interpreter {
                             mtco_params = Some(p);
                             mtco_body = Some(b);
                             interpreter.mutual_tco_fn = Some(callee);
+                            reentry = true;
                             continue 'tco;
                         }
                         Value::Return(v) => match *v {
@@ -29218,6 +29242,7 @@ impl Interpreter {
                                 {
                                     interpreter.env.set(param_name.clone(), arg_value);
                                 }
+                                reentry = true;
                                 continue 'tco;
                             }
                             Value::MutualTailCall {
@@ -29239,6 +29264,8 @@ impl Interpreter {
                                         callee
                                     ));
                                 };
+                                mtco_requires = Some(fv.requires.clone());
+                                entry_name = callee.clone();
                                 let p = (*fv.parameters).clone();
                                 let b = Box::new((*fv.body).clone());
                                 for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
@@ -29247,6 +29274,7 @@ impl Interpreter {
                                 mtco_params = Some(p);
                                 mtco_body = Some(b);
                                 interpreter.mutual_tco_fn = Some(callee);
+                                reentry = true;
                                 continue 'tco;
                             }
                             other => break 'tco Ok(other),
