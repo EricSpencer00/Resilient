@@ -1,6 +1,7 @@
 //! The implementation proof profile is deliberately narrower than the language.
 //! It describes bytecode VM arithmetic, independently of a selected execution backend.
 use crate::Node;
+#[cfg(feature = "z3")]
 pub(crate) const PROFILE: &str = "vm-i64-wrap-v1";
 pub(crate) fn wrap_mode() -> bool {
     crate::vm::OverflowMode::from_env() == crate::vm::OverflowMode::Wrap
