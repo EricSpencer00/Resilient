@@ -28,7 +28,9 @@ list. Each imports record has `from`, the literal `specifier`, the confined
 null. Every literal-use occurrence is counted, including repeated edges and two
 aliases of the same file. Each physical source file is enumerated once; its
 contract sites do not become semantic import instances merely because aliases
-exist.
+exist. The catalog checks occurrence multiplicity but lacks per-use spans and
+resolved lexical binding context; array order is not an authenticated semantic
+identity.
 
 This is **not interchangeable with compiler source-binding graph v1**. That
 compiler graph records resolution edges, can deduplicate importer/specifier
@@ -45,7 +47,7 @@ reviewed links among physical source sites, resolved declaration/import binding
 instances and proof roles. Current function labels, raw callee names, unspanned
 clauses and character offsets are insufficient. The current tool supplies no
 such mapping or alias proof credit. Module/import/method obligations remain open
-under issue4953 even when their lexical sites appear in an inventory.
+under issue #4953 even when their lexical sites appear in an inventory.
 
 ## Trust and operation
 
@@ -67,16 +69,16 @@ reachability. Stable local snapshots are required; this is not an atomic snapsho
 or an adversarial concurrent-filesystem guarantee. No compiler, solver, package
 resolver or network process is invoked.
 
-Version1 bounds are32 files,128KiB per file,1MiB total source,65536 total tokens,
-depth32,256 declarations and1024 clauses, with a20-second POSIX main-thread
+Version 1 bounds are 32 files, 128 KiB per file, 1 MiB total source, 65536 total tokens,
+depth 32, 256 declarations and 1024 clauses, with a 20-second POSIX main-thread
 operation deadline. Errors are nonzero JSON results without partial inventory
 arrays. `inventoried` is a lexical outcome only. Unsupported proof bodies,
 unresolved references, clause-only results, infeasible entry conditions and
 explicitly unselected sites still need distinct downstream dispositions; none
 may silently become implementation proof coverage.
 
-The source-authored16-case requirements,20 boundary controls and15 token-kind
-controls have separate frozen histories. The first16-case candidate had named
+The source-authored 16-case requirements, 20 boundary controls and 15 token-kind
+controls have separate frozen histories. The first 16-case candidate had named
 passing outcomes but suppressed raw `println!` reports. Output-only harness v3
 will retain direct stdout reports under a separately recorded source version;
 old runs must not be relabeled as having retained those reports. The quoted-token
