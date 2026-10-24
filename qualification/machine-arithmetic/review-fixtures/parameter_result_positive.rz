@@ -1,0 +1,7 @@
+fn next(int result) -> int
+    requires result == 5
+    ensures result == 6
+{
+    return result + 1;
+}
+println(next(5));

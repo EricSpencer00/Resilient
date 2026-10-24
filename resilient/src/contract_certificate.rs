@@ -142,12 +142,31 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
     let _ = writeln!(out, "  \"schema\": \"{}\",", json_escape(SCHEMA));
     let _ = writeln!(out, "  \"schema_version\": {},", SCHEMA_VERSION);
     let _ = writeln!(out, "  \"source\": \"{}\",", json_escape(source_path));
+    #[cfg(feature = "z3")]
+    let _ = writeln!(
+        out,
+        "  \"implementation_profile\": \"{}\",",
+        if crate::machine_arithmetic::wrap_mode() {
+            crate::machine_arithmetic::PROFILE
+        } else {
+            "unsupported-overflow-mode"
+        }
+    );
     out.push_str("  \"functions\": [\n");
 
     let mut first_fn = true;
     if let Node::Program(stmts) = program {
         for stmt in stmts {
-            let Node::Function { name, .. } = &stmt.node else {
+            let Node::Function {
+                name,
+                parameters,
+                return_type,
+                requires,
+                ensures,
+                body,
+                ..
+            } = &stmt.node
+            else {
                 continue;
             };
             if !first_fn {
@@ -169,6 +188,32 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(out, "      \"provenance\": [{tags_json}],");
+            #[cfg(feature = "z3")]
+            if crate::contract_verify::machine_profile(
+                parameters,
+                return_type.as_deref(),
+                requires,
+                ensures,
+                body,
+            ) {
+                let mut diagnostics = Vec::new();
+                for (clause, ensures) in ensures.iter().enumerate() {
+                    if let Some(queries) =
+                        crate::contract_verify::implementation_queries(ensures, requires, body)
+                    {
+                        for (path, query) in queries.into_iter().enumerate() {
+                            diagnostics.push(format!("{{\"clause\":{clause},\"path\":{path},\"result\":\"{}\",\"query\":\"{}\"}}", match query.verdict { Some(true) => "unsat", Some(false) => "sat", None => "unknown" }, json_escape(&query.query)));
+                        }
+                    }
+                }
+                let _ = writeln!(
+                    out,
+                    "      \"implementation_queries\": [{}],",
+                    diagnostics.join(",")
+                );
+            }
+            #[cfg(not(feature = "z3"))]
+            let _ = (parameters, return_type, requires, ensures, body);
             out.push_str("      \"clauses\": [\n");
             let mut first_clause = true;
             for v in verdicts.iter().filter(|v| &v.function_name == name) {
@@ -189,6 +234,47 @@ pub(crate) fn emit(program: &Node, source_path: &str) -> String {
     }
     out.push_str("  ]\n}\n");
     out
+}
+
+/// A failed typecheck cannot grant program-level proof credit, even when
+/// individual parsed formulas happen to be valid. Raw queries remain diagnostics.
+pub(crate) fn emit_diagnostic(
+    program: &Node,
+    source_path: &str,
+    typecheck_status: &str,
+    reason: &str,
+) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&emit(program, source_path))
+    else {
+        return String::from("{\"diagnostic_only\":true,\"typecheck_status\":\"failed\"}");
+    };
+    value["diagnostic_only"] = serde_json::Value::Bool(true);
+    value["typecheck_status"] = serde_json::Value::String(typecheck_status.into());
+    value["diagnostic_reason"] = serde_json::Value::String(reason.into());
+    if let Some(functions) = value["functions"].as_array_mut() {
+        for function in functions {
+            if let Some(clauses) = function["clauses"].as_array_mut() {
+                for clause in clauses {
+                    if let Some(object) = clause.as_object_mut() {
+                        object.remove("smtlib2");
+                        if object.get("verdict").is_some_and(|v| v == "pass") {
+                            object.insert(
+                                "verdict".into(),
+                                serde_json::Value::String("unknown".into()),
+                            );
+                            if object.contains_key("basis") {
+                                object.insert(
+                                    "basis".into(),
+                                    serde_json::Value::String("clause-only".into()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    value.to_string()
 }
 
 /// C-E5: typed failure modes for certificate verification. Every

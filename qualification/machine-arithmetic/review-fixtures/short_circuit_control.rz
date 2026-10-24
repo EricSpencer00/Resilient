@@ -1,0 +1,6 @@
+fn guarded(int x) -> int
+    ensures result == x && (true || x / 0 == 0)
+{
+    return x;
+}
+guarded(7);
