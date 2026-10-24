@@ -1,0 +1,2 @@
+fn helper(int x) -> int { return x; }
+fn f(int x) -> int ensures result == x { return helper(x); }

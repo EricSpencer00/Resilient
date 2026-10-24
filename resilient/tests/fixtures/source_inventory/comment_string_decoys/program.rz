@@ -1,0 +1,3 @@
+// fn fake() ensures false { }
+/* ensures false; fn hidden() { } */
+fn f(int x) -> int ensures result == x { let text = "fn fake() ensures false { }"; return x; }

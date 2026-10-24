@@ -1,0 +1,82 @@
+{
+  "schema": "resilient-independent-source-inventory-expectation",
+  "version": 1,
+  "grammar": "restricted-declarations-v1",
+  "entry": "program.rz",
+  "files": [
+    {
+      "path": "program.rz",
+      "bytes": 163,
+      "sha256": "0673fc5bc99255a807da0604dea1d93c75394851bb1a80937ab85db62183eaec"
+    }
+  ],
+  "import_edges": [],
+  "declarations": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "method",
+      "lexical_scope": [
+        "Cell"
+      ],
+      "name": "f",
+      "header_span": [
+        38,
+        85
+      ],
+      "header_sha256": "f172a0892ba0fb461ad2b5f9d7784ae1b3ecd1e058c0eeafdd81b216d0e82586",
+      "body_features_for_review": [
+        "field_access"
+      ]
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "header_span": [
+        110,
+        149
+      ],
+      "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+      "body_features_for_review": []
+    }
+  ],
+  "contract_sites": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "method",
+      "lexical_scope": [
+        "Cell"
+      ],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        56,
+        84
+      ],
+      "clause_sha256": "fa0a46c61607e3aa3c37da7c46b2396fed9481ea2ef2ba96c6bc045ce8befc8f",
+      "clause_text": "result == self.value",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        129,
+        148
+      ],
+      "clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+      "clause_text": "result == x",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    }
+  ],
+  "compiler_observation": "not captured; syntax/type/mapping/proof dispositions remain unobserved",
+  "claim": "hand-authored lexical declaration and clause inventory, not compiler result or qualification acceptance"
+}
