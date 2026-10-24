@@ -7,7 +7,9 @@ import subprocess
 import sys
 import tempfile
 
+repo = pathlib.Path(__file__).resolve().parents[2]
 binary = pathlib.Path(sys.argv[1]).resolve()
+assert binary == (repo / "resilient/target/debug/rz").resolve()
 output = pathlib.Path(sys.argv[2]).resolve()
 output.mkdir(parents=True, exist_ok=True)
 # These are explanatory checkpoint identities; the solver verdict comes only
@@ -40,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="res-finite-signing-") as temporary:
         program.write_text(source + "\n")
         certificates = case_root / "certificates"
         run(str(binary), "--no-cache", "-t", "--emit-certificate", str(certificates), "--sign-cert", str(private), str(program))
-        run(str(binary), "verify-all", str(certificates), "--pubkey", str(public), "--z3")
+        run(str(binary), "verify-all", str(certificates), "--pubkey", str(public), "--require-manifest-signature", "--z3")
         manifest = json.loads((certificates / "manifest.json").read_text())
         assert len(manifest["obligations"]) == len(entries) + 1
         queries = []
@@ -52,6 +54,6 @@ with tempfile.TemporaryDirectory(prefix="res-finite-signing-") as temporary:
             assert verdict == "unsat", (query, verdict)
             checkpoints = [0] if index == 0 else list(range(index - 1, min(index + 1, len(entries))))
             queries.append({"cert": obligation["cert"], "sha256": hashlib.sha256(query.read_bytes()).hexdigest(), "checkpoints": checkpoints, "verdict": verdict})
-        record = {"source_commit": run("git", "rev-parse", "HEAD").decode().strip(), "source_tree": run("git", "rev-parse", "HEAD^{tree}").decode().strip(), "compiler_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "program_sha256": hashlib.sha256(program.read_bytes()).hexdigest(), "entry_checkpoints": entries, "queries": queries}
+        record = {"source_commit": run("git", "-C", str(repo), "rev-parse", "HEAD").decode().strip(), "source_tree": run("git", "-C", str(repo), "rev-parse", "HEAD^{tree}").decode().strip(), "compiler_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "program_sha256": hashlib.sha256(program.read_bytes()).hexdigest(), "entry_checkpoints": entries, "queries": queries}
         (case_root / "query-review.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
         print(f"retained {name}: {len(queries)} signed queries, independently unsat")
