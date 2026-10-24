@@ -150,12 +150,20 @@ class Parser:
         self.declarations, self.sites, self.imports, self.identities = [], [], [], set()
 
     def peek(self):
-        return self.tokens[self.position][1] if self.position < len(self.tokens) else None
+        if self.position >= len(self.tokens):
+            return None
+        token = self.tokens[self.position]
+        # A literal must neither act as syntax nor masquerade as end-of-input.
+        return ('string-literal',) if token[0] == 'string' else token[1]
 
     def take(self, value=None):
-        if self.position >= len(self.tokens) or (value is not None and self.peek() != value):
+        if self.position >= len(self.tokens):
             reject('unsupported_grammar', 'expected ' + str(value) + ' in ' + self.path)
         token = self.tokens[self.position]
+        if value is not None:
+            expected_kind = 'identifier' if value.isidentifier() else 'symbol'
+            if token[0] != expected_kind or token[1] != value:
+                reject('unsupported_grammar', 'expected ' + str(value) + ' in ' + self.path)
         self.position += 1
         return token
 
