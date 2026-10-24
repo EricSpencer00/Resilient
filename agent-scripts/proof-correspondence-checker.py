@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Compare authenticated saved queries with trusted, source-authored checkpoints."""
 import argparse
-import importlib.util
+import hashlib
+import stat
+import types
 import json
 import os
 from pathlib import Path
@@ -12,11 +14,42 @@ import sys
 import threading
 import time
 
-spec = importlib.util.spec_from_file_location('coverage_primitives', Path(__file__).with_name('audit-proof-coverage.py'))
-core = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(core)
 PROFILE = 'legacy-lia-identity-v1'
 DEPENDENCY_SHA256 = 'de839e6f5a2f108421aef147cf64830cfd179d65883b1ff79e1efe59588aab62'
+
+
+def bootstrap():
+    """Authenticate exact bounded regular-file bytes before executing any helper."""
+    path = Path(__file__).with_name('audit-proof-coverage.py')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 2 * 1024 * 1024:
+            raise ValueError('dependency must be a bounded regular file')
+        raw = b''
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            raw += chunk
+            if len(raw) > 2 * 1024 * 1024:
+                raise ValueError('dependency exceeds bounded size')
+    finally:
+        os.close(descriptor)
+    if hashlib.sha256(raw).hexdigest() != DEPENDENCY_SHA256:
+        raise ValueError('reviewed dependency digest differs')
+    module = types.ModuleType('coverage_primitives')
+    module.__file__ = str(path)
+    exec(compile(raw, str(path), 'exec'), module.__dict__)
+    return module
+
+
+try:
+    core = bootstrap()
+except (OSError, ValueError) as error:
+    print(json.dumps({'stage': 'binding', 'code': 'dependency_hash_mismatch',
+                      'detail': str(error), 'authenticated': False}, sort_keys=True))
+    sys.exit(1)
 
 
 def fail(code, detail):

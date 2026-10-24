@@ -34,11 +34,13 @@ root=pathlib.Path(sys.argv[1])/'agent-scripts'
 with tempfile.TemporaryDirectory() as directory:
     path=pathlib.Path(directory)
     for name in ['proof-correspondence-checker.py','audit-proof-coverage.py']: shutil.copyfile(root/name,path/name)
-    with (path/'audit-proof-coverage.py').open('a') as stream: stream.write('\n# altered reviewed dependency\n')
-    spec=importlib.util.spec_from_file_location('changed_checker',path/'proof-correspondence-checker.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-    try: m.audit(types.SimpleNamespace(timeout_seconds=20),{'authenticated':False})
-    except m.core.Rejected as e: assert e.stage=='binding' and e.code=='dependency_hash_mismatch',(e.stage,e.code)
+    marker=path/'payload-executed'
+    with (path/'audit-proof-coverage.py').open('a') as stream: stream.write('\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text("executed")\n')
+    spec=importlib.util.spec_from_file_location('changed_checker',path/'proof-correspondence-checker.py'); m=importlib.util.module_from_spec(spec)
+    try: spec.loader.exec_module(m)
+    except SystemExit as e: assert e.code==1,e.code
     else: raise AssertionError('changed helper accepted')
+    assert not marker.exists(),'untrusted top-level code executed'
 print('changed dependency rejected before source or replay')
 "#)
         .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
