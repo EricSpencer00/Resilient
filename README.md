@@ -269,7 +269,7 @@ curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/i
 
 The installer verifies the release checksum and configures your shell automatically.
 Open a new terminal to use `rz` if it is not already on your current PATH.
-Pin a version with `RZ_VERSION=v1.2.0 …`.
+Pin a version with `RZ_VERSION=v1.2.0 …`. The installer supports releases with published `SHA256SUMS`; older releases without checksums are not supported.
 
 #### Pre-built binaries
 
