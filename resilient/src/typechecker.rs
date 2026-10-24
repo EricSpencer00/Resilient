@@ -1026,7 +1026,7 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
         Node::Identifier { name, .. } => bindings.get(name).copied(),
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "-" => fold_const_i64(right, bindings).map(|v| -v),
+        } if *operator == "-" => fold_const_i64(right, bindings).and_then(i64::checked_neg),
         Node::InfixExpression {
             left,
             operator,
@@ -7290,9 +7290,17 @@ impl TypeChecker {
                             requires,
                             ensures,
                             body,
+                            parameters,
+                            return_type,
                             ..
                         } = &statement.node
                         {
+                            if !crate::machine_arithmetic::signature(
+                                parameters,
+                                return_type.as_deref(),
+                            ) {
+                                continue;
+                            }
                             for (clause, ensures) in ensures.iter().enumerate() {
                                 if let Some(paths) =
                                     crate::contract_verify::replay_ensures(ensures, requires, body)
@@ -8658,13 +8666,16 @@ impl TypeChecker {
                             // ever answer Unknown for it.
                             if verdict.is_none()
                                 && self.warn_unverified
-                                && !crate::ensures_refutation::discharged_against_body(
+                                && !(crate::machine_arithmetic::signature(
+                                    parameters,
+                                    return_type.as_deref(),
+                                ) && crate::ensures_refutation::discharged_against_body(
                                     name,
                                     clause,
                                     requires,
                                     body,
                                     decl_idx >= requires.len(),
-                                )
+                                ))
                             {
                                 emit_partial_proof_warning(&self.source_path, clause);
                             }
