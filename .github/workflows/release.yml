@@ -1,287 +1,213 @@
 name: release
-
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
   workflow_dispatch:
-
+    inputs:
+      source_ref:
+        description: 'Exact source commit to build (empty uses the selected workflow ref)'
+        required: false
+        type: string
 permissions:
-  contents: write
-
+  contents: read
+concurrency:
+  group: release-${{ inputs.source_ref || github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
-    name: build ${{ matrix.target }}
+    name: package ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
-          # RES-3979/RES-3985/RES-4102/RES-4113: both Linux release targets
-          # ship Z3 statically linked (`x86_64-unknown-linux-gnu`,
-          # `aarch64-unknown-linux-gnu`) — see the per-target
-          # "Build (..., Z3 static-linked...)" steps below for why each one
-          # works. Both macOS legs now *attempt* the same Homebrew-GCC
-          # static-Z3 recipe #4101 proved out locally; their build step
-          # falls back in-shell to the plain `--features lsp` build if the
-          # static-Z3 attempt fails — RES-4102 previously had to
-          # hard-revert the `aarch64-apple-darwin` leg to plain
-          # `--features lsp` because the static-Z3 step's *hard* failure
-          # skipped the whole release; the in-step fallback means a
-          # failure on either macOS leg degrades to the pre-RES-4113
-          # no-z3 binary instead of bricking the release. `x86_64-apple-
-          # darwin` moved off the arm64 `macos-latest` runner onto the
-          # native-Intel `macos-15-intel` runner so this is a real (non-cross)
-          # build — Homebrew's arm64-native GCC bottle can't cross-compile
-          # to x86_64, which is why that leg couldn't attempt Z3 before.
-          # Whichever path a macOS leg takes, it still ships a working
-          # binary; a no-z3 fallback just reports `Unknown` for obligations
-          # the hand-rolled folder (RES-060..065) can't discharge, same as
-          # every release before this one.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            z3: true
+            os: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            cross: true
-            z3: true
+            os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
             os: macos-15-intel
-            archive: tar.gz
-            z3: true
           - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-            z3: true
-
+            os: macos-15
+    env:
+      REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+      CARGO_BUILD_JOBS: 2
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
           targets: ${{ matrix.target }}
-
-      - name: Install cross (for aarch64-linux)
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      # RES-3979: build-time deps for `--features z3,z3-static`.
-      # `z3-sys` vendors Z3 4.12.1's C++ source and builds it via
-      # `cmake` — none of this touches the *runtime* host, only the
-      # build host needs these. `cmake`/`build-essential`/`pkg-config`
-      # are normally preinstalled on `ubuntu-latest`, but pin them
-      # explicitly so a runner-image change can't silently regress
-      # this step. `python3` drives Z3's own codegen scripts;
-      # `libclang-dev` provides `libclang.so`, which `bindgen` (a
-      # `z3-sys` build-dependency) needs to parse `z3.h`. Scoped off
-      # `matrix.cross` — the aarch64-linux leg builds inside the
-      # `cross-rs` Docker image instead (see `Cross.toml`'s `pre-build`
-      # hook), not on this bare `ubuntu-latest` host.
-      - name: Install Z3 static-link build deps (Linux native only)
-        if: matrix.z3 && !matrix.cross && runner.os == 'Linux'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: release-static-${{ matrix.target }}
+      - name: Resolve release identity
+        run: |
+          if [[ -n "$REQUESTED_SOURCE_REF" ]]; then [[ "$REQUESTED_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          test "$host" = '${{ matrix.target }}'
+          VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' resilient/Cargo.toml | head -1)
+          echo "RELEASE_TAG=v$VERSION" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$VERSION"; fi
+          test -z "$(git status --porcelain)"
+      - name: Install Linux static solver build tools
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential cmake python3 pkg-config libclang-dev
-
-      # RES-3985: macOS's default toolchain (Apple Clang) trips a
-      # two-phase name-lookup error compiling Z3 4.12.1's `math/lp`
-      # module (verified locally on Apple Clang bundled with a recent
-      # Xcode CLT) — the same failure noted below for why this PR
-      # couldn't originally enable Z3 here. Homebrew GCC 13 compiles it
-      # cleanly. `gcc@13`/`g++-13` ship both a `libstdc++.a` (static) and
-      # a `libstdc++.dylib` (dynamic) in the same directory; since Apple's
-      # `ld` prefers a dylib over a static archive when both are visible
-      # on the same `-L` path, stage *only* the `.a` (plus GCC's emulated-
-      # TLS helper, `libemutls_w.a` — Apple's runtime doesn't support
-      # GCC's native thread-local-storage model) into an isolated
-      # directory so the final link picks up the static archives, not
-      # Homebrew's dylibs (which end users won't have installed).
-      - name: Install Z3 static-link build deps (macOS via Homebrew GCC)
-        if: matrix.z3 && runner.os == 'macOS'
+      - name: Install macOS static solver build tools
+        if: runner.os == 'macOS'
         run: |
           brew install gcc@13
-          STAGE="$(mktemp -d)"
-          cp "$(gcc-13 -print-file-name=libstdc++.a)" "$STAGE/"
-          cp "$(gcc-13 -print-file-name=libemutls_w.a)" "$STAGE/"
-          echo "Z3_MACOS_STATIC_CXX_LIBDIR=$STAGE" >> "$GITHUB_ENV"
-
-      # RES-4002: ship LSP-capable release binaries by default so
-      # editor integration (the VS Code extension, `lspconfig`, etc.)
-      # works against a downloaded tarball with no source build. Adds
-      # `tower-lsp` + `tokio` to every release target's transitive
-      # dep tree; `--features lsp` stays opt-in for the regular
-      # (non-release) dev/CI build, so the fast-path build stays free
-      # of that dependency — see the `lsp` feature doc comment in
-      # `resilient/Cargo.toml`.
-      - name: Build (native)
-        if: "!matrix.cross && !matrix.z3"
-        run: cargo build --release --locked --target ${{ matrix.target }} --features lsp
-        working-directory: resilient
-
-      # RES-3979: static-link libz3 into the binary so the release
-      # tarball is fully self-contained (no `libz3.so` at runtime —
-      # verified via `ldd` locally). `CMAKE_POLICY_VERSION_MINIMUM` is a
-      # no-op on the cmake version `ubuntu-latest` ships today but
-      # future-proofs against a runner-image cmake bump (cmake >= 3.31
-      # otherwise refuses Z3's `cmake_minimum_required(VERSION 3.4)`).
-      # GCC 12/13/14 — what `ubuntu-latest` actually ships — compiles Z3
-      # 4.12.1's `math/lp` module cleanly (see the macOS step below for
-      # the toolchain that doesn't).
-      - name: Build (native, Z3 static-linked, Linux)
-        if: matrix.z3 && !matrix.cross && runner.os == 'Linux'
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          stage="$(mktemp -d)"
+          cp "$(gcc-13 -print-file-name=libstdc++.a)" "$stage/"
+          cp "$(gcc-13 -print-file-name=libemutls_w.a)" "$stage/"
+          echo "Z3_MACOS_STATIC_CXX_LIBDIR=$stage" >> "$GITHUB_ENV"
+      - name: Build Linux release with LSP and static Z3
+        if: runner.os == 'Linux'
         run: cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
         working-directory: resilient
-
-      # RES-3985: routes the build through Homebrew GCC 13 (installed in
-      # the deps step above) instead of Apple Clang, which is what makes
-      # Z3 4.12.1 compile here at all. Two things Apple Clang's default
-      # toolchain gets for free that GCC needs spelled out explicitly:
-      #   - `CXXSTDLIB=stdc++` tells `z3-sys`'s build script to link
-      #     against GNU's libstdc++ instead of its `apple`-target default
-      #     (Apple's libc++) — GCC-compiled objects use libstdc++'s ABI,
-      #     so linking against libc++ fails with missing-symbol errors
-      #     for every `std::` type Z3 touches.
-      #   - `RUSTFLAGS -L $Z3_MACOS_STATIC_CXX_LIBDIR` points the linker
-      #     at the isolated directory containing *only* the static
-      #     `libstdc++.a`/`libemutls_w.a` (see the deps step above for
-      #     why isolated), and `-l emutls_w` links GCC's emulated-TLS
-      #     helper explicitly — `z3-sys`'s build script only ever emits
-      #     one `-l` line (driven by `CXXSTDLIB`), so the emutls symbols
-      #     `synchronize_counters`/`memory::allocate`/etc. in Z3's
-      #     `memory_manager.cpp` need a second, manual link line.
-      # Verified end-to-end locally (`aarch64-apple-darwin`, Homebrew GCC
-      # 13.4.0): `otool -L` shows no `libz3` runtime dependency and
-      # `scripts/release-smoke-test.sh` passes — `rz --audit` genuinely
-      # discharges the fixture's obligation via Z3, not just links it in.
-      #
-      # RES-4113: the static-Z3 attempt falls back, in-step, to the plain
-      # no-z3 `--features lsp` build if it fails. RES-4102 had to
-      # hard-*revert* `aarch64-apple-darwin`'s `z3: true` after this recipe
-      # (proven out locally) failed in CI — with no fallback, that CI
-      # failure skipped the whole release. Now a static-Z3 failure degrades
-      # that leg to the same no-z3, `Unknown`-verdict binary every macOS
-      # release shipped before RES-4113, instead of bricking the release;
-      # the `z3_linked` step output lets the Z3 smoke test key off which
-      # path was taken. The GCC/RUSTFLAGS env is set inside the z3 branch
-      # (not step-level `env:`) so the fallback build runs with the
-      # default Apple toolchain, exactly like the old plain macOS build.
-      - name: Build (native, Z3 static-linked, macOS via GCC; no-z3 fallback)
-        id: build_macos_z3
-        if: matrix.z3 && !matrix.cross && runner.os == 'macOS'
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      - name: Build macOS release with LSP and static Z3
+        if: runner.os == 'macOS'
         run: |
-          if CC=gcc-13 CXX=g++-13 CXXSTDLIB=stdc++ \
-             RUSTFLAGS="-L ${Z3_MACOS_STATIC_CXX_LIBDIR} -l emutls_w" \
-             cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static; then
-            echo "z3_linked=true" >> "$GITHUB_OUTPUT"
+          CC=gcc-13 CXX=g++-13 CXXSTDLIB=stdc++ \
+            RUSTFLAGS="-L ${Z3_MACOS_STATIC_CXX_LIBDIR} -l emutls_w" \
+            cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
+        working-directory: resilient
+      - name: Strip and record runtime dependencies
+        run: |
+          binary="resilient/target/${{ matrix.target }}/release/rz"
+          strip "$binary"
+          mkdir -p dist
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            codesign --force --sign - "$binary"
+            otool -L "$binary" | tee "dist/runtime-${{ matrix.target }}.txt"
+            ! grep -E 'libz3|/opt/homebrew|/usr/local/(opt|Cellar)' "dist/runtime-${{ matrix.target }}.txt"
           else
-            echo "::warning title=RES-4113 macOS static Z3 fallback::static-Z3 build failed for ${{ matrix.target }}; shipping the no-z3 (Unknown-verdict) binary instead"
-            cargo build --release --locked --target ${{ matrix.target }} --features lsp
-            echo "z3_linked=false" >> "$GITHUB_OUTPUT"
+            ldd "$binary" | tee "dist/runtime-${{ matrix.target }}.txt"
+            ! grep -E 'libz3|not found' "dist/runtime-${{ matrix.target }}.txt"
           fi
-        working-directory: resilient
-
-      - name: Build (cross)
-        if: matrix.cross && !matrix.z3
-        run: cross build --release --locked --target ${{ matrix.target }} --features lsp
-        working-directory: resilient
-
-      # RES-3985: `aarch64-unknown-linux-gnu`'s cross-rs Docker image
-      # (`ghcr.io/cross-rs/aarch64-unknown-linux-gnu`) already ships
-      # cmake (3.23.1 — old enough that `CMAKE_POLICY_VERSION_MINIMUM`
-      # isn't needed here), the `aarch64-linux-gnu-g++` cross toolchain
-      # (GCC 13.3.0), and `libclang` (for the host-side `bindgen` build
-      # step) — verified by inspecting the image locally. The one gap is
-      # `python3`, which Z3's `CMakeLists.txt` requires
-      # (`find_package(PythonInterp 3 REQUIRED)`) for its codegen
-      # scripts; `Cross.toml`'s `pre-build` hook installs it before the
-      # build runs. `CXXSTDLIB` needs no override on this target — the
-      # default (non-`apple`/`freebsd`/`openbsd`) branch in `z3-sys`'s
-      # build script already picks `stdc++`, which matches the GNU cross
-      # toolchain's ABI.
-      - name: Build (cross, Z3 static-linked)
-        if: matrix.z3 && matrix.cross
-        run: cross build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
-        working-directory: resilient
-
-      # RES-3979: a binary that merely *links* z3 could still silently
-      # fail to discharge anything through it — this actually exercises
-      # the SMT path against a fixture the hand-rolled folder can't
-      # resolve on its own, so a regression here fails the release
-      # build instead of shipping a quietly-degraded binary. Scoped off
-      # `matrix.cross` (RES-3985): `aarch64-unknown-linux-gnu`'s binary
-      # is built via QEMU/Docker cross-compilation on an x86_64 runner
-      # and can't execute on the build host, same reason the LSP smoke
-      # test below is scoped off it.
-      # RES-4113: `runner.os == 'macOS'` legs only run this when the
-      # static-Z3 build actually succeeded (per the `z3_linked` output
-      # above); on Linux legs `steps.build_macos_z3` never ran, so the
-      # `runner.os != 'macOS'` arm keeps them unconditionally covered.
-      - name: Z3 release smoke test
-        if: matrix.z3 && !matrix.cross && (runner.os != 'macOS' || steps.build_macos_z3.outputs.z3_linked == 'true')
-        run: scripts/release-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
-
-      # RES-4002: every release target now ships `--features lsp` (see
-      # the "Build (native)" / "Build (native, Z3 static-linked, Linux)"
-      # / "Build (native, Z3 static-linked, macOS via GCC)" / "Build
-      # (cross)" / "Build (cross, Z3 static-linked)" steps above), but
-      # `aarch64-unknown-linux-gnu` is cross-compiled via QEMU on an
-      # x86_64 runner (`matrix.cross`) — that binary can't execute on
-      # the build host, same reason the z3 smoke test above is scoped
-      # off it. Skip only there; both macOS legs now run natively
-      # (`aarch64-apple-darwin` on the arm64 `macos-latest` host,
-      # `x86_64-apple-darwin` on the Intel `macos-15-intel` host — RES-4113).
-      - name: LSP release smoke test
-        if: "!matrix.cross"
-        run: scripts/release-lsp-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
-
-      - name: Package
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME:-manual}"
-          TARGET="${{ matrix.target }}"
-          BINARY="resilient/target/${TARGET}/release/rz"
-          ARCHIVE="rz-${TAG}-${TARGET}.tar.gz"
-          strip "$BINARY" 2>/dev/null || true
-          # Stage the binary in a flat layout so `install.sh` can
-          # extract straight into PREFIX/bin without a wrapper dir.
-          STAGE="$(mktemp -d)"
-          cp "$BINARY" "$STAGE/rz"
-          tar czf "$ARCHIVE" -C "$STAGE" rz
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Package and smoke the extracted archive
+        run: python3 scripts/package-release.py '${{ matrix.target }}' "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: binary-${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
-
-  release:
-    name: create GitHub release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+  assemble:
+    name: assemble release assets
     needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          ref: ${{ inputs.source_ref || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
           merge-multiple: true
-
-      - name: Create release
+          path: dist
+      - name: Verify complete platform inventory
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path('dist')
+          records=[json.loads(p.read_text()) for p in root.glob('rz-*.json')]
+          targets={'x86_64-unknown-linux-gnu','aarch64-unknown-linux-gnu','x86_64-apple-darwin','aarch64-apple-darwin'}
+          assert len(records)==4 and {r['target'] for r in records}==targets
+          source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert {r['source_commit'] for r in records}=={source}
+          assert len({r['version'] for r in records})==1
+          for record in records:
+              assert record['archive_sha256']==hashlib.sha256((root/record['archive']).read_bytes()).hexdigest()
+          tag=records[0]['tag']
+          installer=pathlib.Path('scripts/install.sh').read_text()
+          assert installer.count('TAG="${RZ_VERSION:-}"')==1
+          installer=installer.replace('TAG="${RZ_VERSION:-}"','TAG="${RZ_VERSION:-'+tag+'}"')
+          (root/'install.sh').write_text(installer)
+          installer_identity={'file':'install.sh','default_tag':tag,'sha256':hashlib.sha256((root/'install.sh').read_bytes()).hexdigest()}
+          (root/'release-manifest.json').write_text(json.dumps({'source_commit':source,'platforms':records,'installer':installer_identity},sort_keys=True,indent=2)+'\n')
+          (root/'SHA256SUMS').write_text(''.join((root/(r['archive']+'.sha256')).read_text() for r in sorted(records,key=lambda r:r['target'])))
+          PY
+          cp LICENSE dist/
+          (cd dist && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/
+          retention-days: 90
+  install:
+    name: clean install ${{ matrix.os }}
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Install the assembled release without source-build tools
+        run: |
+          set +e
+          python3 agent-scripts/e2e-evidence.py run --output "${{ runner.temp }}/release-install-evidence" --input scripts/install.sh --input scripts/release-install-smoke.py --input dist/release-manifest.json -- python3 scripts/release-install-smoke.py dist
+          result=$?
+          set -e
+          python3 agent-scripts/e2e-evidence.py verify "${{ runner.temp }}/release-install-evidence"
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clean-install-${{ matrix.os }}
+          path: ${{ runner.temp }}/release-install-evidence
+          retention-days: 90
+  publish_tag:
+    name: publish validated tag assets
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [assemble, install]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Resilient ${{ github.ref_name }}" \
-            --generate-notes \
-            artifacts/*.tar.gz
+          git merge-base --is-ancestor HEAD origin/main
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          source=subprocess.check_output(['git','rev-parse',os.environ['GITHUB_REF']+'^{commit}'],text=True).strip()
+          manifest=json.loads(pathlib.Path('dist/release-manifest.json').read_text())
+          assert manifest['source_commit']==source
+          runs=json.loads(subprocess.check_output(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs?head_sha={source}&event=push&per_page=100"],text=True))['workflow_runs']
+          main_runs=[run for run in runs if run['head_branch']=='main' and run['head_sha']==source]
+          latest={}
+          for run in sorted(main_runs,key=lambda r:(r['run_number'],r['run_attempt']),reverse=True): latest.setdefault(run['workflow_id'],run)
+          main=list(latest.values())
+          assert any(run['path']=='.github/workflows/ci.yml' and run['conclusion']=='success' for run in main), 'exact-source main CI has not passed'
+          assert all(run['status']=='completed' and run['conclusion'] in ('success','skipped','neutral') for run in main), 'exact-source main gates are incomplete or failed'
+          PY
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Resilient $GITHUB_REF_NAME" --generate-notes dist/*
