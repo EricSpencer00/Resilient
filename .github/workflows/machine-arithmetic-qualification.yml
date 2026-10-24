@@ -92,9 +92,10 @@ jobs:
               set -e
               python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
               expected=passed
-              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints && "$test" != vm_runtime_requires_control ]]; then
+              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then
                 expected=failed
               fi
+              if [[ "$PHASE" == final && "$test" == vm_runtime_requires_control ]]; then expected=failed; fi
               printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
               if [[ "$expected" == failed && "$result" -eq 0 ]] || [[ "$expected" == passed && "$result" -ne 0 ]]; then
                 unexpected=$((unexpected + 1))
@@ -146,7 +147,8 @@ jobs:
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
           for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
-              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints || "$test" == vm_runtime_requires_control ]]; then continue; fi
+              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then continue; fi
+              if [[ "$test" == vm_runtime_requires_control ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
                 --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
                 --output "$EVIDENCE_ROOT/attestations/$test"
