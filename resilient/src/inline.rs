@@ -671,6 +671,7 @@ fn rewrite_inlined_op(
             // them. If we do, that's an internal invariant violation.
             match other {
                 Op::TailCall(_)
+                | Op::EntryGuardsComplete
                 | Op::MakeClosure { .. }
                 | Op::LoadUpvalue(_)
                 | Op::CallForeign(_) => {
