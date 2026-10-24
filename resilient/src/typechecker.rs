@@ -18,6 +18,8 @@
 //! This module is the typechecker phase; `actor_runtime.rs` handles
 //! scheduler/crash machinery, and `supervisor.rs` handles parsing.
 
+mod module_bindings;
+
 use crate::span::{Pos, Span};
 use crate::{Node, Pattern};
 use std::cell::RefCell;
@@ -6948,6 +6950,7 @@ impl TypeChecker {
                 // RES-128: also hoist type aliases in the same pass so
                 // `fn foo(Meters x) ...` typechecks when the
                 // `type Meters = Int;` declaration textually follows.
+                let mut module_names = HashSet::new();
                 for stmt in statements {
                     match &stmt.node {
                         Node::Function {
@@ -7029,6 +7032,15 @@ impl TypeChecker {
                                     return_type: Box::new(ret_type),
                                 },
                             );
+                        }
+                        Node::ModuleDecl { name, body, .. } => {
+                            if !module_names.insert(name) {
+                                return Err(format!(
+                                    "{}: error: duplicate module declaration `{}`; each module name must be declared at most once",
+                                    source_path, name
+                                ));
+                            }
+                            self.hoist_module_functions(name, body)?;
                         }
                         // RES-4246: hoist extern fn names alongside
                         // regular ones so a call that textually precedes
@@ -12450,13 +12462,8 @@ impl TypeChecker {
             // a parser/internal bug; surface a clean error rather
             // than crashing the typechecker.
             Node::NamedArg { value, .. } => self.check_node(value),
-            // RES-324: module declaration — type-check each body node.
-            Node::ModuleDecl { body, .. } => {
-                for node in body {
-                    self.check_node(node)?;
-                }
-                Ok(Type::Void)
-            }
+            // Module members have qualified external names and isolated local bindings.
+            Node::ModuleDecl { name, body, .. } => self.check_module_bindings(name, body),
             // RES-290: trait declarations carry only signatures and are
             // validated by `crate::traits::check`; nothing to do here.
             Node::TraitDecl { .. } => Ok(Type::Void),
