@@ -31044,9 +31044,9 @@ pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
     out
 }
 
-/// RES-071: writes accumulated SMT-LIB2 certificates to `dir`. One file
-/// per discharged obligation: `{fn_name}__{kind}__{idx}.smt2`. Returns
-/// the count written for the audit summary.
+/// RES-071: writes accumulated SMT-LIB2 certificates to `dir`. Query blobs
+/// use their complete SHA-256 as the filename; obligations retain their
+/// original roles in the manifest. Returns the obligation count for the audit summary.
 ///
 /// RES-194: when `sign_key_path` is `Some`, also writes `cert.sig`
 /// in the same directory — an Ed25519 signature over the
@@ -31095,25 +31095,55 @@ fn write_proof_artifacts(
     let mut obligations: Vec<cert_sign::ManifestObligation> =
         Vec::with_capacity(certificates.len());
     for cert in certificates {
-        // Sanitize fn_name: only [A-Za-z0-9_] survives, others become '_'.
-        let safe: String = cert
-            .fn_name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let filename = format!("{}__{}__{}.smt2", safe, cert.kind, cert.idx);
-        let path = dir.join(&filename);
-        fs::write(&path, &cert.smt2)
-            .map_err(|e| format!("could not write {}: {}", path.display(), e))?;
+        use std::io::{Read, Write};
 
-        // RES-195: per-obligation sha256 + optional sig.
-        let sha256 = cert_sign::sha256_hex(cert.smt2.as_bytes());
+        let bytes = cert.smt2.as_bytes();
+        let sha256 = cert_sign::sha256_hex(bytes);
+        let filename = format!("{sha256}.smt2");
+        let path = dir.join(&filename);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => file
+                .write_all(bytes)
+                .map_err(|e| format!("could not write {}: {}", path.display(), e))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Reuse only exact immutable query bytes, never a label-derived overwrite.
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|e| format!("could not stat {}: {}", path.display(), e))?;
+                if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+                    return Err(format!(
+                        "certificate artifact collision at {}",
+                        path.display()
+                    ));
+                }
+                let file = fs::File::open(&path)
+                    .map_err(|e| format!("could not read {}: {}", path.display(), e))?;
+                let metadata = file
+                    .metadata()
+                    .map_err(|e| format!("could not stat {}: {}", path.display(), e))?;
+                if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+                    return Err(format!(
+                        "certificate artifact collision at {}",
+                        path.display()
+                    ));
+                }
+                let mut existing = Vec::new();
+                file.take(bytes.len() as u64 + 1)
+                    .read_to_end(&mut existing)
+                    .map_err(|e| format!("could not read {}: {}", path.display(), e))?;
+                if existing != bytes {
+                    return Err(format!(
+                        "certificate artifact collision at {}",
+                        path.display()
+                    ));
+                }
+            }
+            Err(error) => return Err(format!("could not create {}: {}", path.display(), error)),
+        }
+
         let sig = priv_b.map(|pk| {
             let s = cert_sign::sign_payload(&pk, cert.smt2.as_bytes());
             cert_sign::format_signature_hex(&s)
