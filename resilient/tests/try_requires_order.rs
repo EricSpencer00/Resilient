@@ -15,7 +15,7 @@ fn run(source: &str, backend: &str) -> std::process::Output {
     std::fs::create_dir_all(&root).unwrap();
     let input = root.join("input.rz");
     std::fs::write(&input, source).unwrap();
-    let mut args = vec!["--no-cache"];
+    let mut args = vec!["--typecheck", "--no-cache"];
     if backend != "treewalker" {
         args.push("--vm");
     }
@@ -36,13 +36,15 @@ fn run(source: &str, backend: &str) -> std::process::Output {
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
             child.kill().unwrap();
+            child.wait().unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
             panic!("bounded CLI timeout: {backend}");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     let output = child.wait_with_output().unwrap();
     let record = serde_json::json!({
-        "schema": "try-requires-order-v1", "backend": backend,
+        "schema": "try-requires-order-v2", "backend": backend,
         "source": source, "source_sha256": format!("{:x}", Sha256::digest(source.as_bytes())),
         "argv": args, "overflow_mode": "unset",
         "compiler_sha256": format!("{:x}", Sha256::digest(std::fs::read(env!("CARGO_BIN_EXE_rz")).unwrap())),
