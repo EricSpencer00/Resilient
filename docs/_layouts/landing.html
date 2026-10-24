@@ -74,10 +74,9 @@
       </h1>
 
       <p class="rl-hero-v2__lede">
-        Resilient is a statically-typed, compiled language for software where
-        failure is not an option. Contracts are proven at compile time. Hardware
-        faults self&#8209;heal. The same source runs on a development laptop or
-        on a bare&#8209;metal microcontroller.
+        Resilient is a compiled language with typed contracts and supervised
+        recovery. Check contracts with Z3 on your laptop and deploy supported
+        bytecode to a bare&#8209;metal microcontroller.
       </p>
 
       <div class="rl-hero-v2__cta">
@@ -162,10 +161,9 @@
       </div>
       <div>
         <h3>Proof is preferred to prose</h3>
-        <p>Function contracts are not documentation — they are formal
-        obligations. Where the verifier can decide them, they are proven at
-        compile time and a re-checkable SMT&#8209;LIB2 certificate is
-        emitted. Where it cannot, they become typed runtime guards.</p>
+        <p>Function contracts define obligations. The verifier discharges
+        supported cases at compile time; request SMT&#8209;LIB2 export for
+        independent replay. Undischarged contracts retain runtime checks.</p>
       </div>
       <div>
         <h3>The same source, dev laptop to bare metal</h3>
@@ -560,7 +558,7 @@ main();</pre>
     <p class="rl-cta__index">§ 09 · Begin</p>
     <h2 class="rl-cta__title">
       Pick&nbsp;up&nbsp;the&nbsp;compiler.<br>
-      <em>Prove your first contract<br>in five minutes.</em>
+      <em>Start with a contract.</em>
     </h2>
 
     <div class="rl-cta__install">
