@@ -86,5 +86,6 @@ jobs:
         with:
           name: qualification-binary-baseline-${{ github.sha }}
           path: ${{ runner.temp }}/qualification-baseline
+          include-hidden-files: true
           retention-days: 90
           if-no-files-found: error
