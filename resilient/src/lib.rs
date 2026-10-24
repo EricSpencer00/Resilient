@@ -31758,6 +31758,7 @@ fn execute_file(
     let typecheck_strict = verbose_typecheck || type_strict;
     let want_typecheck = !no_typecheck;
     let mut proven_fns: HashSet<String> = HashSet::new();
+    let mut typecheck_failed = false;
     if want_typecheck {
         if verbose_typecheck {
             println!("Running type checker...");
@@ -31800,6 +31801,7 @@ fn execute_file(
                 }
             }
             Err(e) => {
+                typecheck_failed = true;
                 eprintln!("\x1B[31mType error: {}\x1B[0m", e);
                 // RES-117: add a caret diagnostic beneath the
                 // ANSI-red header so the offending source position
@@ -31862,7 +31864,11 @@ fn execute_file(
     // from the parsed program's contract surface, and it degrades
     // honestly to `unknown` verdicts on non-z3 builds.
     if let Some(path) = emit_contract_cert {
-        let json = contract_certificate::emit(&program, filename);
+        let json = if typecheck_failed || !want_typecheck || use_jit {
+            contract_certificate::emit_diagnostic(&program, filename)
+        } else {
+            contract_certificate::emit(&program, filename)
+        };
         std::fs::write(path, &json).map_err(|e| {
             format!(
                 "--emit-contract-certificate: failed to write {}: {}",
