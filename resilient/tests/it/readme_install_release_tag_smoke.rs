@@ -2,14 +2,15 @@
 
 #[test]
 fn readme_install_examples_use_current_release_tag() {
+    let version = env!("CARGO_PKG_VERSION");
     let readme = include_str!("../../../README.md");
 
     assert!(
-        readme.contains("Pin a version with `RZ_VERSION=v1.1.0 "),
+        readme.contains(&format!("Pin a version with `RZ_VERSION=v{version} ")),
         "README should show the current release in the one-liner pin example"
     );
     assert!(
-        readme.contains("TAG=v1.1.0  # see the releases page for the latest"),
+        readme.contains(&format!("TAG=v{version}  # see the releases page for the latest")),
         "README should show the current release in the pre-built binary example"
     );
     assert!(
