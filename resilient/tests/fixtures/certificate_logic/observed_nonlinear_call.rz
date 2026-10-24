@@ -1,0 +1,1 @@
+fn guarded(int x, int offset) -> int requires x * x + offset >= offset { return x; } fn one(int a) -> int { return guarded(a, 1); }
