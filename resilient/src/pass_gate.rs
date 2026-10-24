@@ -92,6 +92,8 @@ pub(crate) struct Markers<'a> {
     /// `has_invariant_statement` by the `verifier_loop_invariants`
     /// gate (RES-1620).
     pub has_while_with_invariants: bool,
+    /// True if a finite-loop annotation needs invariant verification.
+    pub has_for_with_invariants: bool,
     /// True if any `Node::Range` appears anywhere. Used by the
     /// `ranges` gate (RES-1612).
     pub has_range: bool,
@@ -319,6 +321,9 @@ impl<'a> Markers<'a> {
             }
             Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
                 m.has_while_with_invariants = true;
+            }
+            Node::ForInStatement { invariants, .. } if !invariants.is_empty() => {
+                m.has_for_with_invariants = true;
             }
             Node::Match { .. } => {
                 m.has_match_expr = true;

@@ -5999,16 +5999,34 @@ impl TypeChecker {
     /// unconditionally so the audit summary still reports the
     /// total — only the SMT-LIB2 body Vec push is gated.
     #[allow(dead_code)]
-    pub(crate) fn push_loop_invariant_certificate(&mut self, idx: usize, smt2: String) {
+    pub(crate) fn push_loop_invariant_certificates(
+        &mut self,
+        idx: usize,
+        base: String,
+        steps: Vec<String>,
+    ) {
         if self.emit_certificates {
             self.certificates.push(CapturedCertificate {
                 fn_name: "<loop>".to_string(),
                 kind: "loop_invariant",
                 idx,
-                smt2,
+                smt2: base,
             });
+            for (step, smt2) in steps.into_iter().enumerate() {
+                self.certificates.push(CapturedCertificate {
+                    fn_name: format!("<loop:{idx}>"),
+                    kind: "loop_invariant_step",
+                    idx: step,
+                    smt2,
+                });
+            }
         }
         self.stats.loop_invariants_proven += 1;
+    }
+
+    #[cfg(feature = "z3")]
+    pub(crate) fn captures_proofs(&self) -> bool {
+        self.emit_certificates
     }
 
     /// RES-318: helper for the verifier's unit tests — count proven
@@ -7295,14 +7313,17 @@ impl TypeChecker {
                     crate::loop_invariants::check(program, source_path)?;
                 }
                 // RES-1620 gate: the Z3 verifier walks for
-                // `WhileStatement` with non-empty `invariants` OR
+                // `WhileStatement` or `ForInStatement` annotations OR
                 // any `InvariantStatement` — same shape as the
                 // pass's own RES-1297 fast-reject. Markers tracks
-                // both signals from the shared whole-AST walk, so
-                // the gate is two O(1) bool reads. The non-z3
+                // these signals from the shared whole-AST walk, so
+                // the gate uses only O(1) bool reads. The non-z3
                 // build's `verify_and_capture` is already a no-op
                 // stub, so skipping the call there is also free.
-                if markers.has_invariant_statement || markers.has_while_with_invariants {
+                if markers.has_invariant_statement
+                    || markers.has_while_with_invariants
+                    || markers.has_for_with_invariants
+                {
                     crate::verifier_loop_invariants::verify_and_capture(self, program);
                 }
                 // RES-1616 gate: pass scans for `Node::TypeAlias`.

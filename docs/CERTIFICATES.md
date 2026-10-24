@@ -178,3 +178,24 @@ records and remaining limitations. It does not establish tool qualification.
   `ManifestObligation` definitions.
 - `rz verify-all` (RES-195) — the inverse path that re-validates a
   manifest end-to-end.
+
+### Loop proof artifacts
+
+Loop certificates use isolated solver queries. A while invariant emits one
+`loop_invariant` base obligation and one `loop_invariant_step` obligation.
+A supported finite accumulator invariant emits its base plus one step for
+each literal integer element. Step entries use `<loop:N>` as their function
+identifier, where N is the base entry index; their indices enumerate the steps.
+The proven-invariant statistic counts the invariant once, not its subproofs.
+Each entry retains the normal hash and optional signature checks.
+
+Finite pre-body annotations reach the verifier. Empty iterables, invariants
+that refer to the iteration variable, and bodies that assign that variable
+remain outside this certificate model and receive no static proof. Runtime
+checks remain active. Broader iteration-binding semantics are tracked in
+[issue #4904](https://github.com/EricSpencer00/Resilient/issues/4904).
+
+The round-trip regression verifies signed emission, actual Z3 replay and the
+exact number of subproofs for representative while and finite loops. It does
+not authenticate the completeness of an arbitrary caller-supplied manifest;
+that remains a separate qualification requirement.

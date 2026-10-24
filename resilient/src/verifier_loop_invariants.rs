@@ -5,9 +5,9 @@
 //! 2. **Inductive**: assume the invariant + the loop condition; prove
 //!    the invariant still holds after the body executes.
 //!
-//! When both goals discharge, we capture an SMT-LIB2 certificate (so
-//! `--emit-certificate <DIR>` writes one re-verifiable file per
-//! proven invariant) and bump a stats counter. With `--verbose` set,
+//! When both goals discharge, certificate emission writes one isolated
+//! SMT-LIB2 query per base or inductive obligation. The stats counter
+//! still counts proven invariants. With `--verbose` set,
 //! one `-- invariant proven, runtime check elided at L:C` line per
 //! discharged invariant is written to stderr.
 //!
@@ -48,7 +48,7 @@ use std::collections::{BTreeSet, HashMap};
 #[cfg(feature = "z3")]
 pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, program: &Node) {
     // RES-1297 / RES-1917: the typechecker gates this call behind
-    // `markers.has_invariant_statement || markers.has_while_with_invariants`,
+    // statement-form, while, or finite-loop invariant markers,
     // so the program is guaranteed to contain at least one invariant.
     // The previous `any_node` pre-scan was redundant — removed.
     let timeout_ms = tc.verifier_timeout_ms();
@@ -283,8 +283,7 @@ fn invalidate_mutations(node: &Node, bindings: &mut HashMap<String, i64>) {
 }
 
 /// Run the base + inductive proof for a single invariant. On success,
-/// captures one combined SMT-LIB2 certificate (concatenation of the
-/// two re-verifiable proofs) and emits a verbose stderr line.
+/// captures separate base and step queries and emits a verbose stderr line.
 #[cfg(feature = "z3")]
 #[allow(clippy::too_many_arguments)]
 fn try_prove_invariant(
@@ -299,6 +298,11 @@ fn try_prove_invariant(
     timeout_ms: u32,
     verbose: bool,
 ) {
+    let prove = if tc.captures_proofs() {
+        crate::verifier_z3::prove_tautology_with_certificate
+    } else {
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout
+    };
     // -------- Base case --------
     // Bindings include every pre-loop constant. If the invariant
     // is provable from these alone, the entry obligation is met.
@@ -309,14 +313,8 @@ fn try_prove_invariant(
     // contradiction-phase `solver.check()` whose result we'd
     // throw away. Certificate is still produced for the proven case
     // so the SMT-LIB2 emission below keeps working.
-    let (base_proven, base_cert, _timed) =
-        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
-            invariant,
-            bindings,
-            &[],
-            timeout_ms,
-        );
-    if !base_proven {
+    let (base_proven, base_cert, _timed) = prove(invariant, bindings, &[], timeout_ms);
+    if !base_proven || (tc.captures_proofs() && base_cert.is_none()) {
         return;
     }
 
@@ -353,47 +351,18 @@ fn try_prove_invariant(
     // RES-1194: same tautology-only path as the base case — the
     // `return` below discards every non-`Some(true)` verdict
     // identically.
-    let (step_proven, step_cert, _timed) =
-        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
-            &goal,
-            &step_bindings,
-            &[],
-            timeout_ms,
-        );
-    if !step_proven {
+    let (step_proven, step_cert, _timed) = prove(&goal, &step_bindings, &[], timeout_ms);
+    if !step_proven || (tc.captures_proofs() && step_cert.is_none()) {
         return;
     }
 
-    // -------- Both proven: capture certificate + emit message --------
-    // RES-1954: pre-size the certificate buffer to the actual base +
-    // step cert lengths plus a small header margin. The legacy
-    // `String::new()` grew through the default 0→4→8→16 doubling
-    // chain even though the final size is known up-front from the
-    // already-materialised `base_cert.smt2` and `step_cert.smt2`
-    // strings. Header / spacing overhead is ~120 bytes.
-    const HEADER_MARGIN: usize = 128;
-    let cap = HEADER_MARGIN
-        + base_cert.as_ref().map(|c| c.smt2.len()).unwrap_or(0)
-        + step_cert.as_ref().map(|c| c.smt2.len()).unwrap_or(0);
-    let mut smt2 = String::with_capacity(cap);
-    smt2.push_str("; RES-318 loop-invariant proof certificate\n");
-    use std::fmt::Write as _;
-    let _ = writeln!(
-        &mut smt2,
-        "; loop at line {}, col {}",
-        loop_span.start.line, loop_span.start.column
-    );
-    smt2.push_str("; ----- base case -----\n");
-    if let Some(c) = base_cert {
-        smt2.push_str(&c.smt2);
-    }
-    smt2.push_str("; ----- inductive step -----\n");
-    if let Some(c) = step_cert {
-        smt2.push_str(&c.smt2);
-    }
     let idx = *next_idx;
     *next_idx += 1;
-    tc.push_loop_invariant_certificate(idx, smt2);
+    tc.push_loop_invariant_certificates(
+        idx,
+        base_cert.map_or_else(String::new, |cert| cert.smt2),
+        step_cert.into_iter().map(|cert| cert.smt2).collect(),
+    );
 
     let inv_span = invariant_span(invariant).unwrap_or(loop_span);
     if verbose {
@@ -423,14 +392,25 @@ fn try_prove_for_in_invariant(
     timeout_ms: u32,
     verbose: bool,
 ) {
-    let (base_proven, base_cert, _timed) =
-        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
-            invariant,
-            bindings,
-            &[],
-            timeout_ms,
-        );
-    if !base_proven {
+    // Iteration-binding semantics need a separate model; do not certify them
+    // merely because the newly reachable annotation passes the accumulator model.
+    let mut uses_iteration_binding = false;
+    crate::uniqueness_walk::visit(invariant, &mut |node| {
+        if let Node::Identifier { name, .. } = node {
+            uses_iteration_binding |= name == loop_name;
+        }
+    });
+    if elements.is_empty() || uses_iteration_binding || assigned.contains(loop_name) {
+        return;
+    }
+    let prove = if tc.captures_proofs() {
+        crate::verifier_z3::prove_tautology_with_certificate
+    } else {
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout
+    };
+
+    let (base_proven, base_cert, _timed) = prove(invariant, bindings, &[], timeout_ms);
+    if !base_proven || (tc.captures_proofs() && base_cert.is_none()) {
         return;
     }
 
@@ -459,14 +439,8 @@ fn try_prove_for_in_invariant(
             },
         );
         let goal = build_implication(invariant, &true_node, &specialized);
-        let (step_proven, step_cert, _timed) =
-            crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
-                &goal,
-                &step_bindings,
-                &[],
-                timeout_ms,
-            );
-        if !step_proven {
+        let (step_proven, step_cert, _timed) = prove(&goal, &step_bindings, &[], timeout_ms);
+        if !step_proven || (tc.captures_proofs() && step_cert.is_none()) {
             return;
         }
         if let Some(cert) = step_cert {
@@ -474,29 +448,13 @@ fn try_prove_for_in_invariant(
         }
     }
 
-    const HEADER_MARGIN: usize = 128;
-    let step_bytes: usize = step_certs.iter().map(String::len).sum();
-    let mut smt2 = String::with_capacity(
-        HEADER_MARGIN + base_cert.as_ref().map_or(0, |cert| cert.smt2.len()) + step_bytes,
-    );
-    smt2.push_str("; RES-318 for-in loop-invariant proof certificate\n");
-    use std::fmt::Write as _;
-    let _ = writeln!(
-        &mut smt2,
-        "; loop at line {}, col {}",
-        loop_span.start.line, loop_span.start.column
-    );
-    smt2.push_str("; ----- base case -----\n");
-    if let Some(cert) = base_cert {
-        smt2.push_str(&cert.smt2);
-    }
-    for (index, cert) in step_certs.iter().enumerate() {
-        let _ = writeln!(&mut smt2, "; ----- element {} inductive step -----", index);
-        smt2.push_str(cert);
-    }
     let idx = *next_idx;
     *next_idx += 1;
-    tc.push_loop_invariant_certificate(idx, smt2);
+    tc.push_loop_invariant_certificates(
+        idx,
+        base_cert.map_or_else(String::new, |cert| cert.smt2),
+        step_certs,
+    );
 
     let inv_span = invariant_span(invariant).unwrap_or(loop_span);
     if verbose {
