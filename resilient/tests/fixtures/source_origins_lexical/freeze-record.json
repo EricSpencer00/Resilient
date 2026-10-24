@@ -1,0 +1,14 @@
+{
+  "schema": "resilient-source-origins-lexical-freeze/v1",
+  "phase": "preimplementation-unexecuted-new-requirements",
+  "driver_sha256": "0ad5c4a57def93749f784b7f9aba43416566ded5a62ea8a4d42c1087ad27e0f8",
+  "catalog_sha256": "a6224da2320b5238abcb5ae5efa493db0d5213135b6c95a39321f4f33f1b7bf0",
+  "cases": 14,
+  "accepted_exact_canonical_declaration_cases": 6,
+  "whole_unit_specific_lexical_rejection_cases": 8,
+  "existing_5056_requirements": "unchanged",
+  "normal_parser_claim": "none; no normal parser execution or regression claim",
+  "baseline_credit": "none; unexecuted before producer implementation",
+  "profile": "physical-origins-v1",
+  "scope": "physical metadata only, no execution/typecheck/solver/import-resolution or proof credit"
+}

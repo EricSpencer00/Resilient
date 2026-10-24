@@ -1,0 +1,343 @@
+{
+  "schema": "private-physical-origins-lexical-requirements/v1",
+  "status": "new-test-freeze-candidate-no-execution",
+  "normal_parser_claim": "none; source-derived requirement, not observed normal compiler regression",
+  "vectors": [
+    {
+      "file": "eof-no-newline.rz",
+      "bytes": 9,
+      "sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+      "source_utf8": "fn f() {}",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[0,9],\"declaration_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"file_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"fn_keyword_byte\":0,\"header_byte_range\":[0,7],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/eof-no-newline.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/eof-no-newline.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+        "bytes": 9,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:3dd90019a240a426dbe231ba21a74a6e8da1f0a9d5a84fc7ff0a73b838f63f0f",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/eof-no-newline.rz",
+              "file_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 0,
+              "declaration_byte_range": [
+                0,
+                9
+              ],
+              "declaration_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "header_byte_range": [
+                0,
+                7
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    },
+    {
+      "file": "eof-trailing-line-comment.rz",
+      "bytes": 15,
+      "sha256": "6777177111e61735c369e8e6644db3a3971ff439c57ffb0b8060df5e38b0a8af",
+      "source_utf8": "fn f() {} // π",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[0,9],\"declaration_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"file_sha256\":\"6777177111e61735c369e8e6644db3a3971ff439c57ffb0b8060df5e38b0a8af\",\"fn_keyword_byte\":0,\"header_byte_range\":[0,7],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/eof-trailing-line-comment.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/eof-trailing-line-comment.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "6777177111e61735c369e8e6644db3a3971ff439c57ffb0b8060df5e38b0a8af",
+        "bytes": 15,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:d8a8d03d5878f1380d8cd2ad8479d07d790bb710d75e9ef4382da5ca2ef9cc54",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/eof-trailing-line-comment.rz",
+              "file_sha256": "6777177111e61735c369e8e6644db3a3971ff439c57ffb0b8060df5e38b0a8af",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 0,
+              "declaration_byte_range": [
+                0,
+                9
+              ],
+              "declaration_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "header_byte_range": [
+                0,
+                7
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    },
+    {
+      "file": "closed-nested-comment.rz",
+      "bytes": 36,
+      "sha256": "644611fc1295170c0543f8575bd934d31958d553152a5712761560483b5f3573",
+      "source_utf8": "fn f() {} /* π /* nested */ done */",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[0,9],\"declaration_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"file_sha256\":\"644611fc1295170c0543f8575bd934d31958d553152a5712761560483b5f3573\",\"fn_keyword_byte\":0,\"header_byte_range\":[0,7],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/closed-nested-comment.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/closed-nested-comment.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "644611fc1295170c0543f8575bd934d31958d553152a5712761560483b5f3573",
+        "bytes": 36,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:cdda9770bcc8b0825bed333a4905f26fc5adcee13f1ee9e304ec41b8a95c9250",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/closed-nested-comment.rz",
+              "file_sha256": "644611fc1295170c0543f8575bd934d31958d553152a5712761560483b5f3573",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 0,
+              "declaration_byte_range": [
+                0,
+                9
+              ],
+              "declaration_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "header_byte_range": [
+                0,
+                7
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    },
+    {
+      "file": "unclosed-block-comment.rz",
+      "bytes": 25,
+      "sha256": "fc08768ca215799d5be93621c8d752a26fff5023ff3682ecf5d899bed2e687b4",
+      "source_utf8": "fn f() {} /* never closed",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-block-comment"
+    },
+    {
+      "file": "unclosed-nested-comment.rz",
+      "bytes": 30,
+      "sha256": "5f6c3676add5f5a069f58109db531ef016f04d8a36e72d786496494588ceb95e",
+      "source_utf8": "fn f() {} /* outer /* inner */",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-block-comment"
+    },
+    {
+      "file": "embedded-nul.rz",
+      "bytes": 24,
+      "sha256": "a12e90f0b7ce2ad51f65079899affbd740490c5d84d6bbb4987e9cd5fed5de74",
+      "source_utf8": "fn f() {}\u0000fn hidden() {}",
+      "expected_disposition": "rejected",
+      "lexical_reason": "embedded-nul"
+    },
+    {
+      "file": "trailing-nul.rz",
+      "bytes": 10,
+      "sha256": "e1abcbff1318e4e2754cac01260a2c55529b3b9b4b7e8718b3d5a48494c01304",
+      "source_utf8": "fn f() {}\u0000",
+      "expected_disposition": "rejected",
+      "lexical_reason": "embedded-nul"
+    },
+    {
+      "file": "unclosed-string.rz",
+      "bytes": 30,
+      "sha256": "13a7e75a1e74ab9b0680c864341a0c578f72e8b4998f220b1aa13da1e5332274",
+      "source_utf8": "fn f() { let s = \"never closed",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-string"
+    },
+    {
+      "file": "unclosed-raw-string.rz",
+      "bytes": 31,
+      "sha256": "eea888e9fd8c0530c2f6afdfe79ccb6be1f14ea2f46d9da4281d08e02d49070d",
+      "source_utf8": "fn f() { let s = r\"never closed",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-string"
+    },
+    {
+      "file": "unclosed-triple-string.rz",
+      "bytes": 32,
+      "sha256": "995e38bf025f2bcabd0c1f0c90dccf1855b21757166b4b10da9fe61b3f6f7ba6",
+      "source_utf8": "fn f() { let s = \"\"\"never closed",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-string"
+    },
+    {
+      "file": "unclosed-raw-triple-string.rz",
+      "bytes": 33,
+      "sha256": "be198551e25fd1c96b4d685c84f255ec73431c0bd4878d7e59a2413643ba9fc5",
+      "source_utf8": "fn f() { let s = r\"\"\"never closed",
+      "expected_disposition": "rejected",
+      "lexical_reason": "unterminated-string"
+    },
+    {
+      "file": "closed-escaped-string.rz",
+      "bytes": 45,
+      "sha256": "96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e",
+      "source_utf8": "fn f() { let s = \"π \\\" ensures false { }\"; }",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[0,45],\"declaration_sha256\":\"96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e\",\"file_sha256\":\"96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e\",\"fn_keyword_byte\":0,\"header_byte_range\":[0,7],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/closed-escaped-string.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/closed-escaped-string.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e",
+        "bytes": 45,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:abd40e7788b031a5a5b1b269a49ecadd040d1cfc86b6cb3cfa2ed59f8ea73f93",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/closed-escaped-string.rz",
+              "file_sha256": "96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 0,
+              "declaration_byte_range": [
+                0,
+                45
+              ],
+              "declaration_sha256": "96dbf3fdb031a2dad67802ea7f19d10d941ba3f667e33c2fe5e39fe389f3815e",
+              "header_byte_range": [
+                0,
+                7
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    },
+    {
+      "file": "many-line-comments.rz",
+      "bytes": 60009,
+      "sha256": "197540e6e7020fada3f1dfae49fbb908b9a814f699701ee5fc1f5e2d8d33e78d",
+      "source_recipe": "20000 repetitions of b'//\\n' followed by fn f() {}",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "requirement": "bounded completion; comments do not consume metadata tokens; no recursion per trivia item",
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[60000,60009],\"declaration_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"file_sha256\":\"197540e6e7020fada3f1dfae49fbb908b9a814f699701ee5fc1f5e2d8d33e78d\",\"fn_keyword_byte\":60000,\"header_byte_range\":[60000,60007],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/many-line-comments.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/many-line-comments.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "197540e6e7020fada3f1dfae49fbb908b9a814f699701ee5fc1f5e2d8d33e78d",
+        "bytes": 60009,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:a9e846f178e936d876661988df5e7f643a487e04b453fc2bb3c13f6a3c040657",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/many-line-comments.rz",
+              "file_sha256": "197540e6e7020fada3f1dfae49fbb908b9a814f699701ee5fc1f5e2d8d33e78d",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 60000,
+              "declaration_byte_range": [
+                60000,
+                60009
+              ],
+              "declaration_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "header_byte_range": [
+                60000,
+                60007
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    },
+    {
+      "file": "many-block-comments.rz",
+      "bytes": 80009,
+      "sha256": "65d872e5cc78240b3eeb4313d10c4c040bba1b0b6d2e8c1a748a32a4c26c4389",
+      "source_recipe": "20000 repetitions of b'/**/' followed by fn f() {}",
+      "expected_disposition": "accepted",
+      "lexical_reason": null,
+      "requirement": "bounded completion; comments do not consume metadata tokens; no recursion per trivia item",
+      "canonical_declaration_identity_utf8": "{\"declaration_byte_range\":[80000,80009],\"declaration_sha256\":\"6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81\",\"file_sha256\":\"65d872e5cc78240b3eeb4313d10c4c040bba1b0b6d2e8c1a748a32a4c26c4389\",\"fn_keyword_byte\":80000,\"header_byte_range\":[80000,80007],\"header_sha256\":\"d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f\",\"kind\":\"function\",\"name\":\"f\",\"profile\":\"physical-origins-v1\",\"schema\":\"resilient-physical-declaration/v1\",\"scope\":[],\"source_key\":\"fixtures/many-block-comments.rz\"}",
+      "expected_report": {
+        "schema": "resilient-physical-origins/v1",
+        "profile": "physical-origins-v1",
+        "source_key": "fixtures/many-block-comments.rz",
+        "key_authority": "caller-supplied-not-authenticated-path",
+        "file_sha256": "65d872e5cc78240b3eeb4313d10c4c040bba1b0b6d2e8c1a748a32a4c26c4389",
+        "bytes": 80009,
+        "disposition": "accepted",
+        "declarations": [
+          {
+            "declaration_id": "decl-sha256:fb178dcbe62722b4ad1aa16fee546a2580642e0d6770185179e34caacc9b6dd8",
+            "identity": {
+              "schema": "resilient-physical-declaration/v1",
+              "profile": "physical-origins-v1",
+              "source_key": "fixtures/many-block-comments.rz",
+              "file_sha256": "65d872e5cc78240b3eeb4313d10c4c040bba1b0b6d2e8c1a748a32a4c26c4389",
+              "kind": "function",
+              "scope": [],
+              "name": "f",
+              "fn_keyword_byte": 80000,
+              "declaration_byte_range": [
+                80000,
+                80009
+              ],
+              "declaration_sha256": "6a8ff5ba6c1b7bbcf2cbebb9d38c826db877408a94c8478709e72a200a51db81",
+              "header_byte_range": [
+                80000,
+                80007
+              ],
+              "header_sha256": "d829295e94859ea48395b82c09fa9760ea1a8f69846b56848e8884bb3ffb2e6f"
+            },
+            "site_ids": []
+          }
+        ],
+        "sites": []
+      }
+    }
+  ]
+}
