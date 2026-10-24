@@ -1,0 +1,1 @@
+fn f(int x) -> int ensures result == x { let x = 0; return x; }

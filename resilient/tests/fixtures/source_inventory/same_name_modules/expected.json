@@ -1,0 +1,120 @@
+{
+  "schema": "resilient-independent-source-inventory-expectation",
+  "version": 1,
+  "grammar": "restricted-declarations-v1",
+  "entry": "program.rz",
+  "files": [
+    {
+      "path": "program.rz",
+      "bytes": 164,
+      "sha256": "9bd0ee7871483c8d3dd5bb74b2f3b077d1696c84de00da1190dc5e83d13dd9dc"
+    }
+  ],
+  "import_edges": [],
+  "declarations": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "left"
+      ],
+      "name": "f",
+      "header_span": [
+        11,
+        66
+      ],
+      "header_sha256": "108798f8a1d318436e41f3b64752a08e3ae38ceee91d21587a1bcd2c1e639df3",
+      "body_features_for_review": []
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "right"
+      ],
+      "name": "f",
+      "header_span": [
+        94,
+        148
+      ],
+      "header_sha256": "8840dae05c731c5413eb2dac27f2e52a3ec89c9ac50ad1e1c5fef33cb3ca80fe",
+      "body_features_for_review": []
+    }
+  ],
+  "contract_sites": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "left"
+      ],
+      "name": "f",
+      "clause_kind": "requires",
+      "clause_ordinal": 0,
+      "clause_span": [
+        30,
+        45
+      ],
+      "clause_sha256": "6328ac1184041174794500669135a0318fed3fe6bbddfd50400b563548c91bbd",
+      "clause_text": "x >= 0",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "left"
+      ],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        46,
+        65
+      ],
+      "clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+      "clause_text": "result == x",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "right"
+      ],
+      "name": "f",
+      "clause_kind": "requires",
+      "clause_ordinal": 0,
+      "clause_span": [
+        113,
+        127
+      ],
+      "clause_sha256": "39c552a3ccfc98c89965f6c464f68ac9554c345c610b748ece7f0ce976263451",
+      "clause_text": "x < 0",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [
+        "right"
+      ],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        128,
+        147
+      ],
+      "clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+      "clause_text": "result == x",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    }
+  ],
+  "compiler_observation": "not captured; syntax/type/mapping/proof dispositions remain unobserved",
+  "claim": "hand-authored lexical declaration and clause inventory, not compiler result or qualification acceptance"
+}

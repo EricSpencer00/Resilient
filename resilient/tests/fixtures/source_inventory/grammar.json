@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "restricted-declarations-v1",
+  "encoding": "UTF-8; offsets are bytes",
+  "bounds": {
+    "files": 32,
+    "file_bytes": 131072,
+    "total_bytes": 1048576,
+    "tokens": 65536,
+    "depth": 32,
+    "declarations": 256,
+    "clauses": 1024
+  },
+  "program": "declarations only; any top-level executable/unknown syntax rejects whole inventory",
+  "supported_declarations": [
+    "fn",
+    "mod",
+    "impl Type with fn methods",
+    "simple struct",
+    "use literal.rz [as alias]"
+  ],
+  "unknown_or_ambiguous_syntax": "reject whole inventory; never partial-success",
+  "imports": "complete authenticated edges including aliases/repetition; file site inventory once per physical source; retain every edge separately",
+  "scope": "enumeration only; body features do not establish proof eligibility; unresolved mapping fails requested implementation policy"
+}
