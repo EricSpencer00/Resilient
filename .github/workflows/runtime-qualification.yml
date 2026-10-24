@@ -1,0 +1,58 @@
+name: Runtime qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient-runtime/**'
+      - '.github/workflows/runtime-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: host runtime (test threads ${{ matrix.threads }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        threads: [1, 8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient-runtime
+          key: runtime-qualification
+      - name: Run and record runtime tests
+        env:
+          THREADS: ${{ matrix.threads }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/runtime-evidence
+        run: |
+          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT" \
+            --input resilient-runtime/src/gpio.rs \
+            --input resilient-runtime/src/sink.rs \
+            --input resilient-runtime/src/live_telemetry.rs \
+            --input resilient-runtime/tests/global_hook_serialization.rs -- \
+            cargo test --manifest-path resilient-runtime/Cargo.toml --locked --features vm -- --test-threads="$THREADS"
+      - name: Verify evidence after success or failure
+        if: always()
+        run: python3 agent-scripts/e2e-evidence.py verify "${{ runner.temp }}/runtime-evidence"
+      - name: Retain runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.threads }}-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-evidence
+          retention-days: 90
+          if-no-files-found: error
