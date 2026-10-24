@@ -723,6 +723,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             locals.insert(pname.clone(), next_local);
             next_local += 1;
         }
+        if !requires.is_empty() && !fails.is_empty() {
+            chunk.emit(Op::EntryGuardsStart, fn_line);
+        }
         requires_entry::compile_requires_entry(
             name,
             requires,
@@ -735,6 +738,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             next_fn_idx,
             fn_line,
         )?;
+        if !requires.is_empty() && !fails.is_empty() {
+            chunk.emit(Op::EntryGuardsComplete, fn_line);
+        }
         let inner = match body {
             Node::Block { stmts: b, .. } => b.as_slice(),
             single => std::slice::from_ref(single),
