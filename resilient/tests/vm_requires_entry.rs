@@ -38,12 +38,39 @@ fn run(case: &str, source: &str, mode: &str, dispatch: &str, optimize: bool) -> 
             .env("RESILIENT_CONST_FOLD", "1")
             .env("RESILIENT_INLINE", "1");
     }
+    let disassembly = if case == "tail_recursive" {
+        let dump = Command::new(env!("CARGO_BIN_EXE_rz"))
+            .args(["--no-cache", "--dump-chunks"])
+            .arg(&path)
+            .env_remove("RESILIENT_CONST_FOLD")
+            .env_remove("RESILIENT_INLINE")
+            .output()
+            .unwrap();
+        assert!(dump.status.success(), "{}", text(&dump));
+        assert!(
+            String::from_utf8_lossy(&dump.stdout).contains("TailCall"),
+            "{}",
+            text(&dump)
+        );
+        Some(dump)
+    } else {
+        None
+    };
     let output = command.output().unwrap();
     if let Some(records) = std::env::var_os("VM_REQUIRES_RECORDS") {
         let destination =
             std::path::PathBuf::from(records).join(format!("{case}-{mode}-{dispatch}"));
         fs::create_dir_all(&destination).unwrap();
         fs::write(destination.join("input.rz"), source).unwrap();
+        if let Some(dump) = &disassembly {
+            fs::write(destination.join("disassembly.txt"), &dump.stdout).unwrap();
+            fs::write(destination.join("disassembly-stderr.txt"), &dump.stderr).unwrap();
+            fs::write(
+                destination.join("disassembly-status.txt"),
+                dump.status.to_string(),
+            )
+            .unwrap();
+        }
         fs::write(destination.join("stdout.txt"), &output.stdout).unwrap();
         fs::write(destination.join("stderr.txt"), &output.stderr).unwrap();
         fs::write(
@@ -99,7 +126,7 @@ fn wrap_boundary_rejects_lia_tautology() {
 fn false_requires_precedes_body_side_effect() {
     violation(
         "body_effect",
-        "fn f(int x) -> int requires x > 0 { println(\"BODY_RAN\"); return x; } println(f(0));",
+        "fn f(int x) -> int requires x > 0 { println(\"BODY_RAN\"); return x; } let entry = f; println(entry(0));",
         "f",
         "x > 0",
         false,
@@ -107,7 +134,13 @@ fn false_requires_precedes_body_side_effect() {
 }
 #[test]
 fn multiple_clauses_stop_before_later_fault() {
-    violation("ordered_clauses", "fn f(int x) -> int requires x > 0 requires 1 / x > 0 { println(\"BODY_RAN\"); return x; } f(0);", "f", "x > 0", false);
+    violation(
+        "ordered_clauses",
+        "fn f(int x) -> int requires x > 0 requires 1 / x > 0 { println(\"BODY_RAN\"); return x; } let entry = f; entry(0);",
+        "f",
+        "x > 0",
+        false,
+    );
 }
 #[test]
 fn indirect_function_call_checks_actual_argument() {
@@ -121,15 +154,33 @@ fn indirect_function_call_checks_actual_argument() {
 }
 #[test]
 fn recursive_tail_entry_rechecks_rebound_argument() {
-    violation("tail_recursive", "fn f(int n) -> int requires n >= 0 { if n == 0 { return f(-1); } return n; } println(f(0));", "f", "n >= 0", false);
+    violation(
+        "tail_recursive",
+        "fn next(int n) -> int { return n - 1; } fn f(int n) -> int requires n >= 0 { if n == 0 { return f(next(n)); } return n; } println(f(0));",
+        "f",
+        "n >= 0",
+        false,
+    );
 }
 #[test]
 fn nested_requires_captures_outer_only_reference() {
-    violation("nested_capture", "fn outer(int limit) -> int { fn inner(int x) -> int requires x > limit { return x; } return inner(1); } println(outer(5));", "inner", "x > limit", false);
+    violation(
+        "nested_capture",
+        "fn outer(int limit) -> int { fn inner(int x) -> int requires x > limit { return x; } return inner(1); } println(outer(5));",
+        "inner",
+        "x > limit",
+        false,
+    );
 }
 #[test]
 fn anonymous_requires_captures_outer_only_reference() {
-    violation("anonymous_capture", "fn outer(int limit) -> int { let f = fn(int x) -> int requires x > limit { return x; }; return f(1); } println(outer(5));", "<anon>", "x > limit", false);
+    violation(
+        "anonymous_capture",
+        "fn outer(int limit) -> int { let f = fn(int x) -> int requires x > limit { return x; }; return f(1); } println(outer(5));",
+        "<anon>",
+        "x > limit",
+        false,
+    );
 }
 #[test]
 fn module_function_preconditions_are_not_omitted() {
@@ -143,7 +194,13 @@ fn module_function_preconditions_are_not_omitted() {
 }
 #[test]
 fn optimization_cannot_remove_entry_checks() {
-    violation("optimized", "fn f(int x) -> int requires x + 1 > x { println(\"BODY_RAN\"); return x; } println(f(9223372036854775807));", "f", "x + 1", true);
+    violation(
+        "optimized",
+        "fn f(int x) -> int requires x + 1 > x { println(\"BODY_RAN\"); return x; } println(f(9223372036854775807));",
+        "f",
+        "x + 1",
+        true,
+    );
 }
 #[test]
 fn valid_indirect_and_recursive_calls_remain_valid() {
@@ -205,7 +262,7 @@ fn evaluated_requires_fault_preserves_underlying_error() {
         );
         assert!(!out.status.success(), "{}", text(&out));
         assert!(
-            text(&out).to_lowercase().contains("division by zero"),
+            text(&out).to_lowercase().contains("vm: divide by zero"),
             "{}",
             text(&out)
         );
@@ -220,8 +277,7 @@ fn evaluated_requires_fault_preserves_underlying_error() {
 }
 #[test]
 fn actual_vm_overflow_mode_controls_requires_evaluation() {
-    let source =
-        "fn f(int x) -> int requires x + 1 < 0 { return x; } println(f(9223372036854775807));";
+    let source = "fn f(int x) -> int requires x + 1 < 0 { return x; } let entry = f; println(entry(9223372036854775807));";
     for dispatch in ["match", "direct"] {
         for mode in ["default", "saturate", "trap"] {
             let out = run("mode", source, mode, dispatch, false);
@@ -252,9 +308,18 @@ fn actual_vm_overflow_mode_controls_requires_evaluation() {
 #[test]
 fn valid_captured_and_module_entry_controls() {
     let cases = [
-        ("valid_nested", "fn outer(int limit) -> int { fn inner(int x) -> int requires x > limit { return x; } return inner(7); } println(outer(5));"),
-        ("valid_anonymous", "fn outer(int limit) -> int { let f = fn(int x) -> int requires x > limit { return x; }; return f(7); } println(outer(5));"),
-        ("valid_module", "mod checks { fn f(int x) -> int requires x > 0 { return x; } } println(checks::f(7));"),
+        (
+            "valid_nested",
+            "fn outer(int limit) -> int { fn inner(int x) -> int requires x > limit { return x; } return inner(7); } println(outer(5));",
+        ),
+        (
+            "valid_anonymous",
+            "fn outer(int limit) -> int { let f = fn(int x) -> int requires x > limit { return x; }; return f(7); } println(outer(5));",
+        ),
+        (
+            "valid_module",
+            "mod checks { fn f(int x) -> int requires x > 0 { return x; } } println(checks::f(7));",
+        ),
     ];
     for dispatch in ["match", "direct"] {
         for (case, source) in cases {
