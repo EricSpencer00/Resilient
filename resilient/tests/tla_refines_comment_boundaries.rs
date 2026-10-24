@@ -31,10 +31,32 @@ fn check(spec: &str, accepted: bool) {
 
 #[test]
 fn nested_comment_does_not_define_action() {
-    check("---- MODULE Counter ----\n(* outer\n(* inner *)\nInc == TRUE\n*)\n====", false);
+    check(
+        "---- MODULE Counter ----\n(* outer\n(* inner *)\nInc == TRUE\n*)\n====",
+        false,
+    );
 }
 
 #[test]
 fn line_comment_cannot_open_block_comment() {
-    check("---- MODULE Counter ----\n\\* (* ignored\nInc == TRUE\n====", true);
+    check(
+        "---- MODULE Counter ----\n\\* (* ignored\nInc == TRUE\n====",
+        true,
+    );
+}
+
+#[test]
+fn quoted_comment_marker_does_not_hide_action() {
+    check(
+        "---- MODULE Counter ----\nLabel == \"(*\"\nInc == TRUE\n====",
+        true,
+    );
+}
+
+#[test]
+fn comments_do_not_join_identifier_fragments() {
+    check(
+        "---- MODULE Counter ----\nIn(* separator *)c == TRUE\n====",
+        false,
+    );
 }
