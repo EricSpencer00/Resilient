@@ -55,3 +55,8 @@ contains executed positive and negative tests, real Z3 results, source and binar
 identities, requirement traceability and failure analysis. It covers the saved-query
 replay operation on a pinned Linux baseline. Program-level proof completeness,
 other release targets and independent assessment remain outside that record.
+
+The [replay resource-limit record](https://github.com/EricSpencer00/Resilient/tree/main/qualification/replay-bounds/hosted-record)
+retains the hosted baseline and repaired runs, three verified red-green
+attestations, and a source reconstruction patch. It covers timeout enforcement,
+output limits and configuration rejection, with a passing-response control.

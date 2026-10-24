@@ -1535,6 +1535,18 @@ pub fn prove_tautology_with_axioms_and_timeout(
     result
 }
 
+/// Certificate consumers need the query, even for a cached or constant verdict.
+pub(crate) fn prove_tautology_with_certificate(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (bool, Option<ProofCertificate>, bool) {
+    Z3_CTX.with(|ctx| {
+        prove_tautology_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms)
+    })
+}
+
 fn prove_tautology_with_axioms_and_timeout_in(
     ctx: &z3::Context,
     expr: &Node,

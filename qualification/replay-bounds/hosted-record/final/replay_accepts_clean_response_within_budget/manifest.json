@@ -1,0 +1,53 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "solver_replay_bounds",
+    "replay_accepts_clean_response_within_budget",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "8c3a978cbb6c213db033b40e3513e1290015ce62b11166bab2deda30cce415ad"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/solver_replay_bounds.rs",
+      "sha256": "76cf986da4d530b91024440907d9d94fdd88aa05afcbb7f7dac6dbc7578d06a6"
+    }
+  ],
+  "result": {
+    "exit_code": 0,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "passed"
+      },
+      {
+        "name": "replay_accepts_clean_response_within_budget",
+        "status": "passed"
+      }
+    ],
+    "status": "passed"
+  },
+  "run_id": "57cbe7c2a8836dfd59ef88a24539e09a68d29ce5f4ec9ae1c0917057df3192ee",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "ded79260b1960de1249fd2231f9f9cd8c1e25e0b",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}

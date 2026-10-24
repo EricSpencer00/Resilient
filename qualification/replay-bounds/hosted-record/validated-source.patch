@@ -1,0 +1,1249 @@
+diff --git a/.github/workflows/evidence-validation.yml b/.github/workflows/evidence-validation.yml
+new file mode 100644
+index 00000000..bc9942b3
+--- /dev/null
++++ b/.github/workflows/evidence-validation.yml
+@@ -0,0 +1,72 @@
++name: Evidence validation
++
++on:
++  pull_request:
++    types: [opened, synchronize, reopened, ready_for_review]
++    paths:
++      - 'agent-scripts/e2e-*'
++      - 'agent-scripts/test-e2e-*'
++      - 'scripts/check_qualification.py'
++      - 'scripts/test_check_qualification.py'
++      - 'qualification/**'
++      - '.github/workflows/evidence-validation.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: evidence-validation-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  evidence:
++    name: evidence tooling and retained records
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++      - name: Exercise evidence collection and attestation
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}/resilient-evidence-validation
++        run: |
++          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/collector" \
++            --input agent-scripts/e2e-evidence.py \
++            --input agent-scripts/test-e2e-evidence.sh -- \
++            bash agent-scripts/test-e2e-evidence.sh
++          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/collector"
++          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/attestation" \
++            --input agent-scripts/e2e-evidence.py \
++            --input agent-scripts/test-e2e-attestation.sh \
++            --input agent-scripts/e2e-attestation-probe.py -- \
++            bash agent-scripts/test-e2e-attestation.sh
++          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/attestation"
++      - name: Check qualification intake and retained bundles
++        run: |
++          python3 -m unittest discover -s scripts -p test_check_qualification.py -v
++          python3 - <<'PY'
++          from pathlib import Path
++          import subprocess
++          for manifest in sorted(Path('qualification').rglob('manifest.json')):
++              subprocess.run(['python3', 'agent-scripts/e2e-evidence.py', 'verify', str(manifest.parent)], check=True)
++          PY
++      - name: Verify any produced bundles after failure
++        if: always()
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}/resilient-evidence-validation
++        run: |
++          for bundle in "$EVIDENCE_ROOT"/*; do
++            if [ -d "$bundle" ]; then
++              python3 agent-scripts/e2e-evidence.py verify "$bundle"
++            fi
++          done
++      - name: Retain validation evidence
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: evidence-validation-${{ github.sha }}
++          path: ${{ runner.temp }}/resilient-evidence-validation
++          if-no-files-found: warn
++          retention-days: 90
+diff --git a/.github/workflows/replay-qualification.yml b/.github/workflows/replay-qualification.yml
+new file mode 100644
+index 00000000..067265cf
+--- /dev/null
++++ b/.github/workflows/replay-qualification.yml
+@@ -0,0 +1,101 @@
++name: Replay qualification
++
++on:
++  pull_request:
++    paths:
++      - 'resilient/src/solver_replay.rs'
++      - 'resilient/tests/solver_replay_bounds.rs'
++      - '.github/workflows/replay-qualification.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: replay-qualification-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  evidence:
++    name: replay bounds (${{ matrix.phase }})
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    strategy:
++      fail-fast: false
++      matrix:
++        phase: [baseline, final]
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ matrix.phase == 'baseline' && 'b272c109ef1ca61104eeff7f025362a08e053c4b' || github.sha }}
++          fetch-depth: 0
++      - uses: dtolnay/rust-toolchain@stable
++      - name: Install solver dependencies
++        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: resilient
++          key: replay-qualification
++      - name: Record each regression and its control
++        env:
++          PHASE: ${{ matrix.phase }}
++          EVIDENCE_ROOT: ${{ runner.temp }}/replay-qualification
++          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
++          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
++        run: |
++          for test in replay_rejects_response_after_deadline replay_rejects_oversized_whitespace_after_unsat replay_rejects_invalid_timeout_configuration replay_accepts_clean_response_within_budget; do
++            set +e
++            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
++              --input resilient/tests/solver_replay_bounds.rs -- \
++              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
++                --test solver_replay_bounds "$test" -- --exact --nocapture
++            result=$?
++            set -e
++            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
++            if [[ "$PHASE" == baseline && "$test" != replay_accepts_clean_response_within_budget ]]; then
++              test "$result" -ne 0
++            else
++              test "$result" -eq 0
++            fi
++          done
++      - name: Retain source-bound records
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: replay-${{ matrix.phase }}-${{ github.sha }}
++          path: ${{ runner.temp }}/replay-qualification
++          retention-days: 90
++          if-no-files-found: error
++
++  attest:
++    name: verify replay red-green evidence
++    needs: evidence
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/download-artifact@v4
++        with:
++          name: replay-baseline-${{ github.sha }}
++          path: ${{ runner.temp }}/baseline
++      - uses: actions/download-artifact@v4
++        with:
++          name: replay-final-${{ github.sha }}
++          path: ${{ runner.temp }}/final
++      - name: Verify paired evidence
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}
++        run: |
++          for test in replay_rejects_response_after_deadline replay_rejects_oversized_whitespace_after_unsat replay_rejects_invalid_timeout_configuration; do
++            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
++              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
++              --output "$EVIDENCE_ROOT/attestations/$test"
++            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
++              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
++          done
++      - uses: actions/upload-artifact@v4
++        with:
++          name: replay-attestations-${{ github.sha }}
++          path: ${{ runner.temp }}/attestations
++          retention-days: 90
++          if-no-files-found: error
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index 5b0655ed..70053e23 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -219,6 +219,58 @@ arguments. If the test command fails, the runner still writes and verifies the
+ failure artifact before returning that command's exit status. Run the verify
+ command separately to validate the bundle after a failure.
+ 
++### Red-green evidence for end-to-end regressions
++
++For a regression fix, retain two execution bundles for the same
++test: a failing baseline recorded before the implementation changes, and a
++passing run after it. Use distinct output directories so the red bundle is not
++replaced by the green run:
++
++```bash
++INPUTS="--input Cargo.toml --input Cargo.lock --input resilient/Cargo.toml \
++  --input resilient/tests/it/<test_file>.rs"
++CMD="-- cargo test --manifest-path resilient/Cargo.toml --test it <test_name>"
++
++# 1. Add the regression test, run it before touching the implementation, and
++#    keep the bundle: the test must fail as a test failure.
++python3 agent-scripts/e2e-evidence.py run --output target/e2e-artifacts/red \
++  $INPUTS $CMD
++
++# 2. Implement the fix and commit it. Run the same command with the same inputs.
++python3 agent-scripts/e2e-evidence.py run --output target/e2e-artifacts/green \
++  $INPUTS $CMD
++
++# 3. Combine the two bundles and verify the combined evidence.
++python3 agent-scripts/e2e-evidence.py attest --test <test_name> \
++  --baseline target/e2e-artifacts/red --final target/e2e-artifacts/green
++python3 agent-scripts/e2e-evidence.py verify-attestation \
++  target/e2e-artifacts/red-green \
++  --baseline target/e2e-artifacts/red --final target/e2e-artifacts/green
++```
++
++The pairing checks consistency of recorded observations. It does not prove
++chronological test-first order, authenticate the runner, establish that all test
++fixtures were declared, or record the complete process environment. Review those
++properties separately before relying on the record for qualification.
++
++`attest` accepts the pair only when all of these hold:
++
++- The baseline records `<test_name>` as a failed test outcome, and no other
++  test fails. A build, launch, or harness failure does not count as red; those
++  runs have no outcome for the target test.
++- The final run records `<test_name>` as passed with exit status 0.
++- Both runs use the same command, declared inputs, and toolchain versions.
++  Test and fixture files must be declared with `--input` and must be identical
++  in both runs.
++- The two runs have different run IDs, so the implementation source or revision
++  changed between them.
++
++The output is `target/e2e-artifacts/red-green`: `attestation.json` embeds both
++run manifests and their checksums, `summary.md` is the human-readable report,
++and `checksums.sha256` covers the other two files. Re-running `attest` on the
++same inputs produces identical output. Passing `--baseline` and `--final` to
++`verify-attestation` re-verifies both source bundles against the attestation.
++
+ ### Direct regression coverage
+ 
+ Shipped language features and shipped CLI workflows should keep at least
+@@ -538,3 +590,8 @@ Use this to confirm a cross-compile change works before tagging.
+ - For security concerns, reach out to the maintainers privately
+ 
+ Thank you for contributing to Resilient! 🚀
++
++The `Evidence validation` GitHub Actions workflow runs the collector and
++attestation regressions and validates retained qualification bundles. Its
++artifacts retain the workflow source identity and results for 90 days; copy
++accepted records to the project-controlled evidence repository before expiry.
+diff --git a/agent-scripts/e2e-attestation-probe.py b/agent-scripts/e2e-attestation-probe.py
+new file mode 100644
+index 00000000..329e5da3
+--- /dev/null
++++ b/agent-scripts/e2e-attestation-probe.py
+@@ -0,0 +1,15 @@
++import os
++import sys
++
++test = os.environ["E2E_ATTEST_TEST"]
++outcome = os.environ["E2E_ATTEST_OUTCOME"]
++extra = os.environ.get("E2E_ATTEST_EXTRA")
++if os.environ.get("E2E_ATTEST_BUILD") == "1":
++    print("error: could not compile `resilient`", file=sys.stderr)
++    raise SystemExit(101)
++if os.environ.get("E2E_ATTEST_SILENT") == "1":
++    raise SystemExit(0)
++if extra:
++    print(f"test {extra} ... FAILED")
++print(f"test {test} ... {outcome}")
++raise SystemExit(101 if outcome == "FAILED" or extra else 0)
+diff --git a/agent-scripts/e2e-evidence.py b/agent-scripts/e2e-evidence.py
+index bbae97bb..115fdaa6 100755
+--- a/agent-scripts/e2e-evidence.py
++++ b/agent-scripts/e2e-evidence.py
+@@ -18,12 +18,26 @@ import tempfile
+ import threading
+ import time
+ from pathlib import Path
+-from typing import Any
++from typing import Any, Callable
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+ SCHEMA = "resilient-e2e-evidence"
+ SCHEMA_VERSION = 1
+ FILES = ("manifest.json", "summary.md", "checksums.sha256", "run-metadata.json")
++ATTESTATION_SCHEMA = "resilient-e2e-red-green-attestation"
++ATTESTATION_FILES = ("attestation.json", "summary.md", "checksums.sha256")
++ATTESTATION_KEYS = {
++    "schema",
++    "schema_version",
++    "test",
++    "command",
++    "inputs",
++    "toolchain",
++    "baseline",
++    "final",
++    "evidence_sha256",
++}
++REFERENCE_KEYS = {"run_id", "manifest_sha256", "summary_sha256", "source", "manifest"}
+ SECRET_FLAG = re.compile(
+     r"(?i)^--?(?:token|secret|password|api[-_]?key|access[-_]?key)(?:=|$)"
+ )
+@@ -189,33 +203,19 @@ def summary_text(manifest: dict[str, Any]) -> str:
+     return "\n".join(lines) + "\n"
+ 
+ 
+-def checksums_text(directory: Path) -> str:
+-    entries = [
+-        (name, sha256_file(directory / name))
+-        for name in ("manifest.json", "summary.md")
+-    ]
+-    return "".join(f"{digest}  {name}\n" for name, digest in entries)
++def checksum_lines(contents: dict[str, bytes]) -> str:
++    return "".join(
++        f"{sha256_bytes(contents[name])}  {name}\n" for name in sorted(contents)
++    )
+ 
+ 
+-def verify_bundle(directory: Path) -> dict[str, Any]:
+-    if directory.is_symlink() or not directory.is_dir():
+-        raise EvidenceError("artifact path must be a directory")
++def checksums_text(directory: Path) -> str:
++    return checksum_lines(
++        {name: (directory / name).read_bytes() for name in ("manifest.json", "summary.md")}
++    )
+ 
+-    names = {item.name for item in directory.iterdir()}
+-    if names != set(FILES):
+-        raise EvidenceError("artifact bundle is missing files or contains unexpected files")
+-    for name in FILES:
+-        item = directory / name
+-        if item.is_symlink() or not item.is_file():
+-            raise EvidenceError("artifact entries must be regular files")
+-
+-    try:
+-        manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
+-        metadata = json.loads((directory / "run-metadata.json").read_text("utf-8"))
+-        checksums = (directory / "checksums.sha256").read_text("utf-8")
+-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+-        raise EvidenceError("artifact metadata is malformed or incomplete") from error
+ 
++def validate_manifest(manifest: Any) -> None:
+     if not isinstance(manifest, dict):
+         raise EvidenceError("manifest must be a JSON object")
+     required = {
+@@ -313,18 +313,8 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
+     if manifest["run_id"] != expected_run_id:
+         raise EvidenceError("manifest run ID does not match its inputs")
+ 
+-    summary = (directory / "summary.md").read_text("utf-8")
+-    expected_summary = summary_text(manifest)
+-    if summary != expected_summary:
+-        raise EvidenceError("summary does not match the manifest")
+-
+-    evidence = manifest["evidence_sha256"]
+-    if evidence != {"summary.md": sha256_file(directory / "summary.md")}:
+-        raise EvidenceError("evidence checksum is missing or does not match")
+-
+-    if checksums != checksums_text(directory):
+-        raise EvidenceError("checksums file is missing, malformed, or does not match")
+ 
++def validate_run_metadata(metadata: Any) -> None:
+     if (
+         not isinstance(metadata, dict)
+         or set(metadata) != {"schema", "schema_version", "started_utc", "duration_ms"}
+@@ -337,12 +327,50 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
+     ):
+         raise EvidenceError("volatile run metadata is malformed")
+ 
++
++def verify_bundle(directory: Path) -> dict[str, Any]:
++    if directory.is_symlink() or not directory.is_dir():
++        raise EvidenceError("artifact path must be a directory")
++
++    names = {item.name for item in directory.iterdir()}
++    if names != set(FILES):
++        raise EvidenceError("artifact bundle is missing files or contains unexpected files")
++    for name in FILES:
++        item = directory / name
++        if item.is_symlink() or not item.is_file():
++            raise EvidenceError("artifact entries must be regular files")
++
++    try:
++        manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
++        metadata = json.loads((directory / "run-metadata.json").read_text("utf-8"))
++        checksums = (directory / "checksums.sha256").read_text("utf-8")
++    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
++        raise EvidenceError("artifact metadata is malformed or incomplete") from error
++
++    validate_manifest(manifest)
++    if (directory / "manifest.json").read_bytes() != canonical_json(manifest):
++        raise EvidenceError("manifest is not in canonical form")
++
++    summary = (directory / "summary.md").read_text("utf-8")
++    expected_summary = summary_text(manifest)
++    if summary != expected_summary:
++        raise EvidenceError("summary does not match the manifest")
++
++    evidence = manifest["evidence_sha256"]
++    if evidence != {"summary.md": sha256_file(directory / "summary.md")}:
++        raise EvidenceError("evidence checksum is missing or does not match")
++
++    if checksums != checksums_text(directory):
++        raise EvidenceError("checksums file is missing, malformed, or does not match")
++
++    validate_run_metadata(metadata)
++
+     return manifest
+ 
+ 
+-def output_path_for(value: str | None) -> Path:
++def output_path_for(value: str | None, default: str = "target/e2e-artifacts/latest") -> Path:
+     if value is None:
+-        return ROOT / "target" / "e2e-artifacts" / "latest"
++        return ROOT / default
+     supplied = Path(value)
+     candidate = supplied if supplied.is_absolute() else ROOT / supplied
+     if candidate.is_symlink():
+@@ -362,12 +390,10 @@ def write_atomic(path: Path, content: bytes) -> None:
+         temporary.unlink(missing_ok=True)
+ 
+ 
+-def install_bundle(
++def install_directory(
+     output: Path,
+-    manifest: dict[str, Any],
+-    summary: str,
+-    started_utc: str,
+-    duration_ms: int,
++    files: dict[str, bytes],
++    verify: Callable[[Path], Any],
+ ) -> None:
+     parent = output.parent
+     parent.mkdir(parents=True, exist_ok=True)
+@@ -379,25 +405,13 @@ def install_bundle(
+             if output.is_symlink() or not output.is_dir():
+                 raise EvidenceError("artifact output must be a directory")
+             if any(output.iterdir()):
+-                verify_bundle(output)
++                verify(output)
+             else:
+                 output.rmdir()
+         staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
+         try:
+-            summary_bytes = summary.encode("utf-8")
+-            manifest["evidence_sha256"] = {"summary.md": sha256_bytes(summary_bytes)}
+-            (staging / "summary.md").write_bytes(summary_bytes)
+-            (staging / "manifest.json").write_bytes(canonical_json(manifest))
+-            metadata = {
+-                "schema": "resilient-e2e-run-metadata",
+-                "schema_version": 1,
+-                "started_utc": started_utc,
+-                "duration_ms": duration_ms,
+-            }
+-            (staging / "run-metadata.json").write_bytes(canonical_json(metadata))
+-            (staging / "checksums.sha256").write_text(
+-                checksums_text(staging), encoding="utf-8"
+-            )
++            for name, content in files.items():
++                (staging / name).write_bytes(content)
+ 
+             if output.exists():
+                 backup = parent / f".{output.name}.old.{os.getpid()}"
+@@ -415,6 +429,33 @@ def install_bundle(
+                 shutil.rmtree(staging)
+ 
+ 
++def install_bundle(
++    output: Path,
++    manifest: dict[str, Any],
++    summary: str,
++    started_utc: str,
++    duration_ms: int,
++) -> None:
++    summary_bytes = summary.encode("utf-8")
++    manifest["evidence_sha256"] = {"summary.md": sha256_bytes(summary_bytes)}
++    manifest_bytes = canonical_json(manifest)
++    metadata = {
++        "schema": "resilient-e2e-run-metadata",
++        "schema_version": 1,
++        "started_utc": started_utc,
++        "duration_ms": duration_ms,
++    }
++    files = {
++        "summary.md": summary_bytes,
++        "manifest.json": manifest_bytes,
++        "run-metadata.json": canonical_json(metadata),
++        "checksums.sha256": checksum_lines(
++            {"manifest.json": manifest_bytes, "summary.md": summary_bytes}
++        ).encode("utf-8"),
++    }
++    install_directory(output, files, verify_bundle)
++
++
+ def reject_secret_arguments(command: list[str]) -> None:
+     if any(
+         SECRET_FLAG.search(argument) or SECRET_ASSIGNMENT.search(argument)
+@@ -547,6 +588,247 @@ def verify_command(args: argparse.Namespace) -> int:
+     return 0
+ 
+ 
++def test_statuses(manifest: dict[str, Any], test: str) -> list[str]:
++    return [
++        outcome["status"]
++        for outcome in manifest["result"]["outcomes"]
++        if outcome["name"] == test
++    ]
++
++
++def check_red_green(baseline: dict[str, Any], final: dict[str, Any], test: str) -> None:
++    if baseline["run_id"] == final["run_id"]:
++        raise EvidenceError("baseline and final are the same run; the implementation must change")
++    if baseline["command"] != final["command"]:
++        raise EvidenceError("baseline and final commands differ")
++    if baseline["inputs"] != final["inputs"]:
++        raise EvidenceError("baseline and final test or fixture inputs differ")
++    if baseline["toolchain"] != final["toolchain"]:
++        raise EvidenceError("baseline and final toolchains differ")
++
++    if test_statuses(baseline, test) != ["failed"]:
++        raise EvidenceError(f"baseline does not record {test} as a test failure")
++    if baseline["result"]["status"] != "failed":
++        raise EvidenceError("baseline result must be failed")
++    other_failures = sorted(
++        {
++            outcome["name"]
++            for outcome in baseline["result"]["outcomes"]
++            if outcome["status"] == "failed"
++            and outcome["name"] not in {test, "command"}
++        }
++    )
++    if other_failures:
++        raise EvidenceError(
++            f"baseline fails outside the target test: {', '.join(other_failures)}"
++        )
++
++    if test_statuses(final, test) != ["passed"]:
++        raise EvidenceError(f"final run does not record {test} passing")
++    if final["result"]["status"] != "passed":
++        raise EvidenceError("final result must be passed")
++
++
++def bundle_reference(directory: Path) -> dict[str, Any]:
++    manifest = verify_bundle(directory)
++    return {
++        "run_id": manifest["run_id"],
++        "manifest_sha256": sha256_file(directory / "manifest.json"),
++        "summary_sha256": manifest["evidence_sha256"]["summary.md"],
++        "source": manifest["source"],
++        "manifest": manifest,
++    }
++
++
++def attestation_summary_text(attestation: dict[str, Any]) -> str:
++    test = attestation["test"]
++    baseline = attestation["baseline"]
++    final = attestation["final"]
++    lines = [
++        "# Red-green E2E attestation",
++        "",
++        f"- Test: {test}",
++        f"- Baseline: {test} failed as a test failure",
++        f"- Final: {test} passed",
++        f"- Command: {shlex.join(attestation['command'])}",
++        "",
++        "## Runs",
++        "",
++    ]
++    for label, reference in (("Baseline", baseline), ("Final", final)):
++        manifest = reference["manifest"]
++        source = reference["source"]
++        lines.extend(
++            [
++                f"### {label}",
++                "",
++                f"- Run ID: {reference['run_id']}",
++                f"- Manifest SHA-256: {reference['manifest_sha256']}",
++                f"- Source revision: {source['commit']}",
++            ]
++        )
++        if source["dirty"]:
++            lines.append(f"- Working-tree digest: {source['worktree_sha256']}")
++        lines.extend(
++            [
++                f"- Result: {manifest['result']['status']} "
++                f"(exit code {manifest['result']['exit_code']})",
++                "",
++            ]
++        )
++    lines.extend(["## Toolchain", ""])
++    for name, version in attestation["toolchain"].items():
++        lines.append(f"- {name}: {version}")
++    lines.extend(["", "## Inputs", ""])
++    if attestation["inputs"]:
++        for item in attestation["inputs"]:
++            lines.append(f"- {item['path']}: {item['sha256']}")
++    else:
++        lines.append("- None declared")
++    lines.extend(["", "## Outcome", ""])
++    lines.append(f"- baseline {test}: {test_statuses(baseline['manifest'], test)[0]}")
++    lines.append(f"- final {test}: {test_statuses(final['manifest'], test)[0]}")
++    return "\n".join(lines) + "\n"
++
++
++def build_attestation(test: str, baseline_dir: Path, final_dir: Path) -> dict[str, Any]:
++    baseline = bundle_reference(baseline_dir)
++    final = bundle_reference(final_dir)
++    check_red_green(baseline["manifest"], final["manifest"], test)
++    shared = final["manifest"]
++    return {
++        "schema": ATTESTATION_SCHEMA,
++        "schema_version": SCHEMA_VERSION,
++        "test": test,
++        "command": shared["command"],
++        "inputs": shared["inputs"],
++        "toolchain": shared["toolchain"],
++        "baseline": baseline,
++        "final": final,
++        "evidence_sha256": {},
++    }
++
++
++def attestation_files(attestation: dict[str, Any]) -> dict[str, bytes]:
++    summary = attestation_summary_text(attestation).encode("utf-8")
++    attestation["evidence_sha256"] = {"summary.md": sha256_bytes(summary)}
++    document = canonical_json(attestation)
++    return {
++        "attestation.json": document,
++        "summary.md": summary,
++        "checksums.sha256": checksum_lines(
++            {"attestation.json": document, "summary.md": summary}
++        ).encode("utf-8"),
++    }
++
++
++def verify_attestation(
++    directory: Path,
++    baseline_dir: Path | None = None,
++    final_dir: Path | None = None,
++) -> dict[str, Any]:
++    if directory.is_symlink() or not directory.is_dir():
++        raise EvidenceError("attestation path must be a directory")
++    if {item.name for item in directory.iterdir()} != set(ATTESTATION_FILES):
++        raise EvidenceError("attestation is missing files or contains unexpected files")
++    for name in ATTESTATION_FILES:
++        item = directory / name
++        if item.is_symlink() or not item.is_file():
++            raise EvidenceError("attestation entries must be regular files")
++
++    try:
++        raw = (directory / "attestation.json").read_bytes()
++        attestation = json.loads(raw.decode("utf-8"))
++        summary = (directory / "summary.md").read_text("utf-8")
++        checksums = (directory / "checksums.sha256").read_text("utf-8")
++    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
++        raise EvidenceError("attestation is malformed or incomplete") from error
++
++    if not isinstance(attestation, dict) or set(attestation) != ATTESTATION_KEYS:
++        raise EvidenceError("attestation fields do not match the supported schema")
++    if (
++        attestation["schema"] != ATTESTATION_SCHEMA
++        or attestation["schema_version"] != SCHEMA_VERSION
++    ):
++        raise EvidenceError("unsupported attestation schema")
++    if raw != canonical_json(attestation):
++        raise EvidenceError("attestation is not in canonical form")
++    test = attestation["test"]
++    if not isinstance(test, str) or not test:
++        raise EvidenceError("attestation test name is missing")
++
++    manifests: dict[str, dict[str, Any]] = {}
++    for side in ("baseline", "final"):
++        reference = attestation[side]
++        if not isinstance(reference, dict) or set(reference) != REFERENCE_KEYS:
++            raise EvidenceError(f"attestation {side} reference is malformed")
++        manifest = reference["manifest"]
++        if not isinstance(manifest, dict):
++            raise EvidenceError(f"attestation {side} manifest is malformed")
++        validate_manifest(manifest)
++        if (
++            reference["run_id"] != manifest["run_id"]
++            or reference["manifest_sha256"] != sha256_bytes(canonical_json(manifest))
++            or reference["summary_sha256"] != manifest["evidence_sha256"]["summary.md"]
++            or reference["source"] != manifest["source"]
++        ):
++            raise EvidenceError(f"attestation {side} reference does not match its manifest")
++        manifests[side] = manifest
++
++    for side, expected in (("baseline", baseline_dir), ("final", final_dir)):
++        if expected is None:
++            continue
++        bundle = verify_bundle(expected)
++        if bundle != manifests[side]:
++            raise EvidenceError(f"{side} bundle does not match the attestation")
++
++    for key in ("command", "inputs", "toolchain"):
++        for side in ("baseline", "final"):
++            if attestation[key] != manifests[side][key]:
++                raise EvidenceError(f"attestation {key} does not match the {side} run")
++    check_red_green(manifests["baseline"], manifests["final"], test)
++
++    if summary != attestation_summary_text(attestation):
++        raise EvidenceError("attestation summary does not match the attestation")
++    if attestation["evidence_sha256"] != {"summary.md": sha256_bytes(summary.encode("utf-8"))}:
++        raise EvidenceError("attestation evidence checksum is missing or does not match")
++    if checksums != checksum_lines(
++        {"attestation.json": raw, "summary.md": summary.encode("utf-8")}
++    ):
++        raise EvidenceError("attestation checksums are missing, malformed, or do not match")
++    return attestation
++
++
++def attest_command(args: argparse.Namespace) -> int:
++    baseline = resolve_artifact(args.baseline)
++    final = resolve_artifact(args.final)
++    attestation = build_attestation(args.test, baseline, final)
++    output = output_path_for(args.output, "target/e2e-artifacts/red-green")
++    install_directory(
++        output,
++        attestation_files(attestation),
++        verify_attestation,
++    )
++    print(f"Red-green E2E attestation written to {output}")
++    verified = verify_attestation(output, baseline, final)
++    print(f"Red-green E2E attestation verified: {verified['test']}")
++    return 0
++
++
++def verify_attestation_command(args: argparse.Namespace) -> int:
++    directory = resolve_artifact(args.attestation)
++    baseline = resolve_artifact(args.baseline) if args.baseline else None
++    final = resolve_artifact(args.final) if args.final else None
++    attestation = verify_attestation(directory, baseline, final)
++    print(f"verified red-green E2E attestation for {attestation['test']}")
++    return 0
++
++
++def resolve_artifact(value: str) -> Path:
++    path = Path(value)
++    return path if path.is_absolute() else ROOT / path
++
++
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(
+         description="Run E2E commands and write repeatable evidence bundles."
+@@ -563,6 +845,31 @@ def build_parser() -> argparse.ArgumentParser:
+     run.add_argument("command", nargs=argparse.REMAINDER)
+     verify = commands.add_parser("verify", help="validate an evidence bundle")
+     verify.add_argument("artifact", help="artifact directory to verify")
++    attest = commands.add_parser(
++        "attest",
++        help="combine a failing baseline and passing final bundle for one regression test",
++    )
++    attest.add_argument("--test", required=True, help="regression test name in both runs")
++    attest.add_argument(
++        "--baseline", required=True, help="verified red (pre-implementation) bundle"
++    )
++    attest.add_argument(
++        "--final", required=True, help="verified green (post-implementation) bundle"
++    )
++    attest.add_argument(
++        "--output",
++        help="attestation directory (default: target/e2e-artifacts/red-green)",
++    )
++    verify_attestation_parser = commands.add_parser(
++        "verify-attestation", help="validate a red-green attestation"
++    )
++    verify_attestation_parser.add_argument("attestation", help="attestation directory to verify")
++    verify_attestation_parser.add_argument(
++        "--baseline", help="also re-verify this baseline bundle against the attestation"
++    )
++    verify_attestation_parser.add_argument(
++        "--final", help="also re-verify this final bundle against the attestation"
++    )
+     return parser
+ 
+ 
+@@ -572,6 +879,10 @@ def main() -> int:
+     try:
+         if args.action == "run":
+             return run_command(args)
++        if args.action == "attest":
++            return attest_command(args)
++        if args.action == "verify-attestation":
++            return verify_attestation_command(args)
+         return verify_command(args)
+     except EvidenceError as error:
+         print(f"e2e-evidence: {error}", file=sys.stderr)
+diff --git a/agent-scripts/test-e2e-attestation.sh b/agent-scripts/test-e2e-attestation.sh
+new file mode 100755
+index 00000000..170d46f0
+--- /dev/null
++++ b/agent-scripts/test-e2e-attestation.sh
+@@ -0,0 +1,171 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PYTHON="${PYTHON:-python3}"
++WORK_DIR="$(mktemp -d)"
++trap 'rm -rf "$WORK_DIR"' EXIT
++
++# A throwaway repository, so the red and green runs can differ by a real
++# implementation commit without touching the checkout this script lives in.
++REPO="$WORK_DIR/repo"
++mkdir -p "$REPO/agent-scripts" "$REPO/tests"
++cp "$SCRIPT_DIR/e2e-evidence.py" "$SCRIPT_DIR/e2e-attestation-probe.py" "$REPO/agent-scripts/"
++RUNNER="$REPO/agent-scripts/e2e-evidence.py"
++PROBE="agent-scripts/e2e-attestation-probe.py"
++FIXTURE="tests/regression_case.txt"
++OTHER_FIXTURE="tests/other_fixture.txt"
++printf 'regression fixture\n' > "$REPO/$FIXTURE"
++printf 'other fixture\n' > "$REPO/$OTHER_FIXTURE"
++git -C "$REPO" init -q
++# A run's identity covers its source revision but not its outcome, so every
++# variant that must differ from another run gets a revision of its own.
++commit() {
++  git -C "$REPO" add -A
++  git -C "$REPO" -c user.name=e2e -c user.email=e2e@example.invalid commit -q --allow-empty -m "$1"
++}
++commit "regression test and fixture"
++
++# run_case OUTPUT TEST OUTCOME [FIXTURE]: records a probe run. The probe's
++# behaviour is driven by environment variables, which are not recorded, so the
++# recorded command is identical for the red and green runs.
++run_case() {
++  local output="$1" test="$2" outcome="$3" fixture="${4:-$FIXTURE}"
++  set +e
++  E2E_ATTEST_TEST="$test" E2E_ATTEST_OUTCOME="$outcome" \
++    "$PYTHON" "$RUNNER" run --output "$output" --input "$fixture" --input "$PROBE" \
++    -- "$PYTHON" "$PROBE" >/dev/null 2>&1
++  local status=$?
++  set -e
++  [[ "$status" -ne 2 ]] || { echo "run failed to write evidence: $output" >&2; exit 1; }
++  "$PYTHON" "$RUNNER" verify "$output" >/dev/null
++}
++
++# expect_reject PATTERN COMMAND...: the command must fail with PATTERN on stderr.
++expect_reject() {
++  local pattern="$1"
++  shift
++  local error status
++  set +e
++  error="$("$@" 2>&1 >/dev/null)"
++  status=$?
++  set -e
++  if [[ "$status" -eq 0 ]]; then
++    echo "unexpectedly accepted: $*" >&2
++    exit 1
++  fi
++  if ! grep -q -- "$pattern" <<<"$error"; then
++    echo "rejected for the wrong reason (expected '$pattern'): $error" >&2
++    exit 1
++  fi
++}
++
++RED="$WORK_DIR/red"
++run_case "$RED" regression_case FAILED
++
++printf 'fixed\n' > "$REPO/implementation.txt"
++commit "implement the regression fix"
++GREEN="$WORK_DIR/green"
++run_case "$GREEN" regression_case ok
++
++ATTEST="$WORK_DIR/attestation"
++"$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$GREEN" --output "$ATTEST"
++"$PYTHON" "$RUNNER" verify-attestation "$ATTEST" --baseline "$RED" --final "$GREEN"
++
++python3 - "$ATTEST/attestation.json" "$RED/manifest.json" "$GREEN/manifest.json" <<'PY'
++import json, pathlib, sys
++attestation = json.loads(pathlib.Path(sys.argv[1]).read_text())
++red = json.loads(pathlib.Path(sys.argv[2]).read_text())
++green = json.loads(pathlib.Path(sys.argv[3]).read_text())
++assert attestation["schema"] == "resilient-e2e-red-green-attestation"
++assert attestation["test"] == "regression_case"
++assert attestation["command"] == green["command"] == red["command"]
++assert attestation["inputs"] == green["inputs"] == red["inputs"]
++assert attestation["toolchain"] == green["toolchain"]
++assert attestation["baseline"]["run_id"] == red["run_id"]
++assert attestation["final"]["run_id"] == green["run_id"]
++assert red["source"]["commit"] != green["source"]["commit"]
++assert attestation["baseline"]["manifest"]["result"]["status"] == "failed"
++assert attestation["final"]["manifest"]["result"]["status"] == "passed"
++assert {"name": "regression_case", "status": "failed"} in red["result"]["outcomes"]
++assert {"name": "regression_case", "status": "passed"} in green["result"]["outcomes"]
++PY
++
++REPEAT="$WORK_DIR/attestation-repeat"
++"$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$GREEN" --output "$REPEAT" >/dev/null
++[[ "$(cat "$ATTEST/checksums.sha256")" == "$(cat "$REPEAT/checksums.sha256")" ]]
++cmp -s "$ATTEST/attestation.json" "$REPEAT/attestation.json"
++
++# A baseline that passes is not a red result.
++expect_reject "does not record regression_case as a test failure" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$GREEN" --final "$RED" --output "$WORK_DIR/x1"
++
++# A failed build, with no test outcome, is not a red result.
++BUILD="$WORK_DIR/build-failure"
++commit "build failure revision"
++set +e
++E2E_ATTEST_BUILD=1 E2E_ATTEST_TEST=regression_case E2E_ATTEST_OUTCOME=FAILED \
++  "$PYTHON" "$RUNNER" run --output "$BUILD" --input "$FIXTURE" --input "$PROBE" -- "$PYTHON" "$PROBE" >/dev/null 2>&1
++set -e
++expect_reject "does not record regression_case as a test failure" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$BUILD" --final "$GREEN" --output "$WORK_DIR/x2"
++
++# Another test failing in the baseline means the red run is not the target regression.
++OTHER_FAIL="$WORK_DIR/other-failure"
++commit "other failure revision"
++set +e
++E2E_ATTEST_EXTRA=unrelated_case E2E_ATTEST_TEST=regression_case E2E_ATTEST_OUTCOME=FAILED \
++  "$PYTHON" "$RUNNER" run --output "$OTHER_FAIL" --input "$FIXTURE" --input "$PROBE" -- "$PYTHON" "$PROBE" >/dev/null 2>&1
++set -e
++expect_reject "baseline fails outside the target test: unrelated_case" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$OTHER_FAIL" --final "$GREEN" --output "$WORK_DIR/x3"
++
++# A final run that does not record the target test is rejected.
++SILENT="$WORK_DIR/silent-final"
++commit "silent revision"
++set +e
++E2E_ATTEST_SILENT=1 E2E_ATTEST_TEST=regression_case E2E_ATTEST_OUTCOME=ok \
++  "$PYTHON" "$RUNNER" run --output "$SILENT" --input "$FIXTURE" --input "$PROBE" -- "$PYTHON" "$PROBE" >/dev/null 2>&1
++set -e
++expect_reject "final run does not record regression_case passing" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$SILENT" --output "$WORK_DIR/x4"
++
++# A different test name in the final run is a mismatched regression.
++MISMATCH="$WORK_DIR/mismatched-test"
++commit "mismatched test revision"
++run_case "$MISMATCH" other_case ok
++expect_reject "final run does not record regression_case passing" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$MISMATCH" --output "$WORK_DIR/x5"
++
++# Different test fixtures in the two runs are rejected.
++FIXTURE_CHANGED="$WORK_DIR/fixture-changed"
++commit "fixture changed revision"
++run_case "$FIXTURE_CHANGED" regression_case ok "$OTHER_FIXTURE"
++expect_reject "test or fixture inputs differ" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$FIXTURE_CHANGED" --output "$WORK_DIR/x6"
++
++expect_reject "same run" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$RED" --final "$RED" --output "$WORK_DIR/x7"
++
++ALTERED_RED="$WORK_DIR/altered-red"
++cp -R "$RED" "$ALTERED_RED"
++printf 'altered\n' >> "$ALTERED_RED/summary.md"
++expect_reject "summary does not match the manifest" \
++  "$PYTHON" "$RUNNER" attest --test regression_case --baseline "$ALTERED_RED" --final "$GREEN" --output "$WORK_DIR/x8"
++
++ALTERED_ATTEST="$WORK_DIR/altered-attestation"
++cp -R "$ATTEST" "$ALTERED_ATTEST"
++printf 'altered\n' >> "$ALTERED_ATTEST/summary.md"
++expect_reject "attestation summary does not match" \
++  "$PYTHON" "$RUNNER" verify-attestation "$ALTERED_ATTEST"
++
++RETARGETED="$WORK_DIR/retargeted-attestation"
++cp -R "$ATTEST" "$RETARGETED"
++sed 's/"regression_case"/"other_case"/' "$ATTEST/attestation.json" > "$RETARGETED/attestation.json"
++expect_reject "attestation" \
++  "$PYTHON" "$RUNNER" verify-attestation "$RETARGETED"
++
++expect_reject "bundle does not match the attestation" \
++  "$PYTHON" "$RUNNER" verify-attestation "$ATTEST" --baseline "$GREEN" --final "$GREEN"
++
++printf 'E2E red-green attestation passed: red/green acceptance, determinism, and rejection of invalid evidence.\n'
+diff --git a/docs/CERTIFICATES.md b/docs/CERTIFICATES.md
+index e1df0937..604e1113 100644
+--- a/docs/CERTIFICATES.md
++++ b/docs/CERTIFICATES.md
+@@ -131,6 +131,14 @@ replay never falls back to integrity-only checks. An empty obligation set is
+ also rejected in replay mode. Without `--z3`, empty manifests retain their
+ integrity-only behavior and no solver is required.
+ 
++Each solver invocation has a 30-second default deadline and a 64 KiB limit
++for each captured stream. Set `RZ_SOLVER_TIMEOUT_MS` to an integer from 1 to
++300000 to select a different deadline. Invalid settings fail replay before
++launching the solver. Standard input is closed. A timeout or capture failure
++terminates and reaps the direct solver child; this is not containment of an
++arbitrary process tree. Use a trusted solver executable rather than a wrapper
++that leaves descendants running or holding output pipes open.
++
+ With `--z3`, acceptance requires a
+ successful solver exit, valid UTF-8 stdout containing exactly one `unsat`
+ response (surrounding whitespace is permitted), and empty stderr. Additional
+diff --git a/qualification/replay-bounds/README.md b/qualification/replay-bounds/README.md
+new file mode 100644
+index 00000000..d0ccc095
+--- /dev/null
++++ b/qualification/replay-bounds/README.md
+@@ -0,0 +1,37 @@
++# Solver replay resource limits
++
++This validation scope covers `verify-all --z3` on Linux with the `z3` feature.
++It supplements the [saved-query replay record](../certificate-replay/README.md).
++It does not establish a tool classification or assessor acceptance under
++ISO 26262, DO-330, IEC 62304 or IEC 61508.
++
++| Requirement | Public CLI regression |
++| --- | --- |
++| Reject a response received after the configured per-invocation deadline. | `replay_rejects_response_after_deadline` |
++| Reject stdout exceeding 64 KiB even when it contains only UNSAT and whitespace. | `replay_rejects_oversized_whitespace_after_unsat` |
++| Reject a timeout outside 1–300000 milliseconds or a malformed value. | `replay_rejects_invalid_timeout_configuration` |
++| Continue accepting one clean UNSAT response within budget. | `replay_accepts_clean_response_within_budget` |
++
++The implementation is `resilient/src/solver_replay.rs`; the frozen test input
++is `resilient/tests/solver_replay_bounds.rs`. Baseline commit
++`b272c109ef1ca61104eeff7f025362a08e053c4b` produced three failures and one passing
++control in [GitHub Actions](https://github.com/EricSpencer00/Resilient/actions/runs/40045651817/job/120726904466).
++All builds and test execution for this change use GitHub-hosted runners.
++
++The `Replay qualification` workflow reruns each case separately against that
++baseline and the candidate revision. It retains checksummed source-bound
++records for 90 days and verifies three red-green attestations with matching
++test inputs, commands and toolchain versions. A build failure without the
++named regression outcome cannot satisfy an attestation. Archive the workflow
++artifacts before retention expires for a project qualification dossier.
++
++Passing CI and its artifacts establish only the tested behavior on the
++recorded revisions. The deadline includes output collection but depends on
++ordinary operating-system scheduling and process termination. Capture limits
++apply separately to stdout and stderr. Cleanup targets the direct solver
++child; arbitrary descendants and inherited pipe handles are outside this
++scope. The delayed-response test uses a finite 300 ms fixture and an independent
++five-second harness watchdog; it does not simulate every operating-system hang.
++
++This record does not cover source-to-query correctness, all tool operational
++requirements, real-time execution guarantees, or a system safety case.
+diff --git a/resilient/src/array_combinators.rs b/resilient/src/array_combinators.rs
+index 5439ad2d..010a8c03 100644
+--- a/resilient/src/array_combinators.rs
++++ b/resilient/src/array_combinators.rs
+@@ -293,7 +293,7 @@ pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -
+ /// ```
+ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
+     let (arr, n) = match args {
+-        [Value::Array(a), Value::Int(n)] => (a.clone(), *n),
++        [Value::Array(a), Value::Int(n)] => (a, *n),
+         [Value::Array(_), n] => {
+             return Err(format!(
+                 "array_windows: second argument must be an int, got {n}"
+@@ -733,6 +733,55 @@ println(ws);"#);
+         assert_eq!(super::window_count_within_budget(2, 5).unwrap(), 0);
+     }
+ 
++    #[test]
++    fn windows_budget_accepts_exact_cap() {
++        // 10_000_000 windows of 1 == cap exactly; 1_000 windows of 10_000 == cap exactly.
++        assert_eq!(
++            super::window_count_within_budget(10_000_000, 1).unwrap(),
++            10_000_000
++        );
++        assert_eq!(
++            super::window_count_within_budget(10_999, 10_000).unwrap(),
++            1_000
++        );
++    }
++
++    #[test]
++    fn windows_budget_rejects_one_past_cap() {
++        // 10_000_001 * 1 is one element over the cap.
++        let err = super::window_count_within_budget(10_000_001, 1).unwrap_err();
++        assert!(err.contains("10000001"), "unexpected error: {err}");
++    }
++
++    #[test]
++    fn windows_builtin_rejects_quadratic_expansion_without_building_windows() {
++        // 3_163 windows of 3_163 elements ≈ 10.0M, just over the cap.
++        let arr = crate::Value::Array(vec![crate::Value::Int(0); 6_325]);
++        let err = super::builtin_array_windows(&[arr, crate::Value::Int(3_163)]).unwrap_err();
++        assert!(err.contains("max 10000000"), "unexpected error: {err}");
++    }
++
++    #[test]
++    fn windows_builtin_accepts_bounded_expansion_at_cap() {
++        // 1_000 windows of 10_000 elements == exactly the cap.
++        let arr = crate::Value::Array(vec![crate::Value::Int(7); 10_999]);
++        let out = super::builtin_array_windows(&[arr, crate::Value::Int(10_000)]).unwrap();
++        match out {
++            crate::Value::Array(ws) => {
++                assert_eq!(ws.len(), 1_000);
++                assert!(matches!(&ws[0], crate::Value::Array(w) if w.len() == 10_000));
++            }
++            other => panic!("expected Array, got {other:?}"),
++        }
++    }
++
++    #[test]
++    fn windows_builtin_empty_when_window_exceeds_input_at_any_size() {
++        let arr = crate::Value::Array(vec![crate::Value::Int(1); 4]);
++        let out = super::builtin_array_windows(&[arr, crate::Value::Int(i64::MAX)]).unwrap();
++        assert!(matches!(out, crate::Value::Array(ws) if ws.is_empty()));
++    }
++
+     // ── array_take_while / array_drop_while ───────────────────────────────────
+ 
+     #[test]
+diff --git a/resilient/src/solver_replay.rs b/resilient/src/solver_replay.rs
+index de1d8027..8f3645d0 100644
+--- a/resilient/src/solver_replay.rs
++++ b/resilient/src/solver_replay.rs
+@@ -1,18 +1,134 @@
+ use std::ffi::OsStr;
++use std::io::Read;
+ use std::path::Path;
+-use std::process::Command;
++use std::process::{Child, Command, Stdio};
++use std::sync::mpsc::{self, RecvTimeoutError};
++use std::time::{Duration, Instant};
++
++const OUTPUT_LIMIT: usize = 64 * 1024;
++
++struct SolverChild {
++    child: Child,
++    reaped: bool,
++}
++
++impl Drop for SolverChild {
++    fn drop(&mut self) {
++        if !self.reaped {
++            let _ = self.child.kill();
++            let _ = self.child.wait();
++        }
++    }
++}
++
++fn read_bounded(reader: impl Read) -> crate::RResult<Vec<u8>> {
++    let mut bytes = Vec::new();
++    reader
++        .take((OUTPUT_LIMIT + 1) as u64)
++        .read_to_end(&mut bytes)
++        .map_err(|error| format!("could not read z3 output: {error}"))?;
++    if bytes.len() > OUTPUT_LIMIT {
++        return Err("z3 replay exceeded the 64 KiB per-stream output limit".into());
++    }
++    Ok(bytes)
++}
++
++fn timeout() -> crate::RResult<Duration> {
++    let value = match std::env::var("RZ_SOLVER_TIMEOUT_MS") {
++        Ok(value) => value,
++        Err(std::env::VarError::NotPresent) => return Ok(Duration::from_secs(30)),
++        Err(_) => return Err("RZ_SOLVER_TIMEOUT_MS must be valid UTF-8".into()),
++    };
++    let millis = value
++        .parse::<u64>()
++        .ok()
++        .filter(|value| (1..=300_000).contains(value))
++        .ok_or_else(|| "RZ_SOLVER_TIMEOUT_MS must be between 1 and 300000".to_string())?;
++    Ok(Duration::from_millis(millis))
++}
+ 
+ pub(crate) fn run(binary: &OsStr, certificate: &Path) -> crate::RResult<bool> {
+-    let output = Command::new(binary)
++    let budget = timeout()?;
++    let start = Instant::now();
++    let child = Command::new(binary)
+         .arg("-smt2")
+         .arg(certificate)
+-        .output()
++        .stdin(Stdio::null())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .spawn()
+         .map_err(|error| format!("could not spawn z3: {error}"))?;
++    let mut process = SolverChild {
++        child,
++        reaped: false,
++    };
++    let stdout = process
++        .child
++        .stdout
++        .take()
++        .ok_or("missing z3 stdout pipe")?;
++    let stderr = process
++        .child
++        .stderr
++        .take()
++        .ok_or("missing z3 stderr pipe")?;
++    let (sender, receiver) = mpsc::channel();
++    let stdout_sender = sender.clone();
++    std::thread::Builder::new()
++        .name("z3-stdout".into())
++        .spawn(move || {
++            let _ = stdout_sender.send((true, read_bounded(stdout)));
++        })
++        .map_err(|error| format!("could not start z3 output reader: {error}"))?;
++    std::thread::Builder::new()
++        .name("z3-stderr".into())
++        .spawn(move || {
++            let _ = sender.send((false, read_bounded(stderr)));
++        })
++        .map_err(|error| format!("could not start z3 output reader: {error}"))?;
++
++    let (mut stdout, mut stderr, mut status) = (None, None, None);
++    loop {
++        let remaining = budget
++            .checked_sub(start.elapsed())
++            .ok_or("z3 replay exceeded its time limit")?;
++        if status.is_none() {
++            status = process
++                .child
++                .try_wait()
++                .map_err(|error| format!("could not wait for z3: {error}"))?;
++            process.reaped = status.is_some();
++        }
++        if status.is_some() && stdout.is_some() && stderr.is_some() {
++            break;
++        }
++        let interval = remaining.min(Duration::from_millis(5));
++        match receiver.recv_timeout(interval) {
++            Ok((is_stdout, result)) => {
++                if is_stdout {
++                    stdout = Some(result?);
++                } else {
++                    stderr = Some(result?);
++                }
++            }
++            Err(RecvTimeoutError::Timeout) => {}
++            Err(RecvTimeoutError::Disconnected) => {
++                if stdout.is_none() || stderr.is_none() {
++                    return Err("z3 output reader ended without reporting".into());
++                }
++                // Closed output pipes do not imply that the process has exited.
++                std::thread::sleep(interval);
++            }
++        }
++    }
++    let status = status.ok_or("missing z3 exit status")?;
++    let stdout = stdout.ok_or("missing z3 stdout")?;
++    let stderr = stderr.ok_or("missing z3 stderr")?;
+     // An UNSAT prefix cannot authenticate a failed or ambiguous solver run.
+-    if !output.status.success() || !output.stderr.is_empty() {
++    if !status.success() || !stderr.is_empty() {
+         return Err("z3 replay failed or emitted diagnostics".into());
+     }
+-    let stdout = std::str::from_utf8(&output.stdout)
+-        .map_err(|_| "z3 replay returned invalid UTF-8".to_string())?;
++    let stdout =
++        std::str::from_utf8(&stdout).map_err(|_| "z3 replay returned invalid UTF-8".to_string())?;
+     Ok(stdout.trim() == "unsat")
+ }
