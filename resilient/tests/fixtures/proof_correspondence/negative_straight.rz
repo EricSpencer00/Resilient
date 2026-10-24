@@ -1,0 +1,1 @@
+fn wrong(int x) -> int ensures result == x { return 0; }

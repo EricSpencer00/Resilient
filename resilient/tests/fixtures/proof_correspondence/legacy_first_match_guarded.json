@@ -1,0 +1,290 @@
+{
+  "schema": "resilient-structural-source-checkpoints",
+  "version": 1,
+  "profile": "legacy-lia-identity-v1",
+  "source": {
+    "path": "program.rz",
+    "sha256": "8afe5b00e54f115428be459d0e9363c92077ea575b27183cc845fe899cf6a6e9",
+    "bytes": 107
+  },
+  "qualified_declaration": "program::identity",
+  "clause": 0,
+  "paths": [
+    {
+      "id": "arm0",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 0
+      },
+      "domain": [
+        "and",
+        [
+          "=",
+          "x",
+          "0"
+        ],
+        [
+          ">=",
+          "x",
+          "0"
+        ],
+        [
+          "not",
+          "false"
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            "and",
+            [
+              "=",
+              "x",
+              "0"
+            ],
+            [
+              ">=",
+              "x",
+              "0"
+            ],
+            [
+              "not",
+              "false"
+            ]
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    },
+    {
+      "id": "arm1",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 1
+      },
+      "domain": [
+        "and",
+        [
+          "=",
+          "x",
+          "1"
+        ],
+        [
+          "not",
+          [
+            "or",
+            "false",
+            [
+              "and",
+              [
+                "=",
+                "x",
+                "0"
+              ],
+              [
+                ">=",
+                "x",
+                "0"
+              ]
+            ]
+          ]
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            "and",
+            [
+              "=",
+              "x",
+              "1"
+            ],
+            [
+              "not",
+              [
+                "or",
+                "false",
+                [
+                  "and",
+                  [
+                    "=",
+                    "x",
+                    "0"
+                  ],
+                  [
+                    ">=",
+                    "x",
+                    "0"
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    },
+    {
+      "id": "wildcard",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 2
+      },
+      "domain": [
+        "and",
+        "true",
+        [
+          "not",
+          [
+            "or",
+            "false",
+            [
+              "and",
+              [
+                "=",
+                "x",
+                "0"
+              ],
+              [
+                ">=",
+                "x",
+                "0"
+              ]
+            ],
+            [
+              "=",
+              "x",
+              "1"
+            ]
+          ]
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            "and",
+            "true",
+            [
+              "not",
+              [
+                "or",
+                "false",
+                [
+                  "and",
+                  [
+                    "=",
+                    "x",
+                    "0"
+                  ],
+                  [
+                    ">=",
+                    "x",
+                    "0"
+                  ]
+                ],
+                [
+                  "=",
+                  "x",
+                  "1"
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    }
+  ],
+  "claim": "Manually source-authored legacy-LIA path/return requirements, with exact variadic and/or serialization checkpoints revised AFTER actual capture40073120470. All guards, prior-arm exclusions, operand order and multiplicity retained. Revision1 failure preserved; no pre-capture exact-serialization oracle claim for revision2.",
+  "checkpoint_revision": 2
+}

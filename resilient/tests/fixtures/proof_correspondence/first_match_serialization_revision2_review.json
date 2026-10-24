@@ -1,0 +1,22 @@
+{
+  "schema": "resilient-source-checkpoint-revision-review",
+  "version": 1,
+  "checkpoint_revision": 2,
+  "source": {
+    "path": "program.rz",
+    "sha256": "8afe5b00e54f115428be459d0e9363c92077ea575b27183cc845fe899cf6a6e9",
+    "bytes": 107
+  },
+  "old_descriptor": "first_match_checkpoint_revision1.json",
+  "old_sha256": "9d9ed11060bf423b1ecf7a015f02bdbb03c5a53a77b1afa12115b29d8ea70103",
+  "new_descriptor": "legacy_first_match_guarded.json",
+  "new_sha256": "8eff82ae7e8753352c60121d3471df7838007c745be379a84e9aec6f59f2a303",
+  "actual_run": 40073120470,
+  "actual_head": "00b9716228b217b1cfbfbd7225f0ff43e5ebc28c",
+  "actual_test_result": "20PASS1FAIL; actual_first_match_preserves_ordered_exclusion arm0 exact serialization mismatch",
+  "change": "Only source-review-equivalent variadic and/or serialization shape in arm0 and wildcard domains/commands; no Boolean simplification, operand/order/multiplicity removal or solver equivalence in checker",
+  "provenance": "Primary Codex agent technical review of source and actual serialized SMT after capture; exact reviewer model not independently verified; not human qualification acceptance",
+  "negative_disposition": "Original missing-first-match-exclusion negative rejected earlier arm0 layout; intended wildcard boundary not established until revision2 candidate actually passes and reports wildcard mismatch",
+  "unchanged_test_sha256": "18f4e423aaa615d2276746ea658d3c21054e0e97fe6fab15c8e5521d0c2d9d62",
+  "no_same_descriptor_claim": true
+}
