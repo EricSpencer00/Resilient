@@ -1,0 +1,12 @@
+{
+  "schema": "resilient-source-identity-frontend-freeze/v1",
+  "phase": "source-bytes-frozen-for-hosted-frontend-observation",
+  "catalog_sha256": "2471958d652cc5aa8bb92e9ae800d99fc4b4ac6bdc222b89a131d8d0ba55ef51",
+  "catalog_status_fields": "Preserved historical pre-freeze private-v2 metadata, not current source-freeze phase",
+  "source_count": 14,
+  "physical_site_candidates": 16,
+  "producer_identity_schema": "draft-not-implemented-or-accepted",
+  "frontend_disposition_at_freeze": "unobserved; actual raw observation records are separate",
+  "acceptance_scope": "harness integrity and simple-valid/no-execution controls only; other frontend outcomes are observations",
+  "unexecuted_harness_history": ["abaa01d2c67e9a35954b73059c2952b64cfb03c5", "71b069e5ed4ecca0d26e549082149511ec5701ce"]
+}
