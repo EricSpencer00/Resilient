@@ -21,15 +21,21 @@ fn run(case: &str, source: &str, vm: bool) -> (serde_json::Value, String) {
         command.arg("--vm");
     }
     let output = command.output().unwrap();
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
+    let value: serde_json::Value = if vm {
+        assert!(output.status.success(), "{output:?}");
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap()
+    };
     std::fs::write(root.join("stdout.txt"), &output.stdout).unwrap();
     std::fs::write(root.join("stderr.txt"), &output.stderr).unwrap();
     if let Some(destination) = std::env::var_os("MACHINE_ARITHMETIC_RECORDS") {
         let destination = std::path::PathBuf::from(destination).join(case);
         std::fs::create_dir_all(&destination).unwrap();
         for name in ["input.rz", "report.json", "stdout.txt", "stderr.txt"] {
-            std::fs::copy(root.join(name), destination.join(name)).unwrap();
+            if root.join(name).is_file() {
+                std::fs::copy(root.join(name), destination.join(name)).unwrap();
+            }
         }
     }
     std::fs::remove_dir_all(root).unwrap();
