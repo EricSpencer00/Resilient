@@ -18,12 +18,26 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = "resilient-e2e-evidence"
 SCHEMA_VERSION = 1
 FILES = ("manifest.json", "summary.md", "checksums.sha256", "run-metadata.json")
+ATTESTATION_SCHEMA = "resilient-e2e-red-green-attestation"
+ATTESTATION_FILES = ("attestation.json", "summary.md", "checksums.sha256")
+ATTESTATION_KEYS = {
+    "schema",
+    "schema_version",
+    "test",
+    "command",
+    "inputs",
+    "toolchain",
+    "baseline",
+    "final",
+    "evidence_sha256",
+}
+REFERENCE_KEYS = {"run_id", "manifest_sha256", "summary_sha256", "source", "manifest"}
 SECRET_FLAG = re.compile(
     r"(?i)^--?(?:token|secret|password|api[-_]?key|access[-_]?key)(?:=|$)"
 )
@@ -189,33 +203,19 @@ def summary_text(manifest: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def checksum_lines(contents: dict[str, bytes]) -> str:
+    return "".join(
+        f"{sha256_bytes(contents[name])}  {name}\n" for name in sorted(contents)
+    )
+
+
 def checksums_text(directory: Path) -> str:
-    entries = [
-        (name, sha256_file(directory / name))
-        for name in ("manifest.json", "summary.md")
-    ]
-    return "".join(f"{digest}  {name}\n" for name, digest in entries)
+    return checksum_lines(
+        {name: (directory / name).read_bytes() for name in ("manifest.json", "summary.md")}
+    )
 
 
-def verify_bundle(directory: Path) -> dict[str, Any]:
-    if directory.is_symlink() or not directory.is_dir():
-        raise EvidenceError("artifact path must be a directory")
-
-    names = {item.name for item in directory.iterdir()}
-    if names != set(FILES):
-        raise EvidenceError("artifact bundle is missing files or contains unexpected files")
-    for name in FILES:
-        item = directory / name
-        if item.is_symlink() or not item.is_file():
-            raise EvidenceError("artifact entries must be regular files")
-
-    try:
-        manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
-        metadata = json.loads((directory / "run-metadata.json").read_text("utf-8"))
-        checksums = (directory / "checksums.sha256").read_text("utf-8")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise EvidenceError("artifact metadata is malformed or incomplete") from error
-
+def validate_manifest(manifest: Any) -> None:
     if not isinstance(manifest, dict):
         raise EvidenceError("manifest must be a JSON object")
     required = {
@@ -313,18 +313,8 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
     if manifest["run_id"] != expected_run_id:
         raise EvidenceError("manifest run ID does not match its inputs")
 
-    summary = (directory / "summary.md").read_text("utf-8")
-    expected_summary = summary_text(manifest)
-    if summary != expected_summary:
-        raise EvidenceError("summary does not match the manifest")
 
-    evidence = manifest["evidence_sha256"]
-    if evidence != {"summary.md": sha256_file(directory / "summary.md")}:
-        raise EvidenceError("evidence checksum is missing or does not match")
-
-    if checksums != checksums_text(directory):
-        raise EvidenceError("checksums file is missing, malformed, or does not match")
-
+def validate_run_metadata(metadata: Any) -> None:
     if (
         not isinstance(metadata, dict)
         or set(metadata) != {"schema", "schema_version", "started_utc", "duration_ms"}
@@ -337,12 +327,50 @@ def verify_bundle(directory: Path) -> dict[str, Any]:
     ):
         raise EvidenceError("volatile run metadata is malformed")
 
+
+def verify_bundle(directory: Path) -> dict[str, Any]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise EvidenceError("artifact path must be a directory")
+
+    names = {item.name for item in directory.iterdir()}
+    if names != set(FILES):
+        raise EvidenceError("artifact bundle is missing files or contains unexpected files")
+    for name in FILES:
+        item = directory / name
+        if item.is_symlink() or not item.is_file():
+            raise EvidenceError("artifact entries must be regular files")
+
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
+        metadata = json.loads((directory / "run-metadata.json").read_text("utf-8"))
+        checksums = (directory / "checksums.sha256").read_text("utf-8")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvidenceError("artifact metadata is malformed or incomplete") from error
+
+    validate_manifest(manifest)
+    if (directory / "manifest.json").read_bytes() != canonical_json(manifest):
+        raise EvidenceError("manifest is not in canonical form")
+
+    summary = (directory / "summary.md").read_text("utf-8")
+    expected_summary = summary_text(manifest)
+    if summary != expected_summary:
+        raise EvidenceError("summary does not match the manifest")
+
+    evidence = manifest["evidence_sha256"]
+    if evidence != {"summary.md": sha256_file(directory / "summary.md")}:
+        raise EvidenceError("evidence checksum is missing or does not match")
+
+    if checksums != checksums_text(directory):
+        raise EvidenceError("checksums file is missing, malformed, or does not match")
+
+    validate_run_metadata(metadata)
+
     return manifest
 
 
-def output_path_for(value: str | None) -> Path:
+def output_path_for(value: str | None, default: str = "target/e2e-artifacts/latest") -> Path:
     if value is None:
-        return ROOT / "target" / "e2e-artifacts" / "latest"
+        return ROOT / default
     supplied = Path(value)
     candidate = supplied if supplied.is_absolute() else ROOT / supplied
     if candidate.is_symlink():
@@ -362,12 +390,10 @@ def write_atomic(path: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def install_bundle(
+def install_directory(
     output: Path,
-    manifest: dict[str, Any],
-    summary: str,
-    started_utc: str,
-    duration_ms: int,
+    files: dict[str, bytes],
+    verify: Callable[[Path], Any],
 ) -> None:
     parent = output.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -379,25 +405,13 @@ def install_bundle(
             if output.is_symlink() or not output.is_dir():
                 raise EvidenceError("artifact output must be a directory")
             if any(output.iterdir()):
-                verify_bundle(output)
+                verify(output)
             else:
                 output.rmdir()
         staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
         try:
-            summary_bytes = summary.encode("utf-8")
-            manifest["evidence_sha256"] = {"summary.md": sha256_bytes(summary_bytes)}
-            (staging / "summary.md").write_bytes(summary_bytes)
-            (staging / "manifest.json").write_bytes(canonical_json(manifest))
-            metadata = {
-                "schema": "resilient-e2e-run-metadata",
-                "schema_version": 1,
-                "started_utc": started_utc,
-                "duration_ms": duration_ms,
-            }
-            (staging / "run-metadata.json").write_bytes(canonical_json(metadata))
-            (staging / "checksums.sha256").write_text(
-                checksums_text(staging), encoding="utf-8"
-            )
+            for name, content in files.items():
+                (staging / name).write_bytes(content)
 
             if output.exists():
                 backup = parent / f".{output.name}.old.{os.getpid()}"
@@ -413,6 +427,33 @@ def install_bundle(
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
+
+
+def install_bundle(
+    output: Path,
+    manifest: dict[str, Any],
+    summary: str,
+    started_utc: str,
+    duration_ms: int,
+) -> None:
+    summary_bytes = summary.encode("utf-8")
+    manifest["evidence_sha256"] = {"summary.md": sha256_bytes(summary_bytes)}
+    manifest_bytes = canonical_json(manifest)
+    metadata = {
+        "schema": "resilient-e2e-run-metadata",
+        "schema_version": 1,
+        "started_utc": started_utc,
+        "duration_ms": duration_ms,
+    }
+    files = {
+        "summary.md": summary_bytes,
+        "manifest.json": manifest_bytes,
+        "run-metadata.json": canonical_json(metadata),
+        "checksums.sha256": checksum_lines(
+            {"manifest.json": manifest_bytes, "summary.md": summary_bytes}
+        ).encode("utf-8"),
+    }
+    install_directory(output, files, verify_bundle)
 
 
 def reject_secret_arguments(command: list[str]) -> None:
@@ -547,6 +588,247 @@ def verify_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def test_statuses(manifest: dict[str, Any], test: str) -> list[str]:
+    return [
+        outcome["status"]
+        for outcome in manifest["result"]["outcomes"]
+        if outcome["name"] == test
+    ]
+
+
+def check_red_green(baseline: dict[str, Any], final: dict[str, Any], test: str) -> None:
+    if baseline["run_id"] == final["run_id"]:
+        raise EvidenceError("baseline and final are the same run; the implementation must change")
+    if baseline["command"] != final["command"]:
+        raise EvidenceError("baseline and final commands differ")
+    if baseline["inputs"] != final["inputs"]:
+        raise EvidenceError("baseline and final test or fixture inputs differ")
+    if baseline["toolchain"] != final["toolchain"]:
+        raise EvidenceError("baseline and final toolchains differ")
+
+    if test_statuses(baseline, test) != ["failed"]:
+        raise EvidenceError(f"baseline does not record {test} as a test failure")
+    if baseline["result"]["status"] != "failed":
+        raise EvidenceError("baseline result must be failed")
+    other_failures = sorted(
+        {
+            outcome["name"]
+            for outcome in baseline["result"]["outcomes"]
+            if outcome["status"] == "failed"
+            and outcome["name"] not in {test, "command"}
+        }
+    )
+    if other_failures:
+        raise EvidenceError(
+            f"baseline fails outside the target test: {', '.join(other_failures)}"
+        )
+
+    if test_statuses(final, test) != ["passed"]:
+        raise EvidenceError(f"final run does not record {test} passing")
+    if final["result"]["status"] != "passed":
+        raise EvidenceError("final result must be passed")
+
+
+def bundle_reference(directory: Path) -> dict[str, Any]:
+    manifest = verify_bundle(directory)
+    return {
+        "run_id": manifest["run_id"],
+        "manifest_sha256": sha256_file(directory / "manifest.json"),
+        "summary_sha256": manifest["evidence_sha256"]["summary.md"],
+        "source": manifest["source"],
+        "manifest": manifest,
+    }
+
+
+def attestation_summary_text(attestation: dict[str, Any]) -> str:
+    test = attestation["test"]
+    baseline = attestation["baseline"]
+    final = attestation["final"]
+    lines = [
+        "# Red-green E2E attestation",
+        "",
+        f"- Test: {test}",
+        f"- Baseline: {test} failed as a test failure",
+        f"- Final: {test} passed",
+        f"- Command: {shlex.join(attestation['command'])}",
+        "",
+        "## Runs",
+        "",
+    ]
+    for label, reference in (("Baseline", baseline), ("Final", final)):
+        manifest = reference["manifest"]
+        source = reference["source"]
+        lines.extend(
+            [
+                f"### {label}",
+                "",
+                f"- Run ID: {reference['run_id']}",
+                f"- Manifest SHA-256: {reference['manifest_sha256']}",
+                f"- Source revision: {source['commit']}",
+            ]
+        )
+        if source["dirty"]:
+            lines.append(f"- Working-tree digest: {source['worktree_sha256']}")
+        lines.extend(
+            [
+                f"- Result: {manifest['result']['status']} "
+                f"(exit code {manifest['result']['exit_code']})",
+                "",
+            ]
+        )
+    lines.extend(["## Toolchain", ""])
+    for name, version in attestation["toolchain"].items():
+        lines.append(f"- {name}: {version}")
+    lines.extend(["", "## Inputs", ""])
+    if attestation["inputs"]:
+        for item in attestation["inputs"]:
+            lines.append(f"- {item['path']}: {item['sha256']}")
+    else:
+        lines.append("- None declared")
+    lines.extend(["", "## Outcome", ""])
+    lines.append(f"- baseline {test}: {test_statuses(baseline['manifest'], test)[0]}")
+    lines.append(f"- final {test}: {test_statuses(final['manifest'], test)[0]}")
+    return "\n".join(lines) + "\n"
+
+
+def build_attestation(test: str, baseline_dir: Path, final_dir: Path) -> dict[str, Any]:
+    baseline = bundle_reference(baseline_dir)
+    final = bundle_reference(final_dir)
+    check_red_green(baseline["manifest"], final["manifest"], test)
+    shared = final["manifest"]
+    return {
+        "schema": ATTESTATION_SCHEMA,
+        "schema_version": SCHEMA_VERSION,
+        "test": test,
+        "command": shared["command"],
+        "inputs": shared["inputs"],
+        "toolchain": shared["toolchain"],
+        "baseline": baseline,
+        "final": final,
+        "evidence_sha256": {},
+    }
+
+
+def attestation_files(attestation: dict[str, Any]) -> dict[str, bytes]:
+    summary = attestation_summary_text(attestation).encode("utf-8")
+    attestation["evidence_sha256"] = {"summary.md": sha256_bytes(summary)}
+    document = canonical_json(attestation)
+    return {
+        "attestation.json": document,
+        "summary.md": summary,
+        "checksums.sha256": checksum_lines(
+            {"attestation.json": document, "summary.md": summary}
+        ).encode("utf-8"),
+    }
+
+
+def verify_attestation(
+    directory: Path,
+    baseline_dir: Path | None = None,
+    final_dir: Path | None = None,
+) -> dict[str, Any]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise EvidenceError("attestation path must be a directory")
+    if {item.name for item in directory.iterdir()} != set(ATTESTATION_FILES):
+        raise EvidenceError("attestation is missing files or contains unexpected files")
+    for name in ATTESTATION_FILES:
+        item = directory / name
+        if item.is_symlink() or not item.is_file():
+            raise EvidenceError("attestation entries must be regular files")
+
+    try:
+        raw = (directory / "attestation.json").read_bytes()
+        attestation = json.loads(raw.decode("utf-8"))
+        summary = (directory / "summary.md").read_text("utf-8")
+        checksums = (directory / "checksums.sha256").read_text("utf-8")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvidenceError("attestation is malformed or incomplete") from error
+
+    if not isinstance(attestation, dict) or set(attestation) != ATTESTATION_KEYS:
+        raise EvidenceError("attestation fields do not match the supported schema")
+    if (
+        attestation["schema"] != ATTESTATION_SCHEMA
+        or attestation["schema_version"] != SCHEMA_VERSION
+    ):
+        raise EvidenceError("unsupported attestation schema")
+    if raw != canonical_json(attestation):
+        raise EvidenceError("attestation is not in canonical form")
+    test = attestation["test"]
+    if not isinstance(test, str) or not test:
+        raise EvidenceError("attestation test name is missing")
+
+    manifests: dict[str, dict[str, Any]] = {}
+    for side in ("baseline", "final"):
+        reference = attestation[side]
+        if not isinstance(reference, dict) or set(reference) != REFERENCE_KEYS:
+            raise EvidenceError(f"attestation {side} reference is malformed")
+        manifest = reference["manifest"]
+        if not isinstance(manifest, dict):
+            raise EvidenceError(f"attestation {side} manifest is malformed")
+        validate_manifest(manifest)
+        if (
+            reference["run_id"] != manifest["run_id"]
+            or reference["manifest_sha256"] != sha256_bytes(canonical_json(manifest))
+            or reference["summary_sha256"] != manifest["evidence_sha256"]["summary.md"]
+            or reference["source"] != manifest["source"]
+        ):
+            raise EvidenceError(f"attestation {side} reference does not match its manifest")
+        manifests[side] = manifest
+
+    for side, expected in (("baseline", baseline_dir), ("final", final_dir)):
+        if expected is None:
+            continue
+        bundle = verify_bundle(expected)
+        if bundle != manifests[side]:
+            raise EvidenceError(f"{side} bundle does not match the attestation")
+
+    for key in ("command", "inputs", "toolchain"):
+        for side in ("baseline", "final"):
+            if attestation[key] != manifests[side][key]:
+                raise EvidenceError(f"attestation {key} does not match the {side} run")
+    check_red_green(manifests["baseline"], manifests["final"], test)
+
+    if summary != attestation_summary_text(attestation):
+        raise EvidenceError("attestation summary does not match the attestation")
+    if attestation["evidence_sha256"] != {"summary.md": sha256_bytes(summary.encode("utf-8"))}:
+        raise EvidenceError("attestation evidence checksum is missing or does not match")
+    if checksums != checksum_lines(
+        {"attestation.json": raw, "summary.md": summary.encode("utf-8")}
+    ):
+        raise EvidenceError("attestation checksums are missing, malformed, or do not match")
+    return attestation
+
+
+def attest_command(args: argparse.Namespace) -> int:
+    baseline = resolve_artifact(args.baseline)
+    final = resolve_artifact(args.final)
+    attestation = build_attestation(args.test, baseline, final)
+    output = output_path_for(args.output, "target/e2e-artifacts/red-green")
+    install_directory(
+        output,
+        attestation_files(attestation),
+        verify_attestation,
+    )
+    print(f"Red-green E2E attestation written to {output}")
+    verified = verify_attestation(output, baseline, final)
+    print(f"Red-green E2E attestation verified: {verified['test']}")
+    return 0
+
+
+def verify_attestation_command(args: argparse.Namespace) -> int:
+    directory = resolve_artifact(args.attestation)
+    baseline = resolve_artifact(args.baseline) if args.baseline else None
+    final = resolve_artifact(args.final) if args.final else None
+    attestation = verify_attestation(directory, baseline, final)
+    print(f"verified red-green E2E attestation for {attestation['test']}")
+    return 0
+
+
+def resolve_artifact(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run E2E commands and write repeatable evidence bundles."
@@ -563,6 +845,31 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("command", nargs=argparse.REMAINDER)
     verify = commands.add_parser("verify", help="validate an evidence bundle")
     verify.add_argument("artifact", help="artifact directory to verify")
+    attest = commands.add_parser(
+        "attest",
+        help="combine a failing baseline and passing final bundle for one regression test",
+    )
+    attest.add_argument("--test", required=True, help="regression test name in both runs")
+    attest.add_argument(
+        "--baseline", required=True, help="verified red (pre-implementation) bundle"
+    )
+    attest.add_argument(
+        "--final", required=True, help="verified green (post-implementation) bundle"
+    )
+    attest.add_argument(
+        "--output",
+        help="attestation directory (default: target/e2e-artifacts/red-green)",
+    )
+    verify_attestation_parser = commands.add_parser(
+        "verify-attestation", help="validate a red-green attestation"
+    )
+    verify_attestation_parser.add_argument("attestation", help="attestation directory to verify")
+    verify_attestation_parser.add_argument(
+        "--baseline", help="also re-verify this baseline bundle against the attestation"
+    )
+    verify_attestation_parser.add_argument(
+        "--final", help="also re-verify this final bundle against the attestation"
+    )
     return parser
 
 
@@ -572,6 +879,10 @@ def main() -> int:
     try:
         if args.action == "run":
             return run_command(args)
+        if args.action == "attest":
+            return attest_command(args)
+        if args.action == "verify-attestation":
+            return verify_attestation_command(args)
         return verify_command(args)
     except EvidenceError as error:
         print(f"e2e-evidence: {error}", file=sys.stderr)

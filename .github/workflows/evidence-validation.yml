@@ -1,0 +1,72 @@
+name: Evidence validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'agent-scripts/e2e-*'
+      - 'agent-scripts/test-e2e-*'
+      - 'scripts/check_qualification.py'
+      - 'scripts/test_check_qualification.py'
+      - 'qualification/**'
+      - '.github/workflows/evidence-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evidence-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: evidence tooling and retained records
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Exercise evidence collection and attestation
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/resilient-evidence-validation
+        run: |
+          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/collector" \
+            --input agent-scripts/e2e-evidence.py \
+            --input agent-scripts/test-e2e-evidence.sh -- \
+            bash agent-scripts/test-e2e-evidence.sh
+          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/collector"
+          python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/attestation" \
+            --input agent-scripts/e2e-evidence.py \
+            --input agent-scripts/test-e2e-attestation.sh \
+            --input agent-scripts/e2e-attestation-probe.py -- \
+            bash agent-scripts/test-e2e-attestation.sh
+          python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/attestation"
+      - name: Check qualification intake and retained bundles
+        run: |
+          python3 -m unittest discover -s scripts -p test_check_qualification.py -v
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          for manifest in sorted(Path('qualification').rglob('manifest.json')):
+              subprocess.run(['python3', 'agent-scripts/e2e-evidence.py', 'verify', str(manifest.parent)], check=True)
+          PY
+      - name: Verify any produced bundles after failure
+        if: always()
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/resilient-evidence-validation
+        run: |
+          for bundle in "$EVIDENCE_ROOT"/*; do
+            if [ -d "$bundle" ]; then
+              python3 agent-scripts/e2e-evidence.py verify "$bundle"
+            fi
+          done
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-validation-${{ github.sha }}
+          path: ${{ runner.temp }}/resilient-evidence-validation
+          if-no-files-found: warn
+          retention-days: 90
