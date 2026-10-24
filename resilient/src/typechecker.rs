@@ -7295,9 +7295,12 @@ impl TypeChecker {
                             ..
                         } = &statement.node
                         {
-                            if !crate::machine_arithmetic::signature(
+                            if !crate::contract_verify::machine_profile(
                                 parameters,
                                 return_type.as_deref(),
+                                requires,
+                                ensures,
+                                body,
                             ) {
                                 continue;
                             }
@@ -8666,9 +8669,12 @@ impl TypeChecker {
                             // ever answer Unknown for it.
                             if verdict.is_none()
                                 && self.warn_unverified
-                                && !(crate::machine_arithmetic::signature(
+                                && !(crate::contract_verify::machine_profile(
                                     parameters,
                                     return_type.as_deref(),
+                                    requires,
+                                    ensures,
+                                    body,
                                 ) && crate::ensures_refutation::discharged_against_body(
                                     name,
                                     clause,
@@ -11903,6 +11909,16 @@ impl TypeChecker {
                             }
                         }
                         for (clause_idx, clause) in info.requires.iter().enumerate() {
+                            if !crate::machine_arithmetic::runtime_elision_safe(
+                                &info.parameters,
+                                clause,
+                            ) {
+                                self.stats
+                                    .per_fn_runtime
+                                    .entry(callee_name.clone())
+                                    .or_insert(1);
+                            }
+
                             // Try the cheap hand-rolled folder first.
                             let mut verdict = fold_const_bool(clause, &bindings);
                             // RES-136: slot for Z3's counterexample; only

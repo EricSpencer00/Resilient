@@ -55,3 +55,37 @@ pub(crate) fn supported(node: &Node) -> bool {
     }
     visit(node, &mut 32768, 0)
 }
+
+/// Clause-only arithmetic proofs are not authority to erase an executable guard.
+pub(crate) fn runtime_elision_safe(parameters: &[(String, String)], node: &Node) -> bool {
+    fn visit(parameters: &[(String, String)], node: &Node, depth: usize) -> bool {
+        if depth > 128 {
+            return false;
+        }
+        match node {
+            Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => true,
+            Node::Identifier { name, .. } => parameters.iter().any(|(ty, parameter)| {
+                parameter == name && matches!(ty.as_str(), "int" | "Int" | "Int64" | "i64" | "long")
+            }),
+            Node::PrefixExpression {
+                operator: "!",
+                right,
+                ..
+            } => visit(parameters, right, depth + 1),
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } if matches!(
+                *operator,
+                "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
+            ) =>
+            {
+                visit(parameters, left, depth + 1) && visit(parameters, right, depth + 1)
+            }
+            _ => false,
+        }
+    }
+    visit(parameters, node, 0)
+}

@@ -42,6 +42,9 @@ jobs:
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_const_boundary.rs" > resilient/tests/machine_arithmetic_const_boundary.rs
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_signed_replay.rs" > resilient/tests/machine_arithmetic_signed_replay.rs
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_free_names.rs" > resilient/tests/machine_arithmetic_free_names.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_export_boundary.rs" > resilient/tests/machine_arithmetic_export_boundary.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_runtime_guards.rs" > resilient/tests/machine_arithmetic_runtime_guards.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_rejected_report.rs" > resilient/tests/machine_arithmetic_rejected_report.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -73,7 +76,7 @@ jobs:
           MACHINE_ARITHMETIC_RECORDS: ${{ runner.temp }}/machine-arithmetic-qualification/raw
         run: |
           unexpected=0
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
               set +e
               python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
@@ -84,7 +87,7 @@ jobs:
               set -e
               python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
               expected=passed
-              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then
+              if [[ "$PHASE" == baseline && "$test" != declared_contract_behavior_remains_available && "$test" != conversion_is_outside_the_machine_profile && "$test" != bytecode_vm_default_wrap_matches_boundary_checkpoints && "$test" != vm_runtime_requires_control ]]; then
                 expected=failed
               fi
               printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
@@ -129,9 +132,9 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}
         run: |
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay machine_arithmetic_free_names machine_arithmetic_export_boundary machine_arithmetic_runtime_guards machine_arithmetic_rejected_report; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
-              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then continue; fi
+              if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints || "$test" == vm_runtime_requires_control ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
                 --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
                 --output "$EVIDENCE_ROOT/attestations/$test"
