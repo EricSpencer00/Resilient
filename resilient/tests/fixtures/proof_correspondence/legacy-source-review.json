@@ -1,0 +1,13 @@
+{
+  "authored_descriptor_commit": "cc7d650daa7ceb6c8844fa0f04f0546c8a6197f6",
+  "review": "primary Codex agent technical review before structural comparison",
+  "reviewer_model_reasoning": "not independently verified",
+  "human_or_organizational_independence": false,
+  "files": {
+    "legacy_early_fallthrough.json": "78c59cb950f8de07351f41a7b4e00f8f9b46056f9f0127b8c6197e207e300733",
+    "legacy_first_match_guarded.json": "9d9ed11060bf423b1ecf7a015f02bdbb03c5a53a77b1afa12115b29d8ea70103",
+    "legacy_if_else.json": "8bb5b3acf2103ebd5e19ef4b77a7b32d409e1a15aaa9e101428e565b56b07bbd",
+    "legacy_straight.json": "eaaac14ed4c02d4a9aec7fbe9237d46f6b45e4694ad6afd67e749f67191bb33b"
+  },
+  "scope": "Four manually source-authored legacy-LIA integer identity/comparison families only; ordered guard/exclusion structure and return substitutions preserved."
+}

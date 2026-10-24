@@ -1,0 +1,65 @@
+{
+  "schema": "resilient-legacy-source-counterexamples",
+  "version": 1,
+  "profile": "legacy-lia-identity-v1",
+  "original_authorship_commit": "3d40a94d",
+  "claim": "Four feasible source-input wrong-return counterexamples, preserved separately from checkpoint-policy deviations. No try/BV criteria are included or reinterpreted.",
+  "fixtures": [
+    {
+      "fixture": "negative_straight.rz",
+      "source_sha256": "2f5c8c783c0f775d5568a22940d9f7d3ec3a3341edd0670cc9ca94302c0cc98b",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "entry",
+      "input": {
+        "x": 1
+      },
+      "returned_value": 0,
+      "expected_result": 1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_if_else.rz",
+      "source_sha256": "09a22b04d6c12bc9805f673b92069fc594b949fb616e93e49701c0c2d53e84be",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "else",
+      "input": {
+        "x": -1
+      },
+      "returned_value": 0,
+      "expected_result": -1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_early_fallthrough.rz",
+      "source_sha256": "dd454077f05b55046a286db42c791bcbe0e5616b25f5dacc16f49f0b5f7b0ca0",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "fallthrough",
+      "input": {
+        "x": -1
+      },
+      "returned_value": 0,
+      "expected_result": -1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    },
+    {
+      "fixture": "negative_first_match_guarded.rz",
+      "source_sha256": "057d027c6f72d1ed3b599b2999826c8ab761c0416994bb8cd774c253a09accbd",
+      "declaration": "program::wrong",
+      "clause": 0,
+      "path": "arm1",
+      "input": {
+        "x": 1
+      },
+      "returned_value": 0,
+      "expected_result": 1,
+      "witness_claim": "source-input witness",
+      "required_disposition": "implementation-basis ensures refutation; generic parse/type error does not satisfy control"
+    }
+  ]
+}
