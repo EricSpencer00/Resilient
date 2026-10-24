@@ -188,7 +188,11 @@ fn stage(result: &Captured, diagnostics: &Option<Value>) -> &'static str {
         return "harness-failure";
     }
     if result.code == Some(0) {
-        return "frontend-valid";
+        return if matches!(diagnostics, Some(Value::Array(_))) {
+            "frontend-valid"
+        } else {
+            "unexpected-success-output"
+        };
     }
     if result.code.is_none() {
         return "signal";
@@ -214,7 +218,7 @@ fn frozen_source_catalog_frontend_observations_only() {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_rz"));
     let binary_sha = hash(&fs::read(&binary).expect("binary bytes"));
     let version = bounded(Command::new(&binary).arg("--version"));
-    let version_record = json!({"schema":"resilient-source-identity-frontend-version/v1","binary_sha256":binary_sha,"status":version.code,"harness_failure":version.failure,"stdout":String::from_utf8_lossy(&version.stdout),"stderr":String::from_utf8_lossy(&version.stderr)});
+    let version_record = json!({"schema":"resilient-source-identity-frontend-version/v1","harness_revision":2,"binary_sha256":binary_sha,"status":version.code,"harness_failure":version.failure,"stdout":String::from_utf8_lossy(&version.stdout),"stderr":String::from_utf8_lossy(&version.stderr)});
     let mut version_line = b"SOURCE_IDENTITY_FRONTEND_VERSION ".to_vec();
     version_line.extend(serde_json::to_vec(&version_record).expect("version JSON"));
     version_line.push(b'\n');
@@ -269,7 +273,9 @@ fn frozen_source_catalog_frontend_observations_only() {
             .find(|file| file["path"] == *path)
             .map(|file| file["role"].clone())
             .unwrap_or(json!("new-no-execution-control"));
-        let record = json!({"schema":"resilient-source-identity-frontend-observation/v1","claim":"frontend observation only; no runtime, origin-mapping, proof or inventory-completeness credit","entry":path,"role":role,"argv":args,"files":files,"catalog_sha256":hash(CATALOG.as_bytes()),"driver_sha256":hash(include_bytes!("source_identity_frontend.rs")),"binary_path":binary,"binary_sha256":binary_sha,"version_status":version.code,"version_stdout":String::from_utf8_lossy(&version.stdout),"version_stderr":String::from_utf8_lossy(&version.stderr),"features":{"z3":cfg!(feature="z3"),"lsp":cfg!(feature="lsp"),"jit":cfg!(feature="jit")},"overflow_environment":std::env::var("RESILIENT_OVERFLOW_MODE").ok(),"stage":stage(&result,&diagnostics),"status":result.code,"harness_failure":result.failure,"stdout":stdout,"stderr":stderr,"diagnostics":diagnostics});
+        let protocol_failure =
+            result.code == Some(0) && !matches!(diagnostics, Some(Value::Array(_)));
+        let record = json!({"schema":"resilient-source-identity-frontend-observation/v1","harness_revision":2,"claim":"frontend observation only; no runtime, origin-mapping, proof or inventory-completeness credit","entry":path,"role":role,"argv":args,"files":files,"catalog_sha256":hash(CATALOG.as_bytes()),"driver_sha256":hash(include_bytes!("source_identity_frontend.rs")),"binary_path":binary,"binary_sha256":binary_sha,"version_status":version.code,"version_stdout":String::from_utf8_lossy(&version.stdout),"version_stderr":String::from_utf8_lossy(&version.stderr),"features":{"z3":cfg!(feature="z3"),"lsp":cfg!(feature="lsp"),"jit":cfg!(feature="jit")},"overflow_environment":std::env::var("RESILIENT_OVERFLOW_MODE").ok(),"stage":stage(&result,&diagnostics),"status":result.code,"harness_failure":result.failure,"harness_protocol_failure":protocol_failure,"stdout":stdout,"stderr":stderr,"diagnostics":diagnostics});
         let mut line = serde_json::to_vec(&record).expect("record JSON");
         line.splice(
             0..0,
@@ -283,11 +289,19 @@ fn frozen_source_catalog_frontend_observations_only() {
         if result.failure.is_some() || result.code.is_none() || stderr.contains("panicked at") {
             failures.push(format!("{path}: harness/panic"));
         }
-        if (*path == "utf8.rz" || *path == "no_execution.rz") && result.code != Some(0) {
+        if protocol_failure {
+            failures.push(format!(
+                "{path}: successful check did not return a JSON array"
+            ));
+        }
+        if (*path == "utf8.rz" || *path == "no_execution.rz")
+            && (result.code != Some(0) || !matches!(diagnostics, Some(Value::Array(_))))
+        {
             failures.push(format!("{path}: valid control rejected"));
         }
-        if stdout.contains("SOURCE_IDENTITY_MUST_NOT_EXECUTE")
-            || stderr.contains("SOURCE_IDENTITY_MUST_NOT_EXECUTE")
+        if stdout
+            .lines()
+            .any(|line| line == "SOURCE_IDENTITY_MUST_NOT_EXECUTE")
         {
             failures.push(format!("{path}: executed sentinel"));
         }
