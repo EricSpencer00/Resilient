@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "validated_revision": "821b5513382d5d471fc787c56308cf4a90388d7f",
+  "review_status": "not-independently-reviewed",
+  "scope": "Only the nine operational requirements in requirements.json; no completeness or certification claim",
+  "requirements_sha256": "37363f27c0fc5ce1f5c92d463dbe48cb15716c3dd327aeb7f6f79a721a48dbc5",
+  "traceability": [
+    {
+      "requirement": "QREP-001",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "solver_replay_required::requested_replay_rejects_missing_absolute_solver",
+          "evidence": "evidence/required/manifest.json",
+          "run_id": "4fe58c05fc431aa57c9d960a3891079eac15724ee8faa6a90aa751d93034298b",
+          "outcome_name": "requested_replay_rejects_missing_absolute_solver",
+          "observed": "passed"
+        },
+        {
+          "test_id": "solver_replay_required::requested_replay_rejects_solver_absent_from_path",
+          "evidence": "evidence/required/manifest.json",
+          "run_id": "4fe58c05fc431aa57c9d960a3891079eac15724ee8faa6a90aa751d93034298b",
+          "outcome_name": "requested_replay_rejects_solver_absent_from_path",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-002",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "solver_replay_required::requested_replay_rejects_empty_obligation_set",
+          "evidence": "evidence/required/manifest.json",
+          "run_id": "4fe58c05fc431aa57c9d960a3891079eac15724ee8faa6a90aa751d93034298b",
+          "outcome_name": "requested_replay_rejects_empty_obligation_set",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-003",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "solver_replay_required::hash_only_verification_does_not_require_solver",
+          "evidence": "evidence/required/manifest.json",
+          "run_id": "4fe58c05fc431aa57c9d960a3891079eac15724ee8faa6a90aa751d93034298b",
+          "outcome_name": "hash_only_verification_does_not_require_solver",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-004",
+      "implementation": "resilient/src/solver_replay.rs::run",
+      "tests": [
+        {
+          "test_id": "solver_replay_conformance::replay_accepts_one_clean_unsat_response",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_accepts_one_clean_unsat_response",
+          "observed": "passed"
+        },
+        {
+          "test_id": "solver_replay_conformance::replay_rejects_unsat_from_failed_process",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_rejects_unsat_from_failed_process",
+          "observed": "passed"
+        },
+        {
+          "test_id": "solver_replay_conformance::replay_rejects_conflicting_or_extra_responses",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_rejects_conflicting_or_extra_responses",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-005",
+      "implementation": "resilient/src/solver_replay.rs::run",
+      "tests": [
+        {
+          "test_id": "solver_replay_conformance::replay_rejects_stderr_even_after_unsat",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_rejects_stderr_even_after_unsat",
+          "observed": "passed"
+        },
+        {
+          "test_id": "solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_rejects_invalid_utf8_after_unsat",
+          "observed": "passed"
+        },
+        {
+          "test_id": "solver_replay_conformance::replay_rejects_nonproof_responses",
+          "evidence": "evidence/responses/manifest.json",
+          "run_id": "bc5d3a1de99244630b7af6710b01439ad1e41a480085f00970e1c6ee4c670516",
+          "outcome_name": "replay_rejects_nonproof_responses",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-006",
+      "implementation": "resilient/src/solver_replay.rs::run",
+      "tests": [
+        {
+          "test_id": "real_solver::unsat",
+          "evidence": "evidence/real/manifest.json",
+          "run_id": "e346362a96a4504da7e1df8058996e63f7ebccbf3c0556e24cf24b506101a864",
+          "outcome_name": "real_solver::unsat",
+          "observed": "passed"
+        },
+        {
+          "test_id": "real_solver::sat",
+          "evidence": "evidence/real/manifest.json",
+          "run_id": "e346362a96a4504da7e1df8058996e63f7ebccbf3c0556e24cf24b506101a864",
+          "outcome_name": "real_solver::sat",
+          "observed": "passed"
+        },
+        {
+          "test_id": "real_solver::multiple",
+          "evidence": "evidence/real/manifest.json",
+          "run_id": "e346362a96a4504da7e1df8058996e63f7ebccbf3c0556e24cf24b506101a864",
+          "outcome_name": "real_solver::multiple",
+          "observed": "passed"
+        },
+        {
+          "test_id": "real_solver::invalid",
+          "evidence": "evidence/real/manifest.json",
+          "run_id": "e346362a96a4504da7e1df8058996e63f7ebccbf3c0556e24cf24b506101a864",
+          "outcome_name": "real_solver::invalid",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-007",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "verify_all_smoke::verify_all_detects_sha256_mismatch",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_detects_sha256_mismatch",
+          "observed": "passed"
+        },
+        {
+          "test_id": "verify_all_smoke::verify_all_detects_signature_tamper",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_detects_signature_tamper",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-008",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "verify_all_smoke::verify_all_errors_on_missing_manifest",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_errors_on_missing_manifest",
+          "observed": "passed"
+        },
+        {
+          "test_id": "verify_all_smoke::verify_all_errors_on_malformed_manifest",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_errors_on_malformed_manifest",
+          "observed": "passed"
+        }
+      ]
+    },
+    {
+      "requirement": "QREP-009",
+      "implementation": "resilient/src/lib.rs::dispatch_verify_all_subcommand",
+      "tests": [
+        {
+          "test_id": "verify_all_smoke::verify_all_happy_path_signed",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_happy_path_signed",
+          "observed": "passed"
+        },
+        {
+          "test_id": "verify_all_smoke::verify_all_happy_path_unsigned",
+          "evidence": "evidence/integrity/manifest.json",
+          "run_id": "d7d0bb951ea73c125792ee7ae9a1266b724d75f92c3311e79547af971e011a19",
+          "outcome_name": "verify_all_smoke::verify_all_happy_path_unsigned",
+          "observed": "passed"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "upstream_baseline": "532bf7033ab2efe3ba66d2b3a79398de7b14f80d",
+  "red_revision": "ef28c2220270cf57f4b6ac2bda5cc6626c318944",
+  "validated_revision": "821b5513382d5d471fc787c56308cf4a90388d7f",
+  "validated_tree": "849d38e7644ded29d2abf64448d09e692e57d195",
+  "patch": "validated-source.patch",
+  "patch_sha256": "c916f522dc85a0f4f57948b71578c49908092269566eeffa18143ed6ec06dcb5",
+  "reconstruction": "Apply the patch with git apply --unidiff-zero --index to a clean checkout of upstream_baseline; git write-tree must equal validated_tree. This reconstructs the tested source tree, not an independently reproducible binary."
+}

@@ -33,9 +33,10 @@ the compiler writes:
 - (Optional, with `--sign-cert <key>`) Ed25519 signatures attached to
   each obligation entry, signing the certificate bytes.
 
-The manifest is the **proof-carrying binary** artifact:
-hand it to a downstream consumer alongside the binary, and they can
-re-verify every obligation through Z3 with `rz verify-all <DIR>`.
+The manifest indexes discharged queries, not the compiled binary or the full
+requirement set. A downstream consumer can replay each listed query through Z3
+with `rz verify-all <DIR> --z3`; source-to-query and source-to-binary correctness
+require separate evidence.
 
 ## Manifest JSON shape
 
@@ -83,7 +84,7 @@ version, Z3 version, or timestamps without breaking older consumers.
 Each obligation entry corresponds to a verification *outcome*:
 
 - **`proven`** — Z3 returned `unsat` for the negation. The `.smt2`
-  file contains the unsat-core proof. This is the default for entries
+  file contains the SMT query to replay. This is the default for entries
   that appear in the manifest.
 - **`runtime`** — Z3 timed out or returned `unknown`; the obligation
   was retained as a runtime check. Runtime-only obligations do **not**
@@ -116,16 +117,21 @@ $ rz --emit-certificate ./certs --sign-cert priv.pem prog.rz
 ... compiles, emits ./certs/manifest.json + per-obligation .smt2 files
 ... signs each cert with Ed25519
 
-$ rz verify-all ./certs --pubkey pub.pem
+$ rz verify-all ./certs --pubkey pub.pem --z3
 ... walks manifest.json
 ... for each obligation:
 ...   1. recompute SHA-256 over cert bytes
-...   2. verify Ed25519 sig (if --pubkey supplied)
+...   2. verify each present Ed25519 sig using the selected key
 ...   3. invoke z3 on the cert and check (check-sat) returns `unsat`
 ... exits 0 only if every obligation passes
 ```
 
-Solver replay requires `--z3`. With that flag, acceptance requires a
+Solver replay requires `--z3`. A missing or unlaunchable solver is an error;
+replay never falls back to integrity-only checks. An empty obligation set is
+also rejected in replay mode. Without `--z3`, empty manifests retain their
+integrity-only behavior and no solver is required.
+
+With `--z3`, acceptance requires a
 successful solver exit, valid UTF-8 stdout containing exactly one `unsat`
 response (surrounding whitespace is permitted), and empty stderr. Additional
 results, Unknown, solver errors and failed processes fail closed. This is
@@ -139,6 +145,12 @@ A non-zero exit code from `verify-all` indicates one of:
 - Z3 disagreed with a proven obligation (this should not happen
   unless the Z3 version differs significantly).
 - The manifest itself is malformed.
+
+## Qualification evidence
+
+The [saved-query replay validation record](https://github.com/EricSpencer00/Resilient/tree/main/qualification/certificate-replay)
+contains operational requirements, real-solver queries, baseline-bound execution
+records and remaining limitations. It does not establish tool qualification.
 
 ## Compatibility
 

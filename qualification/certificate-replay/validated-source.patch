@@ -1,0 +1,388 @@
+diff --git a/docs/CERTIFICATES.md b/docs/CERTIFICATES.md
+index e84236d0..e1df0937 100644
+--- a/docs/CERTIFICATES.md
++++ b/docs/CERTIFICATES.md
+@@ -36,3 +36,4 @@ the compiler writes:
+-The manifest is the **proof-carrying binary** artifact:
+-hand it to a downstream consumer alongside the binary, and they can
+-re-verify every obligation through Z3 with `rz verify-all <DIR>`.
++The manifest indexes discharged queries, not the compiled binary or the full
++requirement set. A downstream consumer can replay each listed query through Z3
++with `rz verify-all <DIR> --z3`; source-to-query and source-to-binary correctness
++require separate evidence.
+@@ -86 +87 @@ Each obligation entry corresponds to a verification *outcome*:
+-  file contains the unsat-core proof. This is the default for entries
++  file contains the SMT query to replay. This is the default for entries
+@@ -119 +120 @@ $ rz --emit-certificate ./certs --sign-cert priv.pem prog.rz
+-$ rz verify-all ./certs --pubkey pub.pem
++$ rz verify-all ./certs --pubkey pub.pem --z3
+@@ -123 +124 @@ $ rz verify-all ./certs --pubkey pub.pem
+-...   2. verify Ed25519 sig (if --pubkey supplied)
++...   2. verify each present Ed25519 sig using the selected key
+@@ -128 +129,6 @@ $ rz verify-all ./certs --pubkey pub.pem
+-Solver replay requires `--z3`. With that flag, acceptance requires a
++Solver replay requires `--z3`. A missing or unlaunchable solver is an error;
++replay never falls back to integrity-only checks. An empty obligation set is
++also rejected in replay mode. Without `--z3`, empty manifests retain their
++integrity-only behavior and no solver is required.
++
++With `--z3`, acceptance requires a
+@@ -142,0 +149,6 @@ A non-zero exit code from `verify-all` indicates one of:
++## Qualification evidence
++
++The [saved-query replay validation record](https://github.com/EricSpencer00/Resilient/tree/main/qualification/certificate-replay)
++contains operational requirements, real-solver queries, baseline-bound execution
++records and remaining limitations. It does not establish tool qualification.
++
+diff --git a/qualification/certificate-replay/queries/invalid.smt2 b/qualification/certificate-replay/queries/invalid.smt2
+new file mode 100644
+index 00000000..73f03112
+--- /dev/null
++++ b/qualification/certificate-replay/queries/invalid.smt2
+@@ -0,0 +1,4 @@
++(set-logic QF_LIA)
++(assert false)
++(check-sat)
++(this-is-not-an-smt-command)
+diff --git a/qualification/certificate-replay/queries/multiple.smt2 b/qualification/certificate-replay/queries/multiple.smt2
+new file mode 100644
+index 00000000..9f0e8e0d
+--- /dev/null
++++ b/qualification/certificate-replay/queries/multiple.smt2
+@@ -0,0 +1,5 @@
++(set-logic QF_LIA)
++(assert false)
++(check-sat)
++(reset)
++(check-sat)
+diff --git a/qualification/certificate-replay/queries/sat.smt2 b/qualification/certificate-replay/queries/sat.smt2
+new file mode 100644
+index 00000000..85d6f47e
+--- /dev/null
++++ b/qualification/certificate-replay/queries/sat.smt2
+@@ -0,0 +1,4 @@
++(set-logic QF_LIA)
++(declare-const x Int)
++(assert (> x 0))
++(check-sat)
+diff --git a/qualification/certificate-replay/queries/unsat.smt2 b/qualification/certificate-replay/queries/unsat.smt2
+new file mode 100644
+index 00000000..24e25bcb
+--- /dev/null
++++ b/qualification/certificate-replay/queries/unsat.smt2
+@@ -0,0 +1,5 @@
++(set-logic QF_LIA)
++(declare-const x Int)
++(assert (> x 0))
++(assert (<= x 0))
++(check-sat)
+diff --git a/qualification/certificate-replay/requirements.json b/qualification/certificate-replay/requirements.json
+new file mode 100644
+index 00000000..9d8400f9
+--- /dev/null
++++ b/qualification/certificate-replay/requirements.json
+@@ -0,0 +1,80 @@
++{
++  "schema_version": 1,
++  "tool_use": "verify-all saved-query replay on Linux x86_64 with features z3",
++  "requirements": [
++    {
++      "id": "QREP-001",
++      "requirement": "Explicit replay shall fail when the configured solver cannot be found.",
++      "tests": [
++        "solver_replay_required::requested_replay_rejects_missing_absolute_solver",
++        "solver_replay_required::requested_replay_rejects_solver_absent_from_path"
++      ]
++    },
++    {
++      "id": "QREP-002",
++      "requirement": "Explicit replay shall require at least one obligation.",
++      "tests": [
++        "solver_replay_required::requested_replay_rejects_empty_obligation_set"
++      ]
++    },
++    {
++      "id": "QREP-003",
++      "requirement": "Hash-only verification shall remain usable without the solver CLI.",
++      "tests": [
++        "solver_replay_required::hash_only_verification_does_not_require_solver"
++      ]
++    },
++    {
++      "id": "QREP-004",
++      "requirement": "Replay shall accept exactly one clean UNSAT response from a successful process.",
++      "tests": [
++        "solver_replay_conformance::replay_accepts_one_clean_unsat_response",
++        "solver_replay_conformance::replay_rejects_unsat_from_failed_process",
++        "solver_replay_conformance::replay_rejects_conflicting_or_extra_responses"
++      ]
++    },
++    {
++      "id": "QREP-005",
++      "requirement": "Replay shall reject diagnostics, malformed output and nonproof responses.",
++      "tests": [
++        "solver_replay_conformance::replay_rejects_stderr_even_after_unsat",
++        "solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat",
++        "solver_replay_conformance::replay_rejects_nonproof_responses"
++      ]
++    },
++    {
++      "id": "QREP-006",
++      "requirement": "Actual Z3 shall accept the contradictory query and reject SAT, extra results and command errors.",
++      "tests": [
++        "real_solver::unsat",
++        "real_solver::sat",
++        "real_solver::multiple",
++        "real_solver::invalid"
++      ]
++    },
++    {
++      "id": "QREP-007",
++      "requirement": "Certificate hash or signature corruption shall fail verification.",
++      "tests": [
++        "verify_all_smoke::verify_all_detects_sha256_mismatch",
++        "verify_all_smoke::verify_all_detects_signature_tamper"
++      ]
++    },
++    {
++      "id": "QREP-008",
++      "requirement": "Missing or malformed manifests shall fail verification.",
++      "tests": [
++        "verify_all_smoke::verify_all_errors_on_missing_manifest",
++        "verify_all_smoke::verify_all_errors_on_malformed_manifest"
++      ]
++    },
++    {
++      "id": "QREP-009",
++      "requirement": "Valid signed and unsigned manifests shall pass their applicable integrity checks.",
++      "tests": [
++        "verify_all_smoke::verify_all_happy_path_signed",
++        "verify_all_smoke::verify_all_happy_path_unsigned"
++      ]
++    }
++  ]
++}
+diff --git a/qualification/certificate-replay/run-real-solver.py b/qualification/certificate-replay/run-real-solver.py
+new file mode 100644
+index 00000000..db420d8d
+--- /dev/null
++++ b/qualification/certificate-replay/run-real-solver.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++"""Exercise the public replay command with real, known SMT queries."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++
++
++def digest(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--rz', type=Path, required=True)
++    parser.add_argument('--solver', type=Path, required=True)
++    parser.add_argument('--output', type=Path, required=True)
++    args = parser.parse_args()
++    rz = args.rz.resolve(strict=True)
++    solver = args.solver.resolve(strict=True)
++    root = Path(__file__).resolve().parent
++    version = subprocess.run([str(solver), '--version'], check=True, capture_output=True, text=True, timeout=10).stdout.strip()
++    results = []
++    with tempfile.TemporaryDirectory(prefix='res-replay-evidence-') as tmp:
++        bundle = Path(tmp)
++        for name, accepted in [('unsat', True), ('sat', False), ('multiple', False), ('invalid', False)]:
++            query = root / 'queries' / (name + '.smt2')
++            (bundle / 'proof.smt2').write_bytes(query.read_bytes())
++            manifest = {'program': 'qualification-query', 'obligations': [{'fn': 'query', 'kind': 'ensures', 'idx': 0,
++                        'cert': 'proof.smt2', 'sha256': digest(query)}]}
++            (bundle / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
++            completed = subprocess.run([str(rz), 'verify-all', str(bundle), '--z3'], env={**os.environ, 'Z3_BINARY': str(solver)},
++                                       capture_output=True, timeout=30)
++            actual = completed.returncode == 0
++            passed = actual == accepted and (b'all checks passed' in completed.stdout) == accepted
++            results.append({'id': 'REAL-' + name.upper(), 'query': 'queries/' + query.name, 'query_sha256': digest(query),
++                            'expected_accept': accepted, 'returncode': completed.returncode, 'passed': passed,
++                            'stdout': completed.stdout.decode('utf-8', errors='backslashreplace'),
++                            'stderr': completed.stderr.decode('utf-8', errors='backslashreplace')})
++            print(f'test real_solver::{name} ... {"ok" if passed else "FAILED"}')
++    report = {'schema_version': 1, 'scope': 'Saved-query replay; no source-to-query or qualification claim',
++              'compiler_sha256': digest(rz), 'solver_sha256': digest(solver), 'solver_version': version,
++              'cases': results}
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++    return 0 if all(case['passed'] for case in results) else 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/resilient/src/lib.rs b/resilient/src/lib.rs
+index 094ddd80..bc8d9577 100644
+--- a/resilient/src/lib.rs
++++ b/resilient/src/lib.rs
+@@ -32939,2 +32939,2 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
+-/// 3. If `--z3` is set AND the `z3` binary is on PATH, runs
+-///    `z3 -smt2 <cert>` and expects `unsat` on stdout. Absent
++/// 3. If `--z3` is set, requires a nonempty obligation set and runs
++///    `z3 -smt2 <cert>`; an unavailable solver fails replay. Absent
+@@ -33032,6 +33032,3 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+-    // Detect z3 availability once.
+-    let z3_ok = run_z3 && which_z3();
+-    if run_z3 && !z3_ok {
+-        eprintln!(
+-            "Warning: --z3 requested but the `z3` binary isn't on PATH; skipping Z3 re-verification."
+-        );
++    if run_z3 && manifest.obligations.is_empty() {
++        eprintln!("Error: --z3 requested but the manifest contains no obligations to replay");
++        return Some(1);
+@@ -33089 +33086 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+-        let z3_label = if !z3_ok {
++        let z3_label = if !run_z3 {
+@@ -33152,24 +33148,0 @@ fn z3_binary_name() -> std::ffi::OsString {
+-/// Check whether the configured z3 binary is on PATH (or, when
+-/// `Z3_BINARY` is set to an absolute/relative path, exists at that
+-/// path directly) without shelling out at this point.
+-///
+-/// RES-1202: only called from the z3-gated verify-all dispatcher.
+-#[cfg(feature = "z3")]
+-fn which_z3() -> bool {
+-    let bin = z3_binary_name();
+-    let bin_path = Path::new(&bin);
+-    if bin_path.is_absolute() || bin_path.components().count() > 1 {
+-        return bin_path.is_file();
+-    }
+-    let Some(path_env) = env::var_os("PATH") else {
+-        return false;
+-    };
+-    for p in env::split_paths(&path_env) {
+-        let candidate = p.join(&bin);
+-        if candidate.is_file() {
+-            return true;
+-        }
+-    }
+-    false
+-}
+-
+@@ -34441,0 +34415 @@ CHECKS:
++    Replay requires nonempty obligations; a missing or failed solver is an error.
+@@ -34445,0 +34420 @@ FLAGS:
++                         Fail if the solver is unavailable or obligations are empty
+diff --git a/resilient/tests/solver_replay_required.rs b/resilient/tests/solver_replay_required.rs
+new file mode 100644
+index 00000000..877ccaca
+--- /dev/null
++++ b/resilient/tests/solver_replay_required.rs
+@@ -0,0 +1,108 @@
++//! Requested solver replay must never succeed without checking an obligation.
++#![cfg(feature = "z3")]
++
++use sha2::{Digest, Sha256};
++use std::path::PathBuf;
++use std::process::{Command, Output};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++struct Bundle(PathBuf);
++
++impl Bundle {
++    fn new(empty: bool) -> Self {
++        static NEXT: AtomicUsize = AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "res_replay_required_{}_{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir(&root).unwrap();
++        let query = b"(assert false)\n(check-sat)\n";
++        std::fs::write(root.join("proof.smt2"), query).unwrap();
++        let obligations = if empty {
++            serde_json::json!([])
++        } else {
++            serde_json::json!([{"fn": "f", "kind": "ensures", "idx": 0,
++                "cert": "proof.smt2", "sha256": format!("{:x}", Sha256::digest(query))}])
++        };
++        std::fs::write(
++            root.join("manifest.json"),
++            serde_json::json!({"program": "f.rz", "obligations": obligations}).to_string(),
++        )
++        .unwrap();
++        Self(root)
++    }
++
++    fn command(&self) -> Command {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
++        command.arg("verify-all").arg(&self.0);
++        command
++    }
++}
++
++impl Drop for Bundle {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.0);
++    }
++}
++
++fn rejected(output: Output) {
++    assert!(!output.status.success(), "{output:?}");
++    assert!(
++        !String::from_utf8_lossy(&output.stdout).contains("all checks passed"),
++        "{output:?}"
++    );
++}
++
++#[test]
++fn requested_replay_rejects_missing_absolute_solver() {
++    let bundle = Bundle::new(false);
++    rejected(
++        bundle
++            .command()
++            .arg("--z3")
++            .env("Z3_BINARY", bundle.0.join("does-not-exist"))
++            .output()
++            .unwrap(),
++    );
++}
++
++#[test]
++fn requested_replay_rejects_solver_absent_from_path() {
++    let bundle = Bundle::new(false);
++    rejected(
++        bundle
++            .command()
++            .arg("--z3")
++            .env_remove("Z3_BINARY")
++            .env("PATH", &bundle.0)
++            .output()
++            .unwrap(),
++    );
++}
++
++#[test]
++fn requested_replay_rejects_empty_obligation_set() {
++    let bundle = Bundle::new(true);
++    rejected(
++        bundle
++            .command()
++            .arg("--z3")
++            .env("Z3_BINARY", env!("CARGO_BIN_EXE_rz"))
++            .output()
++            .unwrap(),
++    );
++}
++
++#[test]
++fn hash_only_verification_does_not_require_solver() {
++    let bundle = Bundle::new(false);
++    let output = bundle
++        .command()
++        .env("Z3_BINARY", bundle.0.join("does-not-exist"))
++        .env("PATH", &bundle.0)
++        .output()
++        .unwrap();
++    assert!(output.status.success(), "{output:?}");
++    assert!(String::from_utf8_lossy(&output.stdout).contains("all checks passed"));
++}

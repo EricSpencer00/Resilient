@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "scope": "Saved-query replay; no source-to-query or qualification claim",
+  "compiler_sha256": "19a2b251d2d6d8c347c8d4a471009df444a587bcb74bbeaabd255f0e73488aaf",
+  "solver_sha256": "c05be002097e2f2106efeeac03e58032e3f5cca10104f95d7a0ddc0bd3f907cb",
+  "solver_version": "Z3 version 4.8.12 - 64 bit",
+  "cases": [
+    {
+      "id": "REAL-UNSAT",
+      "query": "queries/unsat.smt2",
+      "query_sha256": "9c4eecf83f4b88fbd5a7822b6b9a9ab7c1f0eca154757f5d0f5214757d86668e",
+      "expected_accept": true,
+      "returncode": 0,
+      "passed": true,
+      "stdout": "\u001b[36mVerifying 1 obligation(s) from qualification-query\u001b[0m\n  fn                               kind       sha256   sig      z3      \n  query::ensures[0]                ensures    ok       -        unsat   \n\n\u001b[32mverify-all: all checks passed\u001b[0m\n",
+      "stderr": ""
+    },
+    {
+      "id": "REAL-SAT",
+      "query": "queries/sat.smt2",
+      "query_sha256": "62d584b96631365b27039a05c9985bbebdcadaf875e2a04c8f6af3b79e3619ac",
+      "expected_accept": false,
+      "returncode": 1,
+      "passed": true,
+      "stdout": "\u001b[36mVerifying 1 obligation(s) from qualification-query\u001b[0m\n  fn                               kind       sha256   sig      z3      \n  query::ensures[0]                ensures    ok       -        FAIL    \n",
+      "stderr": "\n\u001b[31mverify-all: one or more checks FAILED\u001b[0m\n"
+    },
+    {
+      "id": "REAL-MULTIPLE",
+      "query": "queries/multiple.smt2",
+      "query_sha256": "caa7a6a1b28e7434b3bfbd819c2c8dab6c3c56445a04e893971d2a35f43cac1e",
+      "expected_accept": false,
+      "returncode": 1,
+      "passed": true,
+      "stdout": "\u001b[36mVerifying 1 obligation(s) from qualification-query\u001b[0m\n  fn                               kind       sha256   sig      z3      \n  query::ensures[0]                ensures    ok       -        FAIL    \n",
+      "stderr": "\n\u001b[31mverify-all: one or more checks FAILED\u001b[0m\n"
+    },
+    {
+      "id": "REAL-INVALID",
+      "query": "queries/invalid.smt2",
+      "query_sha256": "bc54c7dab754dc8d4af5169f96068b22736d20d35fd72a8cba9d28eb5f162fa1",
+      "expected_accept": false,
+      "returncode": 1,
+      "passed": true,
+      "stdout": "\u001b[36mVerifying 1 obligation(s) from qualification-query\u001b[0m\n  fn                               kind       sha256   sig      z3      \n  query::ensures[0]                ensures    ok       -        ERR     \n",
+      "stderr": "\n\u001b[31mverify-all: one or more checks FAILED\u001b[0m\n"
+    }
+  ]
+}
