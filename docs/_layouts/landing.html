@@ -33,7 +33,7 @@
       <a href="{{ '/getting-started' | relative_url }}">Get started</a>
       <a href="{{ '/syntax' | relative_url }}">Syntax</a>
       <a href="{{ '/language-reference' | relative_url }}">Reference</a>
-      <a href="{{ '/certification' | relative_url }}">Certification</a>
+      <a href="{{ '/qualification-readiness' | relative_url }}">Qualification</a>
       <a href="{{ '/community' | relative_url }}">Community</a>
     </nav>
 
@@ -59,7 +59,7 @@
   </div>
 
   <div class="rl-hero-v2__rule">
-    <span>RESILIENT &nbsp;·&nbsp; v1.0 &nbsp;·&nbsp; MIT</span>
+    <span>RESILIENT &nbsp;·&nbsp; v1.2.0 &nbsp;·&nbsp; MIT</span>
     <span>EST. 2024 &nbsp;·&nbsp; CORTEX-M · RISC-V · X86_64</span>
     <span>EDITION 01</span>
   </div>
@@ -169,10 +169,9 @@
       </div>
       <div>
         <h3>The same source, dev laptop to bare metal</h3>
-        <p>No allocator. No exceptions. No panics in the default runtime.
-        The compiler emits binaries small enough for a Cortex&#8209;M0
-        and proofs strong enough for a DO&#8209;178C audit — from a single
-        source tree.</p>
+        <p>Develop programs with the host compiler and deploy supported
+        bytecode to the no_std embedded runtime. Export proof artifacts for
+        the contract obligations the verifier can discharge.</p>
       </div>
     </div>
 
@@ -431,34 +430,33 @@
   <div class="rl-standards__inner">
     <p class="rl-standards__index">§ 06 · The standards</p>
     <h2 class="rl-standards__title">
-      Mapped, objective by objective,<br>
-      to the regimes that audit you.
+      Prepare the evidence.<br>
+      Define the intended use.
     </h2>
     <p class="rl-standards__lede">
-      Resilient is not itself a certified tool. Its surface is mapped, line by
-      line, to the objectives that the major safety regimes enforce — so the
-      qualification kit you build downstream begins from a defensible
-      starting point, not a clean&#8209;sheet defense.
+      Review the qualification guides and baseline-specific verification records.
+      Use the <a href="{{ '/qualification-readiness' | relative_url }}">preparation checklist</a>
+      to define intended use, evidence and assessment responsibilities.
     </p>
 
     <div class="rl-standards__grid">
       <a class="rl-standard" href="{{ '/standards/do-178c' | relative_url }}">
         <p class="rl-standard__sector">Avionics</p>
         <h3 class="rl-standard__name">DO-178C</h3>
-        <p class="rl-standard__desc">Software considerations in airborne systems. Maps to A&#8209;1 through A&#8209;7 objective tables for Levels A &amp; B.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Planning guidance for DO-178C and DO-330 tool-use evidence.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
       <a class="rl-standard" href="{{ '/standards/iso-26262' | relative_url }}">
         <p class="rl-standard__sector">Automotive</p>
         <h3 class="rl-standard__name">ISO 26262</h3>
-        <p class="rl-standard__desc">Functional safety for road vehicles. Mapping covers ASIL D software — Part 6, Tables 1–10.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Guidance for evaluating intended tool use and assembling project-specific evidence.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
       <a class="rl-standard" href="{{ '/standards/iec-62304' | relative_url }}">
         <p class="rl-standard__sector">Medical</p>
         <h3 class="rl-standard__name">IEC 62304</h3>
-        <p class="rl-standard__desc">Medical device software lifecycle. Class C software — pacemakers, infusion pumps, ventilators.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Guidance for software lifecycle evidence and validation planning.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
     </div>
   </div>
@@ -569,9 +567,7 @@
 
     <div class="rl-cta__install">
       <span class="rl-cta__prompt">$</span>
-<pre class="rl-cta__cmd">git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient &amp;&amp; cargo install --path resilient
-rz resilient/examples/sensor_monitor.rz</pre>
+<pre class="rl-cta__cmd">curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash</pre>
       <button class="rl-cta__copy" aria-label="Copy install command">copy</button>
     </div>
 
@@ -617,7 +613,7 @@ rz resilient/examples/sensor_monitor.rz</pre>
       </div>
       <div>
         <h4>Verify</h4>
-        <a href="{{ '/certification' | relative_url }}">Certification</a>
+        <a href="{{ '/qualification-readiness' | relative_url }}">Qualification</a>
         <a href="{{ '/standards/do-178c' | relative_url }}">DO-178C</a>
         <a href="{{ '/standards/iso-26262' | relative_url }}">ISO 26262</a>
         <a href="{{ '/standards/iec-62304' | relative_url }}">IEC 62304</a>
@@ -641,7 +637,7 @@ rz resilient/examples/sensor_monitor.rz</pre>
     <div class="rl-foot__base">
       <span>© {{ 'now' | date: '%Y' }} Eric Spencer &middot; MIT License</span>
       <span>Photography: <a href="https://unsplash.com/license">Unsplash License</a></span>
-      <span>Resilient v1.0</span>
+      <span>Resilient v1.2.0</span>
     </div>
   </div>
 </footer>

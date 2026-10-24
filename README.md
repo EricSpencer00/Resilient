@@ -261,15 +261,15 @@ Pick the path that matches what you have. Each leaves `rz` on `$PATH`.
 
 #### One-liner (recommended)
 
-Downloads the latest release binary into `~/.rz/bin/rz` (no sudo needed):
+Downloads Resilient 1.2.0 into `~/.rz/bin/rz` (no sudo needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/scripts/install.sh | bash
+curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash
 ```
 
-Then add `~/.rz/bin` to `PATH` (the script prints the exact line for your
-shell). For a system-wide install: `RZ_PREFIX=/usr/local sudo bash`.
-Pin a version with `RZ_VERSION=v1.1.0 …`.
+The installer verifies the release checksum and configures your shell automatically.
+Open a new terminal to use `rz` if it is not already on your current PATH.
+Pin a version with `RZ_VERSION=v1.2.0 …`.
 
 #### Pre-built binaries
 
@@ -278,7 +278,7 @@ Grab the archive matching your platform from the
 extract `rz`, and put it on `PATH`:
 
 ```bash
-TAG=v1.1.0  # see the releases page for the latest
+TAG=v1.2.0  # see the releases page for the latest
 TARGET=aarch64-apple-darwin  # or x86_64-apple-darwin / *-unknown-linux-gnu
 curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/rz-${TAG}-${TARGET}.tar.gz" \
     | tar xz -C /usr/local/bin

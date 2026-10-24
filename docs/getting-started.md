@@ -34,11 +34,10 @@ share examples directly from your browser.
 The shipped CLI is **`rz`**. Three install paths, pick whichever
 matches your setup:
 
-**One-liner** — downloads the latest pre-built binary into `~/.rz/bin/rz`:
+**One command** downloads and verifies Resilient 1.2.0. It installs `rz` in `~/.rz/bin` and configures your shell automatically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/scripts/install.sh | bash
-# Then put ~/.rz/bin on $PATH (the script prints the line for your shell).
+curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash
 ```
 
 **From source via `cargo install`** — if you have Rust installed:

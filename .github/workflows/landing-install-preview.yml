@@ -1,0 +1,75 @@
+name: Landing install preview
+on:
+  pull_request:
+    paths:
+      - 'docs/_layouts/landing.html'
+      - 'docs/assets/css/landing.scss'
+      - '.github/workflows/landing-install-preview.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Build the landing page
+        run: bundle exec jekyll build --source docs --destination "${{ runner.temp }}/landing-site/Resilient" --baseurl '/Resilient'
+        env:
+          JEKYLL_ENV: production
+      - name: Install hosted browser verifier
+        run: |
+          npm install --prefix "${{ runner.temp }}/landing-browser" playwright@1.64.1
+          node "${{ runner.temp }}/landing-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify copy command and inspect desktop/mobile layout
+        env:
+          PLAYWRIGHT_ROOT: ${{ runner.temp }}/landing-browser
+          SCREENSHOT_ROOT: ${{ runner.temp }}/landing-preview
+        run: |
+          python3 -m http.server 8088 --bind 127.0.0.1 --directory "${{ runner.temp }}/landing-site" > "${{ runner.temp }}/landing-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          mkdir -p "$SCREENSHOT_ROOT"
+          node <<'JS'
+          const {createRequire}=require('node:module');
+          const assert=require('node:assert/strict');
+          const fs=require('node:fs');
+          const requireBrowser=createRequire(process.env.PLAYWRIGHT_ROOT+'/package.json');
+          const {chromium}=requireBrowser('playwright');
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const version=fs.readFileSync('resilient/Cargo.toml','utf8').match(/^version = "([^"]+)"/m)[1];
+            const expected=`curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v${version}/install.sh | bash`;
+            for(const [name,viewport] of [['desktop',{width:1440,height:1000}],['mobile',{width:390,height:844}]]) {
+              const context=await browser.newContext({viewport,permissions:['clipboard-read','clipboard-write']});
+              const page=await context.newPage();
+              await page.goto('http://127.0.0.1:8088/Resilient/',{waitUntil:'networkidle'});
+              await page.evaluate(()=>document.fonts.ready);
+              const command=page.locator('.rl-cta__cmd');
+              assert.equal(await command.innerText(),expected);
+              await command.scrollIntoViewIfNeeded();
+              const bounds=await page.locator('.rl-cta__install').boundingBox();
+              assert(bounds.x>=0&&bounds.x+bounds.width<=viewport.width);
+              const pre=await command.boundingBox();
+              const button=await page.locator('.rl-cta__copy').boundingBox();
+              assert(pre.x+pre.width<=button.x,'copy control overlaps command viewport');
+              await page.locator('.rl-cta__copy').click();
+              assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),expected);
+              await page.screenshot({path:process.env.SCREENSHOT_ROOT+'/'+name+'.png'});
+              await context.close();
+            }
+            await browser.close();
+            fs.writeFileSync(process.env.SCREENSHOT_ROOT+'/checks.json',JSON.stringify({command:expected,viewports:['1440x1000','390x844'],clipboard:'passed',installBlockWithinViewport:true,copyControlOverlap:false},null,2));
+          })().catch(error=>{console.error(error);process.exit(1)});
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: landing-install-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/landing-preview
+          retention-days: 90
