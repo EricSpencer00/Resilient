@@ -128,6 +128,8 @@ pub fn verify_program(program: &Node) -> Vec<ClauseVerdict> {
             requires,
             ensures,
             body,
+            parameters,
+            return_type,
             ..
         } = &s.node
         else {
@@ -143,7 +145,14 @@ pub fn verify_program(program: &Node) -> Vec<ClauseVerdict> {
             });
         }
         for e in ensures {
-            let (verdict, basis) = prove_ensures(e, requires, body);
+            let (verdict, basis) =
+                if machine_profile(parameters, return_type.as_deref(), requires, ensures, body) {
+                    prove_ensures(e, requires, body)
+                } else if symbolic_eval::mentions_result(e) {
+                    (Verdict::Unknown, ProofBasis::ClauseOnly)
+                } else {
+                    (prove_clause(e, requires), ProofBasis::ClauseOnly)
+                };
             out.push(ClauseVerdict {
                 function_name: name.clone(),
                 kind: ClauseKind::Ensures,
@@ -245,59 +254,87 @@ pub fn format_report(verdicts: &[ClauseVerdict]) -> String {
 /// `<EXTENSION_PASSES>` block. Keeping one implementation means the
 /// advisory report and the hard compile error can never disagree about
 /// whether a clause was refuted.
+pub(crate) fn machine_profile(
+    parameters: &[(String, String)],
+    result: Option<&str>,
+    requires: &[Node],
+    ensures: &[Node],
+    body: &Node,
+) -> bool {
+    if !crate::machine_arithmetic::signature(parameters, result) {
+        return false;
+    }
+    let Some(model) = symbolic_eval::model_body(body) else {
+        return false;
+    };
+    let mut expressions: Vec<&Node> = requires.iter().chain(ensures).collect();
+    match &model {
+        ResultModel::Straight { ret } => expressions.push(ret),
+        ResultModel::Branch {
+            condition,
+            then_ret,
+            else_ret,
+        } => expressions.extend([condition.as_ref(), then_ret.as_ref(), else_ret.as_ref()]),
+        ResultModel::Paths { paths } => {
+            for path in paths {
+                expressions.push(&path.ret);
+                if let Some(condition) = &path.condition {
+                    expressions.push(condition);
+                }
+            }
+        }
+    }
+    fn bound(node: &Node, parameters: &[(String, String)]) -> bool {
+        match node {
+            Node::Identifier { name, .. } => {
+                name == "result" || parameters.iter().any(|(_, parameter)| parameter == name)
+            }
+            Node::PrefixExpression { right, .. } => bound(right, parameters),
+            Node::InfixExpression { left, right, .. } => {
+                bound(left, parameters) && bound(right, parameters)
+            }
+            Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => true,
+            _ => false,
+        }
+    }
+    expressions
+        .into_iter()
+        .all(|node| crate::machine_arithmetic::supported(node) && bound(node, parameters))
+}
+
 pub(crate) fn prove_ensures(
     clause: &Node,
     requires: &[Node],
     body: &Node,
 ) -> (Verdict, ProofBasis) {
-    if symbolic_eval::mentions_result(clause)
-        && let Some(model) = symbolic_eval::model_body(body)
-    {
-        let verdict = match model {
-            ResultModel::Straight { ret } => {
-                let obligation = symbolic_eval::substitute_result(clause, &ret);
-                prove_obligation(&obligation, requires)
-            }
-            ResultModel::Branch {
-                condition,
-                then_ret,
-                else_ret,
-            } => {
-                let then_obligation = symbolic_eval::substitute_result(clause, &then_ret);
-                let mut then_axioms = requires.to_vec();
-                then_axioms.push((*condition).clone());
-                let then_verdict = prove_obligation(&then_obligation, &then_axioms);
-
-                let else_obligation = symbolic_eval::substitute_result(clause, &else_ret);
-                let mut else_axioms = requires.to_vec();
-                else_axioms.push(symbolic_eval::negate(&condition));
-                let else_verdict = prove_obligation(&else_obligation, &else_axioms);
-
-                combine_branch_verdicts(then_verdict, else_verdict)
-            }
-            ResultModel::Paths { paths } => {
-                let verdicts = paths
-                    .into_iter()
-                    .map(|path| {
-                        let obligation = symbolic_eval::substitute_result(clause, &path.ret);
-                        let mut path_axioms = requires.to_vec();
-                        if let Some(condition) = path.condition {
-                            path_axioms.push(*condition);
-                        }
-                        prove_obligation(&obligation, &path_axioms)
-                    })
-                    .collect();
-                combine_path_verdicts(verdicts)
-            }
-        };
-        return (verdict, ProofBasis::Implementation);
+    if !symbolic_eval::mentions_result(clause) || symbolic_eval::model_body(body).is_none() {
+        return (prove_clause(clause, requires), ProofBasis::ClauseOnly);
     }
-    (prove_clause(clause, requires), ProofBasis::ClauseOnly)
+    #[cfg(feature = "z3")]
+    if let Some(queries) = implementation_queries(clause, requires, body) {
+        let verdicts = queries
+            .into_iter()
+            .map(|query| match query.verdict {
+                Some(true) => Verdict::Pass {
+                    certificate: Some(query.query),
+                },
+                Some(false) => Verdict::Fail {
+                    counterexample: query.counterexample,
+                },
+                None => Verdict::Unknown,
+            })
+            .collect();
+        return (combine_path_verdicts(verdicts), ProofBasis::Implementation);
+    }
+    (Verdict::Unknown, ProofBasis::ClauseOnly)
 }
 
-/// Replay artifacts retain each modeled path as an independent solver session.
 #[cfg(feature = "z3")]
-pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> Option<Vec<String>> {
+pub(crate) fn implementation_queries(
+    clause: &Node,
+    requires: &[Node],
+    body: &Node,
+) -> Option<Vec<crate::verifier_z3::MachineQuery>> {
     use symbolic_eval::ResultPath;
     if !symbolic_eval::mentions_result(clause) {
         return None;
@@ -323,7 +360,7 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
         ],
         ResultModel::Paths { paths } => paths,
     };
-    if paths.is_empty() {
+    if paths.is_empty() || paths.len() > 128 {
         return None;
     }
     paths
@@ -334,14 +371,25 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
             if let Some(condition) = path.condition {
                 axioms.push(*condition);
             }
-            let (proven, certificate, _) = crate::verifier_z3::prove_tautology_with_certificate(
+            crate::verifier_z3::machine_query(
                 &obligation,
-                &std::collections::HashMap::new(),
                 &axioms,
+                &[&path.ret],
+                requires.len(),
                 CLAUSE_TIMEOUT_MS,
-            );
-            if proven {
-                certificate.map(|certificate| certificate.smt2)
+            )
+        })
+        .collect()
+}
+
+/// Successful replay consumes exactly the same queries as the verdict path.
+#[cfg(feature = "z3")]
+pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> Option<Vec<String>> {
+    implementation_queries(clause, requires, body)?
+        .into_iter()
+        .map(|q| {
+            if q.verdict == Some(true) {
+                Some(q.query)
             } else {
                 None
             }

@@ -39,6 +39,8 @@ jobs:
           git fetch --no-tags origin "$CANDIDATE"
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_binding.rs" > resilient/tests/machine_arithmetic_binding.rs
           git show "$CANDIDATE:resilient/tests/machine_arithmetic_boundaries.rs" > resilient/tests/machine_arithmetic_boundaries.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_const_boundary.rs" > resilient/tests/machine_arithmetic_const_boundary.rs
+          git show "$CANDIDATE:resilient/tests/machine_arithmetic_signed_replay.rs" > resilient/tests/machine_arithmetic_signed_replay.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -70,7 +72,7 @@ jobs:
           MACHINE_ARITHMETIC_RECORDS: ${{ runner.temp }}/machine-arithmetic-qualification/raw
         run: |
           unexpected=0
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
               set +e
               python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
@@ -92,6 +94,11 @@ jobs:
           done
           cat "$EVIDENCE_ROOT/outcomes.txt" >> "$GITHUB_STEP_SUMMARY"
           test "$unexpected" -eq 0
+      - name: Replay and sign actual machine queries
+        if: matrix.phase == 'final'
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/machine-arithmetic-qualification
+        run: python3 qualification/machine-arithmetic/capture_queries.py resilient/target/debug/rz "$EVIDENCE_ROOT/raw" "$EVIDENCE_ROOT/signed-queries"
       - name: Retain source-bound records
         if: always()
         uses: actions/upload-artifact@v4
@@ -121,7 +128,7 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}
         run: |
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
-          for suite in machine_arithmetic_binding machine_arithmetic_boundaries; do
+          for suite in machine_arithmetic_binding machine_arithmetic_boundaries machine_arithmetic_const_boundary machine_arithmetic_signed_replay; do
             for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
               if [[ "$test" == declared_contract_behavior_remains_available || "$test" == conversion_is_outside_the_machine_profile || "$test" == bytecode_vm_default_wrap_matches_boundary_checkpoints ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
