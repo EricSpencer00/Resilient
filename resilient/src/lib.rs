@@ -25336,19 +25336,13 @@ impl Interpreter {
                 type_params,
                 ..
             } => {
-                // RES-068: if every observed call site for this fn was
-                // statically proven, the runtime requires check is
-                // provably redundant. Strip it.
-                let runtime_requires = if self.proven_fns.contains(name) {
-                    Vec::new()
-                } else {
-                    requires.clone()
-                };
+                // Direct call-site proofs do not cover future calls through
+                // aliases. Preserve entry guards on the function value.
                 let func = Value::Function(Box::new(FunctionValue {
                     parameters: Rc::new(parameters.clone()),
                     body: Rc::new(body.as_ref().clone()),
                     env: self.env.clone(),
-                    requires: runtime_requires,
+                    requires: requires.clone(),
                     ensures: ensures.clone(),
                     recovers_to: recovers_to.clone(),
                     name: name.clone(),
@@ -29157,9 +29151,29 @@ impl Interpreter {
                 // None means "use the initial body/parameters by reference".
                 let mut mtco_body: Option<Box<Node>> = None;
                 let mut mtco_params: Option<Vec<(String, String)>> = None;
+                let mut mtco_requires: Option<Vec<Node>> = None;
+                let mut entry_name = name.clone();
+                let mut reentry = false;
                 // RES-2790: the TCO loop yields Result so that body errors
                 // don't bypass deferred expressions. Defers always fire.
                 let body_outcome: Result<Value, String> = 'tco: loop {
+                    // Trampoline transitions are actual function entries too.
+                    // Parameters have been rebound before the next iteration;
+                    // evaluate the current target's guard before its body.
+                    if reentry {
+                        for clause in mtco_requires.as_deref().unwrap_or(requires.as_slice()) {
+                            let value = match interpreter.eval(clause) {
+                                Ok(value) => value,
+                                Err(error) => break 'tco Err(error),
+                            };
+                            if !interpreter.is_truthy(&value) {
+                                break 'tco Err(render_requires_violation_error(
+                                    &entry_name,
+                                    clause,
+                                ));
+                            }
+                        }
+                    }
                     let cur_body: &Node = mtco_body.as_deref().unwrap_or(body.as_ref());
                     let body_result = match interpreter.eval(cur_body) {
                         Ok(v) => v,
@@ -29179,6 +29193,7 @@ impl Interpreter {
                             for ((_, param_name), arg_value) in cur_params.iter().zip(new_args) {
                                 interpreter.env.set(param_name.clone(), arg_value);
                             }
+                            reentry = true;
                             continue 'tco;
                         }
                         Value::MutualTailCall {
@@ -29200,6 +29215,8 @@ impl Interpreter {
                                     callee
                                 ));
                             };
+                            mtco_requires = Some(fv.requires.clone());
+                            entry_name = callee.clone();
                             let p = (*fv.parameters).clone();
                             let b = Box::new((*fv.body).clone());
                             for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
@@ -29208,6 +29225,7 @@ impl Interpreter {
                             mtco_params = Some(p);
                             mtco_body = Some(b);
                             interpreter.mutual_tco_fn = Some(callee);
+                            reentry = true;
                             continue 'tco;
                         }
                         Value::Return(v) => match *v {
@@ -29218,6 +29236,7 @@ impl Interpreter {
                                 {
                                     interpreter.env.set(param_name.clone(), arg_value);
                                 }
+                                reentry = true;
                                 continue 'tco;
                             }
                             Value::MutualTailCall {
@@ -29239,6 +29258,8 @@ impl Interpreter {
                                         callee
                                     ));
                                 };
+                                mtco_requires = Some(fv.requires.clone());
+                                entry_name = callee.clone();
                                 let p = (*fv.parameters).clone();
                                 let b = Box::new((*fv.body).clone());
                                 for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
@@ -29247,6 +29268,7 @@ impl Interpreter {
                                 mtco_params = Some(p);
                                 mtco_body = Some(b);
                                 interpreter.mutual_tco_fn = Some(callee);
+                                reentry = true;
                                 continue 'tco;
                             }
                             other => break 'tco Ok(other),
@@ -44828,10 +44850,9 @@ struct Counter { int value; }"#,
     // ---------- Elide proven runtime checks (RES-068) ----------
 
     #[test]
-    fn elide_runtime_check_when_all_callsites_proven() {
-        // Both call sites have constant args that satisfy `requires`.
-        // The typechecker discharges them; with_proven_fns then
-        // strips the runtime check from the bound Function value.
+    fn keep_entry_guard_when_observed_callsites_proven() {
+        // Both observed direct calls are discharged, but a later alias
+        // can supply different arguments. The function keeps its guard.
         let src = r#"
             fn pos(int x) requires x > 0 { return x; }
             let a = pos(5);
@@ -44843,17 +44864,15 @@ struct Counter { int value; }"#,
         let proven = tc.stats.fully_provable_fns();
         assert!(proven.contains("pos"), "pos should be fully proven");
 
-        // Run with the proven set: pos's Value::Function has empty
-        // requires, so apply_function never enters the runtime-check
-        // branch even if we deliberately try to violate the contract.
-        // Sanity check by inspecting the bound Function value.
+        // The call-site statistics remain useful for the audit, but do
+        // not authorize removing the guard from a first-class function.
         let mut interp = Interpreter::new().with_proven_fns(proven);
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
             Value::Function(fv) => {
                 assert!(
-                    fv.requires.is_empty(),
-                    "expected requires to be elided after proof"
+                    !fv.requires.is_empty(),
+                    "call-site proof must preserve the function entry guard"
                 );
             }
             other => panic!("expected Function, got {:?}", other),
