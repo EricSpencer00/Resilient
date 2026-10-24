@@ -1,0 +1,114 @@
+name: Loop replay qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/verifier_loop_invariants.rs'
+      - 'resilient/src/typechecker.rs'
+      - 'resilient/src/verifier_z3.rs'
+      - 'resilient/src/pass_gate.rs'
+      - 'resilient/tests/loop_certificate_roundtrip.rs'
+      - 'resilient/tests/finite_loop_certificate_guards.rs'
+      - 'qualification/replay-bounds/hosted-record/**'
+      - '.github/workflows/loop-replay-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loop-replay-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: loop replay (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && '9234f7af98481275daf3f425eae3cba81a8e2b4d' || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: loop-replay-qualification
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/loop-replay-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in while_invariant_certificates_replay_with_real_solver finite_loop_certificates_replay_with_real_solver false_loop_invariant_does_not_emit_a_proof; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/loop_certificate_roundtrip.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test loop_certificate_roundtrip "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" != false_loop_invariant_does_not_emit_a_proof ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loop-replay-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/loop-replay-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: loop-replay-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: loop-replay-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify retained solver-bound records
+        run: |
+          root=qualification/replay-bounds/hosted-record
+          (cd "$root" && sha256sum -c SHA256SUMS)
+          for test in replay_rejects_response_after_deadline replay_rejects_oversized_whitespace_after_unsat replay_rejects_invalid_timeout_configuration; do
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$root/attestations/$test" \
+              --baseline "$root/baseline/$test" --final "$root/final/$test"
+          done
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          for test in while_invariant_certificates_replay_with_real_solver finite_loop_certificates_replay_with_real_solver; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loop-replay-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
