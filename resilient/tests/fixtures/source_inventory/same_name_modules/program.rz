@@ -1,0 +1,2 @@
+mod left { fn f(int x) -> int requires x >= 0 ensures result == x { return x; } }
+mod right { fn f(int x) -> int requires x < 0 ensures result == x { return x; } }
