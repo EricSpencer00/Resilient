@@ -1985,10 +1985,12 @@ pub(crate) fn machine_query(
         for node in &axioms[..entry_count] { guards(ctx, node, &mut entry_defined, &bindings)?; }
         for node in &axioms[entry_count..] { guards(ctx, node, &mut path_defined, &bindings)?; }
         for node in std::iter::once(goal).chain(evaluated.iter().copied()) { guards(ctx, node, &mut value_defined, &bindings)?; }
-        let conjunction = |values: &[Bool<'_>]| Bool::and(ctx, &values.iter().collect::<Vec<_>>());
-        let entry = conjunction(&assumptions[..entry_count]);
-        let path = conjunction(&assumptions[entry_count..]);
-        let safety = Bool::and(ctx, &[&conjunction(&entry_defined), &entry.implies(&Bool::and(ctx, &[&conjunction(&path_defined), &path.implies(&conjunction(&value_defined))]))]);
+        fn conjunction<'c>(ctx: &'c z3::Context, values: &[Bool<'c>]) -> Bool<'c> {
+            Bool::and(ctx, &values.iter().collect::<Vec<_>>())
+        }
+        let entry = conjunction(ctx, &assumptions[..entry_count]);
+        let path = conjunction(ctx, &assumptions[entry_count..]);
+        let safety = Bool::and(ctx, &[&conjunction(ctx, &entry_defined), &entry.implies(&Bool::and(ctx, &[&conjunction(ctx, &path_defined), &path.implies(&conjunction(ctx, &value_defined))]))]);
         let solver = z3::Solver::new(ctx);
         let mut params = z3::Params::new(ctx);
         params.set_u32("timeout", timeout_ms.clamp(1, 5000));
