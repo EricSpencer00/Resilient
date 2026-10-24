@@ -1,0 +1,2 @@
+struct Cell { int value }
+mod outer { mod inner { fn f(int x) -> int ensures result == x { return x; } } impl Cell { fn f(self) -> int ensures result >= 0 { return self.value; } } }

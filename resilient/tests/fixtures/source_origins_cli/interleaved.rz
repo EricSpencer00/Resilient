@@ -1,0 +1,2 @@
+// fn fake() ensures false { } π
+fn repeat(int x) -> int requires x >= 0 ensures result == x requires x >= 0 ensures result >= 0 { let text = "ensures false { }"; return x; }

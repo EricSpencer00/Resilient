@@ -1,0 +1,3 @@
+// π
+fn f(int x) -> int ensures (result /* π */ == x) // 尾
+{ return x; }

@@ -1,0 +1,1 @@
+fn outer() -> int { fn hidden() -> int ensures false { return 0; } return 0; }
