@@ -20,17 +20,14 @@
       "domain": [
         "and",
         [
-          "and",
-          [
-            "=",
-            "x",
-            "0"
-          ],
-          [
-            ">=",
-            "x",
-            "0"
-          ]
+          "=",
+          "x",
+          "0"
+        ],
+        [
+          ">=",
+          "x",
+          "0"
         ],
         [
           "not",
@@ -58,17 +55,14 @@
           [
             "and",
             [
-              "and",
-              [
-                "=",
-                "x",
-                "0"
-              ],
-              [
-                ">=",
-                "x",
-                "0"
-              ]
+              "=",
+              "x",
+              "0"
+            ],
+            [
+              ">=",
+              "x",
+              "0"
             ],
             [
               "not",
@@ -204,21 +198,18 @@
           "not",
           [
             "or",
+            "false",
             [
-              "or",
-              "false",
+              "and",
               [
-                "and",
-                [
-                  "=",
-                  "x",
-                  "0"
-                ],
-                [
-                  ">=",
-                  "x",
-                  "0"
-                ]
+                "=",
+                "x",
+                "0"
+              ],
+              [
+                ">=",
+                "x",
+                "0"
               ]
             ],
             [
@@ -254,21 +245,18 @@
               "not",
               [
                 "or",
+                "false",
                 [
-                  "or",
-                  "false",
+                  "and",
                   [
-                    "and",
-                    [
-                      "=",
-                      "x",
-                      "0"
-                    ],
-                    [
-                      ">=",
-                      "x",
-                      "0"
-                    ]
+                    "=",
+                    "x",
+                    "0"
+                  ],
+                  [
+                    ">=",
+                    "x",
+                    "0"
                   ]
                 ],
                 [
@@ -297,5 +285,6 @@
       ]
     }
   ],
-  "claim": "Manually source-authored exact legacy-LIA path/return checkpoints. No BV reinterpretation, automatic source enumeration, or whole-query equivalence oracle. Source expectation authored before this fixture query capture."
+  "claim": "Manually source-authored legacy-LIA path/return requirements, with exact variadic and/or serialization checkpoints revised AFTER actual capture40073120470. All guards, prior-arm exclusions, operand order and multiplicity retained. Revision1 failure preserved; no pre-capture exact-serialization oracle claim for revision2.",
+  "checkpoint_revision": 2
 }
