@@ -4,7 +4,7 @@ use std::{fs, io::Write, process::Command};
 
 #[test]
 fn inline_module_impl_remains_visible_on_outer_struct() {
-    let source = "struct Cell { int value } mod m { impl Cell { fn f(self) -> int { return self.value; } } } let c = Cell { value: 7 }; println(c.f());";
+    let source = "struct Cell { int value } mod m { impl Cell { fn f(self) -> int { return self.value; } } } let c = new Cell { value: 7 }; println(c.f());";
     let path = std::env::temp_dir().join(format!("module_impl_compat_{}.rz", std::process::id()));
     fs::write(&path, source).unwrap();
     let binary = env!("CARGO_BIN_EXE_rz");
