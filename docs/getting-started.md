@@ -40,6 +40,12 @@ matches your setup:
 curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash
 ```
 
+Or use the versioned website URL:
+
+```bash
+curl -fsSL https://ericspencer.us/Resilient/v1.2.0 | bash
+```
+
 **From source via `cargo install`** — if you have Rust installed:
 
 ```bash
