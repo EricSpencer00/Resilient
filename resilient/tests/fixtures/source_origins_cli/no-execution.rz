@@ -1,0 +1,1 @@
+fn no_run() -> int { println("SOURCE_ORIGINS_MUST_NOT_EXECUTE"); return 0; }

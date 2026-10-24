@@ -1,0 +1,3 @@
+struct Cell { int value }
+impl Cell { fn f(self) -> int ensures result >= 0 { return self.value; } }
+fn f(int x) -> int { return x; }

@@ -1,0 +1,25 @@
+{
+  "schema": "resilient-physical-origin-producer-profile/v1",
+  "command": "rz source-origins <file> --source-key <canonical-relative.rz> --profile physical-origins-v1",
+  "source_profile": "physical-origins-v1",
+  "frontend": "actual legacy Lexer token stream and actual Parser with optional physical-origin callbacks",
+  "lexer_selection": "fixed legacy scanner under every compiler feature configuration; no eager logos scan",
+  "normal_frontend_equivalence": "normal Logos frontend origin parity is not claimed; ordinary Lexer::new behavior remains configured by its feature",
+  "key_authority": "caller-supplied-not-authenticated-path",
+  "scope": "one exact UTF-8 physical buffer; no import resolution, typecheck, solver or source execution",
+  "identity": "separate canonical declaration and clause identities from original names, typed lexical scopes and exact byte ranges; no transformed-AST name reconstruction",
+  "limits": {
+    "source_bytes": 1048576,
+    "non_eof_tokens": 65536,
+    "delimiter_depth": 128,
+    "function_keyword_tokens": 4096,
+    "contract_keyword_tokens": 8192,
+    "serialized_output_bytes_including_newline": 524288,
+    "function_region_tokens_before_parser": 128
+  },
+  "function_region_rule": "Only a Function token immediately followed by an Identifier token at the same or lower physical delimiter depth begins a new region. Anonymous function/type tokens followed by LeftParen and nested declaration tokens do not reset an outer region. The prefix before the first named function is also bounded. This supplemental metadata-only limit is checked after original global preflight and lexical completion; error.limit is expression-segment-tokens.",
+  "input_policy": "stable owned filesystem: reject final symlinks and nonregular paths before open; recheck opened regular handle and use bounded read; concurrent path replacement/TOCTOU protection is excluded",
+  "whole_unit_rejection": "no accepted origin containers after lexical incompletion, embedded NUL, parse/recovery failure, unsupported profile grammar or resource excess",
+  "claim_limit": "physical metadata only; no binding-instance resolution, source authentication, proof eligibility, completeness, qualification or certification claim",
+  "supplemental_policy_revision": 2
+}

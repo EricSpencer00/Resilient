@@ -262,6 +262,7 @@ mod pkg_deps;
 mod cert_sign;
 #[cfg(feature = "z3")]
 mod proof_sources;
+mod source_origins;
 // RES-198: starter linter. 5 lints with stable codes; consumed
 // from main() when the `lint <file>` subcommand runs.
 mod lint;
@@ -1326,35 +1327,43 @@ impl Lexer {
         }
         #[cfg(not(feature = "logos-lexer"))]
         {
-            let mut lexer = Lexer {
-                input: input.chars().collect(),
-                position: 0,
-                read_position: 0,
-                ch: '\0',
-                line: 1,
-                column: 0,
-                last_token_line: 1,
-                last_token_column: 1,
-                last_token_offset: 0,
-            };
-            lexer.read_char();
-            // RES-113: silently consume a leading shebang line
-            // (`#!...\n`) at byte 0 of the input so users can make
-            // Resilient scripts executable with `#!/usr/bin/env
-            // resilient`. `read_char` naturally advances
-            // `line / column / position`, so the first real token's
-            // span points at its true byte offset — we don't
-            // subtract the shebang length.
-            if lexer.ch == '#' && lexer.peek_char() == '!' {
-                while lexer.ch != '\n' && lexer.ch != '\0' {
-                    lexer.read_char();
-                }
-                if lexer.ch == '\n' {
-                    lexer.read_char();
-                }
-            }
-            lexer
+            Self::new_for_origins(input)
         }
+    }
+
+    // The metadata profile fixes the actual legacy scanner independently of
+    // the normal frontend's optional lexer selection.
+    fn new_for_origins(input: &str) -> Self {
+        let mut lexer = Lexer {
+            input: input.chars().collect(),
+            position: 0,
+            read_position: 0,
+            ch: '\0',
+            line: 1,
+            column: 0,
+            last_token_line: 1,
+            last_token_column: 1,
+            last_token_offset: 0,
+            #[cfg(feature = "logos-lexer")]
+            logos_tokens: None,
+        };
+        lexer.read_char();
+        // RES-113: silently consume a leading shebang line
+        // (`#!...\n`) at byte 0 of the input so users can make
+        // Resilient scripts executable with `#!/usr/bin/env
+        // resilient`. `read_char` naturally advances
+        // `line / column / position`, so the first real token's
+        // span points at its true byte offset — we don't
+        // subtract the shebang length.
+        if lexer.ch == '#' && lexer.peek_char() == '!' {
+            while lexer.ch != '\n' && lexer.ch != '\0' {
+                lexer.read_char();
+            }
+            if lexer.ch == '\n' {
+                lexer.read_char();
+            }
+        }
+        lexer
     }
 
     fn read_char(&mut self) {
@@ -1391,6 +1400,13 @@ impl Lexer {
     }
 
     fn next_token(&mut self) -> Token {
+        self.next_token_observed(None)
+    }
+
+    fn next_token_observed(
+        &mut self,
+        mut status: Option<&mut source_origins::LexicalStatus>,
+    ) -> Token {
         // RES-108: under the `logos-lexer` feature, drain the pre-
         // scanned stream. Each pop also updates the legacy line/col
         // trackers so downstream code that inspects `last_token_line`
@@ -1409,398 +1425,423 @@ impl Lexer {
             }
             return Token::Eof;
         }
-        self.skip_whitespace();
-        // Capture where this token STARTS so `Parser` can attribute
-        // errors to the correct file:line:col.
-        self.last_token_line = self.line;
-        self.last_token_column = self.column;
-        self.last_token_offset = self.position;
+        'tokens: loop {
+            self.skip_whitespace();
+            if self.ch == '\0'
+                && self.position < self.input.len()
+                && let Some(status) = status.as_deref_mut()
+            {
+                status.fail("embedded-nul");
+            }
+            // Capture where this token STARTS so `Parser` can attribute
+            // errors to the correct file:line:col.
+            self.last_token_line = self.line;
+            self.last_token_column = self.column;
+            self.last_token_offset = self.position;
 
-        let token = match self.ch {
-            '=' => {
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::Equal
-                } else if self.peek_char() == '>' {
-                    self.read_char();
-                    Token::FatArrow
-                } else {
-                    Token::Assign
-                }
-            }
-            '+' => {
-                // RES-912: `+=` compound assignment.
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::PlusAssign
-                } else {
-                    Token::Plus
-                }
-            }
-            '-' => {
-                if self.peek_char() == '>' {
-                    self.read_char();
-                    Token::Arrow
-                } else if self.peek_char() == '=' {
-                    // RES-912: `-=`.
-                    self.read_char();
-                    Token::MinusAssign
-                } else {
-                    Token::Minus
-                }
-            }
-            '*' => {
-                // RES-912: `*=`.
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::StarAssign
-                } else {
-                    Token::Multiply
-                }
-            }
-            '%' => {
-                // RES-912: `%=`.
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::PercentAssign
-                } else {
-                    Token::Modulo
-                }
-            }
-            '&' => {
-                if self.peek_char() == '&' {
-                    self.read_char();
-                    Token::And
-                } else if self.peek_char() == '=' {
-                    // RES-912: `&=`.
-                    self.read_char();
-                    Token::AmpAssign
-                } else {
-                    Token::BitAnd
-                }
-            }
-            '|' => {
-                if self.peek_char() == '|' {
-                    self.read_char();
-                    Token::Or
-                } else if self.peek_char() == '=' {
-                    // RES-912: `|=`.
-                    self.read_char();
-                    Token::PipeAssign
-                } else if self.peek_char() == '>' {
-                    // RES-926: `|>` pipe operator.
-                    self.read_char();
-                    Token::PipeArrow
-                } else {
-                    Token::BitOr
-                }
-            }
-            '^' => {
-                // RES-912: `^=`.
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::CaretAssign
-                } else {
-                    Token::BitXor
-                }
-            }
-            '/' => {
-                if self.peek_char() == '/' {
-                    // Line comment: skip to newline.
-                    while self.ch != '\n' && self.ch != '\0' {
+            let token = match self.ch {
+                '=' => {
+                    if self.peek_char() == '=' {
                         self.read_char();
+                        Token::Equal
+                    } else if self.peek_char() == '>' {
+                        self.read_char();
+                        Token::FatArrow
+                    } else {
+                        Token::Assign
                     }
-                    return self.next_token();
-                } else if self.peek_char() == '*' {
-                    // Block comment: skip to matching '*/'. Nested comments
-                    // are supported — `/* /* */ */` requires two closings.
-                    // On EOF inside an open block, return `Eof` so the
-                    // parser produces a clean unexpected-EOF diagnostic
-                    // rather than an "unrecognized character `*`" red
-                    // herring.
-                    self.read_char(); // consume first '/'
-                    self.read_char(); // advance past '*'
-                    let mut depth: usize = 1;
-                    while depth > 0 {
-                        if self.ch == '\0' {
-                            return Token::Eof;
-                        }
-                        if self.ch == '*' && self.peek_char() == '/' {
-                            self.read_char(); // '*'
-                            self.read_char(); // '/'
-                            depth -= 1;
-                        } else if self.ch == '/' && self.peek_char() == '*' {
-                            self.read_char(); // '/'
-                            self.read_char(); // '*'
-                            depth += 1;
-                        } else {
+                }
+                '+' => {
+                    // RES-912: `+=` compound assignment.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::PlusAssign
+                    } else {
+                        Token::Plus
+                    }
+                }
+                '-' => {
+                    if self.peek_char() == '>' {
+                        self.read_char();
+                        Token::Arrow
+                    } else if self.peek_char() == '=' {
+                        // RES-912: `-=`.
+                        self.read_char();
+                        Token::MinusAssign
+                    } else {
+                        Token::Minus
+                    }
+                }
+                '*' => {
+                    // RES-912: `*=`.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::StarAssign
+                    } else {
+                        Token::Multiply
+                    }
+                }
+                '%' => {
+                    // RES-912: `%=`.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::PercentAssign
+                    } else {
+                        Token::Modulo
+                    }
+                }
+                '&' => {
+                    if self.peek_char() == '&' {
+                        self.read_char();
+                        Token::And
+                    } else if self.peek_char() == '=' {
+                        // RES-912: `&=`.
+                        self.read_char();
+                        Token::AmpAssign
+                    } else {
+                        Token::BitAnd
+                    }
+                }
+                '|' => {
+                    if self.peek_char() == '|' {
+                        self.read_char();
+                        Token::Or
+                    } else if self.peek_char() == '=' {
+                        // RES-912: `|=`.
+                        self.read_char();
+                        Token::PipeAssign
+                    } else if self.peek_char() == '>' {
+                        // RES-926: `|>` pipe operator.
+                        self.read_char();
+                        Token::PipeArrow
+                    } else {
+                        Token::BitOr
+                    }
+                }
+                '^' => {
+                    // RES-912: `^=`.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::CaretAssign
+                    } else {
+                        Token::BitXor
+                    }
+                }
+                '/' => {
+                    if self.peek_char() == '/' {
+                        // Line comment: skip to newline.
+                        while self.ch != '\n' && self.ch != '\0' {
                             self.read_char();
                         }
+                        continue 'tokens;
+                    } else if self.peek_char() == '*' {
+                        // Block comment: skip to matching '*/'. Nested comments
+                        // are supported — `/* /* */ */` requires two closings.
+                        // On EOF inside an open block, return `Eof` so the
+                        // parser produces a clean unexpected-EOF diagnostic
+                        // rather than an "unrecognized character `*`" red
+                        // herring.
+                        self.read_char(); // consume first '/'
+                        self.read_char(); // advance past '*'
+                        let mut depth: usize = 1;
+                        while depth > 0 {
+                            if self.ch == '\0' {
+                                self.origin_lexical_end(&mut status, "unterminated-block-comment");
+                                return Token::Eof;
+                            }
+                            if self.ch == '*' && self.peek_char() == '/' {
+                                self.read_char(); // '*'
+                                self.read_char(); // '/'
+                                depth -= 1;
+                            } else if self.ch == '/' && self.peek_char() == '*' {
+                                self.read_char(); // '/'
+                                self.read_char(); // '*'
+                                depth += 1;
+                            } else {
+                                self.read_char();
+                            }
+                        }
+                        continue 'tokens;
+                    } else if self.peek_char() == '=' {
+                        // RES-912: `/=`.
+                        self.read_char();
+                        Token::SlashAssign
+                    } else {
+                        Token::Divide
                     }
-                    return self.next_token();
-                } else if self.peek_char() == '=' {
-                    // RES-912: `/=`.
-                    self.read_char();
-                    Token::SlashAssign
-                } else {
-                    Token::Divide
                 }
-            }
-            '>' => {
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::GreaterEqual
-                } else if self.peek_char() == '>' {
-                    self.read_char();
-                    // RES-912: `>>=` shift-right assign.
+                '>' => {
                     if self.peek_char() == '=' {
                         self.read_char();
-                        Token::ShrAssign
+                        Token::GreaterEqual
+                    } else if self.peek_char() == '>' {
+                        self.read_char();
+                        // RES-912: `>>=` shift-right assign.
+                        if self.peek_char() == '=' {
+                            self.read_char();
+                            Token::ShrAssign
+                        } else {
+                            Token::ShiftRight
+                        }
                     } else {
-                        Token::ShiftRight
+                        Token::Greater
                     }
-                } else {
-                    Token::Greater
                 }
-            }
-            '<' => {
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::LessEqual
-                } else if self.peek_char() == '<' {
-                    self.read_char();
-                    // RES-912: `<<=` shift-left assign.
+                '<' => {
                     if self.peek_char() == '=' {
                         self.read_char();
-                        Token::ShlAssign
+                        Token::LessEqual
+                    } else if self.peek_char() == '<' {
+                        self.read_char();
+                        // RES-912: `<<=` shift-left assign.
+                        if self.peek_char() == '=' {
+                            self.read_char();
+                            Token::ShlAssign
+                        } else {
+                            Token::ShiftLeft
+                        }
                     } else {
-                        Token::ShiftLeft
+                        Token::Less
                     }
-                } else {
-                    Token::Less
                 }
-            }
-            '!' => {
-                if self.peek_char() == '=' {
-                    self.read_char();
-                    Token::NotEqual
-                } else {
-                    Token::Bang
+                '!' => {
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::NotEqual
+                    } else {
+                        Token::Bang
+                    }
                 }
-            }
-            '(' => Token::LeftParen,
-            ')' => Token::RightParen,
-            '{' => Token::LeftBrace,
-            '}' => Token::RightBrace,
-            '[' => Token::LeftBracket,
-            ']' => Token::RightBracket,
-            // RES-149: set literal opener `#{...}`. A lone `#` (or
-            // `#` followed by anything other than `{` / `[`) still falls
-            // through to `Token::Unknown('#')` below — shebangs are
-            // consumed at file head before we ever reach here.
-            '#' if self.peek_char() == '{' => {
-                self.read_char(); // consume `{` so the outer
-                // `self.read_char()` at the end of `next_token`
-                // advances past it naturally.
-                Token::HashLeftBrace
-            }
-            // RES-343: cfg-attribute opener `#[...]`. Same shape as
-            // `#{` above — a single token so the parser never has to
-            // look ahead past `#` to decide.
-            '#' if self.peek_char() == '[' => {
-                self.read_char(); // consume `[`; the trailing
-                // `self.read_char()` at the end of `next_token`
-                // advances past it naturally.
-                Token::HashLeftBracket
-            }
-            // RES-038: `.` is now a real token (field access). Numeric
-            // literals are still fine because read_number consumes `.`
-            // before the tokenizer can dispatch here — digit check
-            // comes first in next_token's fall-through arm.
-            // RES-330: peek for `..` so quantifier ranges (`forall i in
-            // 0..n`) lex as a single `DotDot` token. `...` is the longer
-            // RES-316 extern-variadic marker.
-            '.' => {
-                if self.peek_char() == '.' {
-                    self.read_char(); // consume second `.`
+                '(' => Token::LeftParen,
+                ')' => Token::RightParen,
+                '{' => Token::LeftBrace,
+                '}' => Token::RightBrace,
+                '[' => Token::LeftBracket,
+                ']' => Token::RightBracket,
+                // RES-149: set literal opener `#{...}`. A lone `#` (or
+                // `#` followed by anything other than `{` / `[`) still falls
+                // through to `Token::Unknown('#')` below — shebangs are
+                // consumed at file head before we ever reach here.
+                '#' if self.peek_char() == '{' => {
+                    self.read_char(); // consume `{` so the outer
+                    // `self.read_char()` at the end of `next_token`
+                    // advances past it naturally.
+                    Token::HashLeftBrace
+                }
+                // RES-343: cfg-attribute opener `#[...]`. Same shape as
+                // `#{` above — a single token so the parser never has to
+                // look ahead past `#` to decide.
+                '#' if self.peek_char() == '[' => {
+                    self.read_char(); // consume `[`; the trailing
+                    // `self.read_char()` at the end of `next_token`
+                    // advances past it naturally.
+                    Token::HashLeftBracket
+                }
+                // RES-038: `.` is now a real token (field access). Numeric
+                // literals are still fine because read_number consumes `.`
+                // before the tokenizer can dispatch here — digit check
+                // comes first in next_token's fall-through arm.
+                // RES-330: peek for `..` so quantifier ranges (`forall i in
+                // 0..n`) lex as a single `DotDot` token. `...` is the longer
+                // RES-316 extern-variadic marker.
+                '.' => {
                     if self.peek_char() == '.' {
-                        self.read_char(); // consume third `.`
-                        Token::DotDotDot
+                        self.read_char(); // consume second `.`
+                        if self.peek_char() == '.' {
+                            self.read_char(); // consume third `.`
+                            Token::DotDotDot
+                        } else {
+                            Token::DotDot
+                        }
                     } else {
-                        Token::DotDot
+                        Token::Dot
                     }
-                } else {
-                    Token::Dot
                 }
-            }
-            // RES-375: `??` coalescing operator (must precede lone `?`).
-            '?' if self.peek_char() == '?' => {
-                self.read_char(); // consume second `?`
-                Token::DoubleQuestion
-            }
-            // RES-363: `?.` is the optional-chain operator. Peek one
-            // character ahead; if it is `.` emit QuestionDot and
-            // advance past the `.` so it is not re-consumed. Otherwise
-            // emit a lone `?` (RES-375 used in `??` already handled above).
-            '?' => {
-                if self.peek_char() == '.' {
-                    self.read_char(); // consume '.'
-                    Token::QuestionDot
-                } else {
-                    Token::Question
+                // RES-375: `??` coalescing operator (must precede lone `?`).
+                '?' if self.peek_char() == '?' => {
+                    self.read_char(); // consume second `?`
+                    Token::DoubleQuestion
                 }
-            }
-            ',' => Token::Comma,
-            ';' => Token::Semicolon,
-            ':' => {
-                if self.peek_char() == ':' {
-                    self.read_char(); // consume second `:`
-                    Token::DoubleColon
-                } else {
-                    Token::Colon
+                // RES-363: `?.` is the optional-chain operator. Peek one
+                // character ahead; if it is `.` emit QuestionDot and
+                // advance past the `.` so it is not re-consumed. Otherwise
+                // emit a lone `?` (RES-375 used in `??` already handled above).
+                '?' => {
+                    if self.peek_char() == '.' {
+                        self.read_char(); // consume '.'
+                        Token::QuestionDot
+                    } else {
+                        Token::Question
+                    }
                 }
-            }
-            // RES-191: attribute prefix (e.g. `@pure`). The parser
-            // consumes the following identifier; the lexer just
-            // tags the `@` itself.
-            '@' => Token::At,
-            '"' => {
-                self.read_char(); // advance past opening `"`; self.ch is now 2nd char
-                // RES-2599: detect `"""..."""` triple-quoted strings.
-                if self.ch == '"' && self.peek_char() == '"' {
-                    self.read_char(); // consume 2nd `"`
-                    self.read_char(); // consume 3rd `"`; self.ch is first content char
-                    let content = self.read_triple_string();
-                    Token::StringLiteral(res2599_strip_indent(&content))
-                } else {
-                    let str_value = self.read_string();
-                    Token::StringLiteral(str_value)
+                ',' => Token::Comma,
+                ';' => Token::Semicolon,
+                ':' => {
+                    if self.peek_char() == ':' {
+                        self.read_char(); // consume second `:`
+                        Token::DoubleColon
+                    } else {
+                        Token::Colon
+                    }
                 }
-            }
-            // RES-2619: `'...'` char literal.
-            '\'' => {
-                self.read_char(); // consume opening `'`; self.ch is first content char
-                let inner = self.read_char_inner();
-                // consume closing `'` (read_char_inner leaves self.ch on `'`)
-                Token::CharLiteral(inner)
-            }
-            // RES-2599: `r"..."` raw string (no escape processing) and
-            // `r"""..."""` raw triple-quoted string.
-            'r' if self.peek_char() == '"' => {
-                self.read_char(); // consume `r`; self.ch == `"`
-                self.read_char(); // consume opening `"`; self.ch is first content or 2nd `"`
-                if self.ch == '"' && self.peek_char() == '"' {
-                    // r"""...""" raw triple-quoted
-                    self.read_char(); // consume 2nd `"`
-                    self.read_char(); // consume 3rd `"`; self.ch is first content
-                    let content = self.read_raw_triple_string();
-                    Token::StringLiteral(content)
-                } else {
-                    // r"..." single raw string
-                    let content = self.read_raw_string();
-                    Token::StringLiteral(content)
+                // RES-191: attribute prefix (e.g. `@pure`). The parser
+                // consumes the following identifier; the lexer just
+                // tags the `@` itself.
+                '@' => Token::At,
+                '"' => {
+                    self.read_char(); // advance past opening `"`; self.ch is now 2nd char
+                    // RES-2599: detect `"""..."""` triple-quoted strings.
+                    if self.ch == '"' && self.peek_char() == '"' {
+                        self.read_char(); // consume 2nd `"`
+                        self.read_char(); // consume 3rd `"`; self.ch is first content char
+                        let content = if status.is_some() {
+                            self.read_triple_string_observed(status.as_deref_mut())
+                        } else {
+                            self.read_triple_string()
+                        };
+                        Token::StringLiteral(res2599_strip_indent(&content))
+                    } else {
+                        let str_value = if status.is_some() {
+                            self.read_string_observed(status.as_deref_mut())
+                        } else {
+                            self.read_string()
+                        };
+                        Token::StringLiteral(str_value)
+                    }
                 }
-            }
-            // RES-152: `b"..."` byte-string literal. The guard on
-            // the next char distinguishes from a bare identifier
-            // that starts with `b` — ASCII letters still fall
-            // through to `read_identifier` below.
-            'b' if self.peek_char() == '"' => {
-                self.read_char(); // consume `b`; self.ch == '"'
-                self.read_char(); // consume `"`; self.ch is first content byte or closing `"`
-                let bytes = self.read_bytes();
-                Token::BytesLiteral(bytes)
-            }
-            '\0' => Token::Eof,
-            _ => {
-                if self.is_letter(self.ch) {
-                    // read_identifier() leaves self.ch at the first character
-                    // AFTER the identifier, so we early-return without the
-                    // trailing read_char() to avoid swallowing it.
-                    let ident = self.read_identifier();
-                    return match ident.as_str() {
-                        "fn" => Token::Function,
-                        "let" => Token::Let,
-                        "live" => Token::Live,
-                        "assert" => Token::Assert,
-                        "assume" => Token::Assume,
-                        "if" => Token::If,
-                        "else" => Token::Else,
-                        "return" => Token::Return,
-                        "static" => Token::Static,
-                        "while" => Token::While,
-                        "for" => Token::For,
-                        "in" => Token::In,
-                        "break" => Token::Break,
-                        "continue" => Token::Continue,
-                        "loop" => Token::Loop,
-                        "requires" => Token::Requires,
-                        "ensures" => Token::Ensures,
-                        "recovers_to" => Token::RecoversTo,
-                        "invariant" => Token::Invariant,
-                        "fails" => Token::Fails,
-                        "struct" => Token::Struct,
-                        "new" => Token::New,
-                        "match" => Token::Match,
-                        "extern" => Token::Extern,
-                        "use" => Token::Use,
-                        "as" => Token::As,
-                        "impl" => Token::Impl,
-                        "type" => Token::Type,
-                        "linear" => Token::Linear,
-                        "region" => Token::Region,
-                        "mut" => Token::Mut,
-                        // <EXTENSION_KEYWORDS>
-                        // Add new keyword → Token mappings here (append-only).
-                        // Merge conflicts: keep ALL arms from both sides.
-                        "actor" => Token::Actor,
-                        "receive" => Token::Receive,
-                        "concurrent_ensures" => Token::ConcurrentEnsures,
-                        "always" => Token::Always,
-                        "const" => Token::Const,
-                        "eventually" => Token::Eventually,
-                        "try" => Token::Try,
-                        "catch" => Token::Catch,
-                        "forall" => Token::Forall,
-                        "exists" => Token::Exists,
-                        "mod" => Token::Mod,
-                        "newtype" => Token::Newtype,
-                        "supervisor" => Token::Supervisor,
-                        "trait" => Token::Trait,
-                        "enum" => Token::Enum,
-                        "unsafe" => Token::Unsafe,
-                        "pub" => Token::Pub,
-                        "where" => Token::Where,
-                        "static_assert" => Token::StaticAssert,
-                        "defer" => Token::Defer,
-                        "bench" => Token::Bench,
-                        // </EXTENSION_KEYWORDS>
-                        "_" => Token::Underscore,
-                        // RES-163: `default` is a reserved alias
-                        // for `_` at the top of a match arm.
-                        // Outside that position the parser rejects
-                        // it as an unexpected token — which is the
-                        // "`default` as an identifier is a lex
-                        // error" rule the ticket calls for.
-                        "default" => Token::Default,
-                        "true" => Token::BoolLiteral(true),
-                        "false" => Token::BoolLiteral(false),
-                        _ => Token::Identifier(ident),
-                    };
-                } else if self.is_digit(self.ch) {
-                    return self.read_number();
-                } else {
-                    // Unknown character: emit a token the parser can
-                    // route through `record_error` and keep going.
-                    let unknown = self.ch;
-                    self.read_char();
-                    return Token::Unknown(unknown);
+                // RES-2619: `'...'` char literal.
+                '\'' => {
+                    self.read_char(); // consume opening `'`; self.ch is first content char
+                    let inner = self.read_char_inner();
+                    // consume closing `'` (read_char_inner leaves self.ch on `'`)
+                    Token::CharLiteral(inner)
                 }
-            }
-        };
+                // RES-2599: `r"..."` raw string (no escape processing) and
+                // `r"""..."""` raw triple-quoted string.
+                'r' if self.peek_char() == '"' => {
+                    self.read_char(); // consume `r`; self.ch == `"`
+                    self.read_char(); // consume opening `"`; self.ch is first content or 2nd `"`
+                    if self.ch == '"' && self.peek_char() == '"' {
+                        // r"""...""" raw triple-quoted
+                        self.read_char(); // consume 2nd `"`
+                        self.read_char(); // consume 3rd `"`; self.ch is first content
+                        let content = if status.is_some() {
+                            self.read_raw_triple_string_observed(status.as_deref_mut())
+                        } else {
+                            self.read_raw_triple_string()
+                        };
+                        Token::StringLiteral(content)
+                    } else {
+                        // r"..." single raw string
+                        let content = if status.is_some() {
+                            self.read_raw_string_observed(status.as_deref_mut())
+                        } else {
+                            self.read_raw_string()
+                        };
+                        Token::StringLiteral(content)
+                    }
+                }
+                // RES-152: `b"..."` byte-string literal. The guard on
+                // the next char distinguishes from a bare identifier
+                // that starts with `b` — ASCII letters still fall
+                // through to `read_identifier` below.
+                'b' if self.peek_char() == '"' => {
+                    self.read_char(); // consume `b`; self.ch == '"'
+                    self.read_char(); // consume `"`; self.ch is first content byte or closing `"`
+                    let bytes = self.read_bytes();
+                    Token::BytesLiteral(bytes)
+                }
+                '\0' => Token::Eof,
+                _ => {
+                    if self.is_letter(self.ch) {
+                        // read_identifier() leaves self.ch at the first character
+                        // AFTER the identifier, so we early-return without the
+                        // trailing read_char() to avoid swallowing it.
+                        let ident = self.read_identifier();
+                        return match ident.as_str() {
+                            "fn" => Token::Function,
+                            "let" => Token::Let,
+                            "live" => Token::Live,
+                            "assert" => Token::Assert,
+                            "assume" => Token::Assume,
+                            "if" => Token::If,
+                            "else" => Token::Else,
+                            "return" => Token::Return,
+                            "static" => Token::Static,
+                            "while" => Token::While,
+                            "for" => Token::For,
+                            "in" => Token::In,
+                            "break" => Token::Break,
+                            "continue" => Token::Continue,
+                            "loop" => Token::Loop,
+                            "requires" => Token::Requires,
+                            "ensures" => Token::Ensures,
+                            "recovers_to" => Token::RecoversTo,
+                            "invariant" => Token::Invariant,
+                            "fails" => Token::Fails,
+                            "struct" => Token::Struct,
+                            "new" => Token::New,
+                            "match" => Token::Match,
+                            "extern" => Token::Extern,
+                            "use" => Token::Use,
+                            "as" => Token::As,
+                            "impl" => Token::Impl,
+                            "type" => Token::Type,
+                            "linear" => Token::Linear,
+                            "region" => Token::Region,
+                            "mut" => Token::Mut,
+                            // <EXTENSION_KEYWORDS>
+                            // Add new keyword → Token mappings here (append-only).
+                            // Merge conflicts: keep ALL arms from both sides.
+                            "actor" => Token::Actor,
+                            "receive" => Token::Receive,
+                            "concurrent_ensures" => Token::ConcurrentEnsures,
+                            "always" => Token::Always,
+                            "const" => Token::Const,
+                            "eventually" => Token::Eventually,
+                            "try" => Token::Try,
+                            "catch" => Token::Catch,
+                            "forall" => Token::Forall,
+                            "exists" => Token::Exists,
+                            "mod" => Token::Mod,
+                            "newtype" => Token::Newtype,
+                            "supervisor" => Token::Supervisor,
+                            "trait" => Token::Trait,
+                            "enum" => Token::Enum,
+                            "unsafe" => Token::Unsafe,
+                            "pub" => Token::Pub,
+                            "where" => Token::Where,
+                            "static_assert" => Token::StaticAssert,
+                            "defer" => Token::Defer,
+                            "bench" => Token::Bench,
+                            // </EXTENSION_KEYWORDS>
+                            "_" => Token::Underscore,
+                            // RES-163: `default` is a reserved alias
+                            // for `_` at the top of a match arm.
+                            // Outside that position the parser rejects
+                            // it as an unexpected token — which is the
+                            // "`default` as an identifier is a lex
+                            // error" rule the ticket calls for.
+                            "default" => Token::Default,
+                            "true" => Token::BoolLiteral(true),
+                            "false" => Token::BoolLiteral(false),
+                            _ => Token::Identifier(ident),
+                        };
+                    } else if self.is_digit(self.ch) {
+                        return self.read_number();
+                    } else {
+                        // Unknown character: emit a token the parser can
+                        // route through `record_error` and keep going.
+                        let unknown = self.ch;
+                        self.read_char();
+                        return Token::Unknown(unknown);
+                    }
+                }
+            };
 
-        self.read_char();
-        token
+            self.read_char();
+            return token;
+        }
     }
 
     /// RES-069 (G6 partial): emit a token plus the source span it
@@ -1989,7 +2030,28 @@ impl Lexer {
         }
     }
 
+    fn origin_lexical_end(
+        &self,
+        status: &mut Option<&mut source_origins::LexicalStatus>,
+        reason: &'static str,
+    ) {
+        if let Some(status) = status.as_deref_mut() {
+            status.fail(if self.position < self.input.len() {
+                "embedded-nul"
+            } else {
+                reason
+            });
+        }
+    }
+
     fn read_string(&mut self) -> String {
+        self.read_string_observed(None)
+    }
+
+    fn read_string_observed(
+        &mut self,
+        mut status: Option<&mut source_origins::LexicalStatus>,
+    ) -> String {
         let _position = self.position;
         let mut result = String::new();
 
@@ -2018,6 +2080,9 @@ impl Lexer {
             self.read_char();
         }
 
+        if self.ch == '\0' {
+            self.origin_lexical_end(&mut status, "unterminated-string");
+        }
         result
     }
 
@@ -2025,9 +2090,17 @@ impl Lexer {
     // content char after the opening `"""`. Reads until `"""` (three
     // consecutive double-quotes) or EOF. Escape sequences are processed.
     fn read_triple_string(&mut self) -> String {
+        self.read_triple_string_observed(None)
+    }
+
+    fn read_triple_string_observed(
+        &mut self,
+        mut status: Option<&mut source_origins::LexicalStatus>,
+    ) -> String {
         let mut result = String::new();
         loop {
             if self.ch == '\0' {
+                self.origin_lexical_end(&mut status, "unterminated-string");
                 break;
             }
             if self.ch == '"' && self.peek_char() == '"' && self.peek_char2() == '"' {
@@ -2060,10 +2133,20 @@ impl Lexer {
     // RES-2599: `r"..."` raw string — no escape processing.
     // `self.ch` is the first content char after the opening `"`.
     fn read_raw_string(&mut self) -> String {
+        self.read_raw_string_observed(None)
+    }
+
+    fn read_raw_string_observed(
+        &mut self,
+        mut status: Option<&mut source_origins::LexicalStatus>,
+    ) -> String {
         let mut result = String::new();
         while self.ch != '"' && self.ch != '\0' {
             result.push(self.ch);
             self.read_char();
+        }
+        if self.ch == '\0' {
+            self.origin_lexical_end(&mut status, "unterminated-string");
         }
         result
     }
@@ -2071,9 +2154,17 @@ impl Lexer {
     // RES-2599: `r"""..."""` raw triple-quoted string — no escape processing.
     // `self.ch` is the first content char after the opening `r"""`.
     fn read_raw_triple_string(&mut self) -> String {
+        self.read_raw_triple_string_observed(None)
+    }
+
+    fn read_raw_triple_string_observed(
+        &mut self,
+        mut status: Option<&mut source_origins::LexicalStatus>,
+    ) -> String {
         let mut result = String::new();
         loop {
             if self.ch == '\0' {
+                self.origin_lexical_end(&mut status, "unterminated-string");
                 break;
             }
             if self.ch == '"' && self.peek_char() == '"' && self.peek_char2() == '"' {
@@ -3547,6 +3638,10 @@ pub(crate) enum ChainAccess {
 // Parser for creating AST from tokens
 struct Parser {
     lexer: Lexer,
+    origin_tokens: Option<std::vec::IntoIter<(Token, span::Span)>>,
+    origins: Option<source_origins::Observer>,
+    current_origin_span: Option<span::Span>,
+    peek_origin_span: Option<span::Span>,
     current_token: Token,
     peek_token: Token,
     /// Source position (line, column) of `current_token`. 1-indexed.
@@ -3615,8 +3710,29 @@ impl Parser {
     }
 
     fn new_with_emit_errors(lexer: Lexer, emit_errors: bool) -> Self {
+        Self::new_with_origin_state(lexer, emit_errors, None, None)
+    }
+
+    fn new_with_origins(
+        lexer: Lexer,
+        tokens: Vec<(Token, span::Span)>,
+        observer: source_origins::Observer,
+    ) -> Self {
+        Self::new_with_origin_state(lexer, false, Some(tokens.into_iter()), Some(observer))
+    }
+
+    fn new_with_origin_state(
+        lexer: Lexer,
+        emit_errors: bool,
+        origin_tokens: Option<std::vec::IntoIter<(Token, span::Span)>>,
+        origins: Option<source_origins::Observer>,
+    ) -> Self {
         let mut parser = Parser {
             lexer,
+            origin_tokens,
+            origins,
+            current_origin_span: None,
+            peek_origin_span: None,
             current_token: Token::Eof,
             peek_token: Token::Eof,
             current_line: 1,
@@ -3762,10 +3878,62 @@ impl Parser {
         // `current_token`. No clone, identical state transitions.
         self.current_line = self.peek_line;
         self.current_column = self.peek_column;
-        let new_token = self.lexer.next_token();
+        let (new_token, new_span) = if let Some(tokens) = self.origin_tokens.as_mut() {
+            let (token, extent) = tokens.next().unwrap_or((Token::Eof, span::Span::default()));
+            self.lexer.last_token_line = extent.start.line;
+            self.lexer.last_token_column = extent.start.column;
+            self.lexer.last_token_offset = extent.start.offset;
+            self.lexer.line = extent.end.line;
+            self.lexer.column = extent.end.column;
+            self.lexer.position = extent.end.offset;
+            (token, Some(extent))
+        } else {
+            (self.lexer.next_token(), None)
+        };
+        self.current_origin_span = self.peek_origin_span;
+        self.peek_origin_span = new_span;
         self.peek_line = self.lexer.last_token_line;
         self.peek_column = self.lexer.last_token_column;
         self.current_token = std::mem::replace(&mut self.peek_token, new_token);
+        if let (Some(observer), Some(extent)) = (self.origins.as_mut(), self.current_origin_span)
+            && self.current_token != Token::Eof
+        {
+            observer.on_current_token(&self.current_token, extent);
+        }
+    }
+
+    fn origin_begin_declaration(&mut self, kind: &'static str) {
+        if let (Some(observer), Some(extent)) = (self.origins.as_mut(), self.current_origin_span) {
+            observer.begin_declaration(extent, kind);
+        }
+    }
+
+    fn origin_declaration_name(&mut self, name: &str) {
+        if let Some(observer) = self.origins.as_mut() {
+            observer.set_declaration_name(name);
+        }
+    }
+
+    fn origin_start_body(&mut self) {
+        if let (Some(observer), Some(extent)) = (self.origins.as_mut(), self.current_origin_span) {
+            observer.start_body(extent);
+        }
+    }
+
+    fn origin_finish_declaration(&mut self) {
+        if let Some(observer) = self.origins.as_mut() {
+            if let Some(extent) = self.current_origin_span {
+                observer.finish_declaration(extent, self.current_token == Token::RightBrace);
+            } else {
+                observer.abort_declaration();
+            }
+        }
+    }
+
+    fn origin_abort_declaration(&mut self) {
+        if let Some(observer) = self.origins.as_mut() {
+            observer.abort_declaration();
+        }
     }
 
     fn parse_program(&mut self) -> Node {
@@ -4294,6 +4462,9 @@ impl Parser {
     /// parsing the identifier as an expression statement so the
     /// rest of the file still parses.
     fn parse_effect_keyword_function(&mut self, effects: EffectSet) -> Node {
+        if let Some(observer) = self.origins.as_mut() {
+            observer.reject_profile();
+        }
         // Consume the `pure` / `io` identifier.
         self.next_token();
         if self.current_token != Token::Function {
@@ -4763,6 +4934,7 @@ impl Parser {
         let effects = effects_in;
         // RES-088: capture the `fn` keyword's span before advancing.
         let fn_span = self.span_at_current();
+        self.origin_begin_declaration("function");
         self.next_token(); // Skip 'fn'
 
         // RES-289 (RES-81): accept type params either before the name
@@ -4786,6 +4958,7 @@ impl Parser {
             }
         };
 
+        self.origin_declaration_name(&name);
         self.next_token(); // Skip name
 
         // Post-name form: `fn name<T, U>(...)`.  Only applied when the
@@ -4816,6 +4989,7 @@ impl Parser {
             }
 
             if self.current_token == Token::Eof {
+                self.origin_abort_declaration();
                 return Node::Function {
                     name,
                     parameters: Vec::new(),
@@ -4839,6 +5013,7 @@ impl Parser {
             }
 
             let body = self.parse_block_statement();
+            self.origin_abort_declaration();
             return Node::Function {
                 name,
                 parameters: Vec::new(),
@@ -4910,6 +5085,7 @@ impl Parser {
             }
 
             if self.current_token == Token::Eof {
+                self.origin_abort_declaration();
                 return Node::Function {
                     name,
                     parameters,
@@ -4933,7 +5109,14 @@ impl Parser {
             }
         }
 
+        self.origin_start_body();
         let body = self.parse_block_statement();
+        if !param_prefix.is_empty()
+            && let Some(observer) = self.origins.as_mut()
+        {
+            observer.reject_profile();
+        }
+        self.origin_finish_declaration();
         // RES-2600: prepend any struct-pattern destructure bindings.
         let body = Self::prepend_prefix_bindings(body, param_prefix);
 
@@ -5012,6 +5195,9 @@ impl Parser {
             (None, first_name)
         };
 
+        if let Some(observer) = self.origins.as_mut() {
+            observer.push_scope("impl", &struct_name);
+        }
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             let header = match &trait_name {
@@ -5067,6 +5253,9 @@ impl Parser {
         // `parse_program` loop advances past each statement's final
         // token, same as with `fn` / `struct` decls.
 
+        if let Some(observer) = self.origins.as_mut() {
+            observer.pop_scope(self.current_token == Token::RightBrace);
+        }
         Node::ImplBlock {
             trait_name,
             struct_name,
@@ -5611,6 +5800,7 @@ impl Parser {
     /// first param — injected as `(<StructName>, "self")`.
     fn parse_method(&mut self, struct_name: &str) -> Node {
         let fn_span = self.span_at_current();
+        self.origin_begin_declaration("method");
         self.next_token(); // skip 'fn'
 
         let method_name = match &self.current_token {
@@ -5623,6 +5813,7 @@ impl Parser {
                 String::new()
             }
         };
+        self.origin_declaration_name(&method_name);
         let mangled = format!("{}${}", struct_name, method_name);
         self.next_token(); // skip name
 
@@ -5678,7 +5869,14 @@ impl Parser {
                 method_name, tok
             ));
         }
+        self.origin_start_body();
         let body = self.parse_block_statement();
+        if !method_prefix.is_empty()
+            && let Some(observer) = self.origins.as_mut()
+        {
+            observer.reject_profile();
+        }
+        self.origin_finish_declaration();
         // RES-2600: prepend struct-pattern destructure bindings.
         let body = Self::prepend_prefix_bindings(body, method_prefix);
 
@@ -6445,20 +6643,52 @@ impl Parser {
         loop {
             match self.current_token {
                 Token::Requires => {
-                    self.next_token(); // skip `requires`
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    let keyword = self.current_origin_span;
+                    self.next_token();
+                    let first = self.current_origin_span;
+                    let parsed = self.parse_expression(0);
+                    let has_expression = parsed.is_some();
+                    let expr = parsed.unwrap_or(Node::BooleanLiteral {
                         value: true,
                         span: span::Span::default(),
                     });
-                    self.next_token(); // move past last token of expression
+                    if let Some(observer) = self.origins.as_mut() {
+                        observer.record_clause(
+                            "requires",
+                            keyword.unwrap_or_default(),
+                            first.unwrap_or_default(),
+                            self.current_origin_span.unwrap_or_default(),
+                            has_expression
+                                && keyword.is_some()
+                                && first.is_some()
+                                && self.current_origin_span.is_some(),
+                        );
+                    }
+                    self.next_token();
                     requires.push(expr);
                 }
                 Token::Ensures => {
+                    let keyword = self.current_origin_span;
                     self.next_token();
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    let first = self.current_origin_span;
+                    let parsed = self.parse_expression(0);
+                    let has_expression = parsed.is_some();
+                    let expr = parsed.unwrap_or(Node::BooleanLiteral {
                         value: true,
                         span: span::Span::default(),
                     });
+                    if let Some(observer) = self.origins.as_mut() {
+                        observer.record_clause(
+                            "ensures",
+                            keyword.unwrap_or_default(),
+                            first.unwrap_or_default(),
+                            self.current_origin_span.unwrap_or_default(),
+                            has_expression
+                                && keyword.is_some()
+                                && first.is_some()
+                                && self.current_origin_span.is_some(),
+                        );
+                    }
                     self.next_token();
                     ensures.push(expr);
                 }
@@ -7429,7 +7659,13 @@ impl Parser {
         // Delegate block-body parsing to the shared helper.
         // parse_block_statement expects current_token == '{' and leaves
         // current_token on '}' when it returns.
+        if let Some(observer) = self.origins.as_mut() {
+            observer.push_scope("module", &name);
+        }
         let block = self.parse_block_statement();
+        if let Some(observer) = self.origins.as_mut() {
+            observer.pop_scope(self.current_token == Token::RightBrace);
+        }
         let body = match block {
             Node::Block { stmts, .. } => stmts,
             other => vec![other],
@@ -34805,6 +35041,7 @@ pub fn run_cli() {
                     | "lint"
                     | "pkg"
                     | "repl"
+                    | "source-origins"
                     | "self-host-parity-report"
                     | "stack-usage"
                     | "test"
@@ -34815,6 +35052,9 @@ pub fn run_cli() {
         )
     {
         args.remove(1);
+    }
+    if let Some(status) = source_origins::dispatch(&args) {
+        std::process::exit(status);
     }
 
     // RES-209: `--version` / `-V` prints the compiler version plus a
