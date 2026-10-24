@@ -125,11 +125,16 @@ fn both_serializers_include_nonlinear_axioms_in_logic_join() {
     let goal = op(var("x"), "==", var("x"));
     let axiom = op(op(var("x"), "*", var("x")), ">=", int(0));
     let bindings = HashMap::new();
-    let (verdict, cert, _, _) =
-        prove_with_axioms_and_timeout(&goal, &bindings, std::slice::from_ref(&axiom), 2000);
+    // v2: exercise this actual serializer rather than the public verdict-only
+    // reflexivity fast path, which deliberately need not produce a certificate.
+    let (verdict, cert, _, _) = Z3_CTX.with(|ctx| {
+        prove_with_axioms_and_timeout_in(ctx, &goal, &bindings, std::slice::from_ref(&axiom), 2000)
+    });
     assert_eq!(verdict, Some(true));
     assert!(cert.unwrap().smt2.contains("(set-logic AUFNIRA)"));
-    let (verdict, cert, _) = prove_tautology_with_certificate(&goal, &bindings, &[axiom], 2000);
+    let (verdict, cert, _) = Z3_CTX.with(|ctx| {
+        prove_tautology_with_axioms_and_timeout_in(ctx, &goal, &bindings, &[axiom], 2000)
+    });
     assert!(verdict);
     assert!(cert.unwrap().smt2.contains("(set-logic AUFNIRA)"));
 }
