@@ -164,7 +164,7 @@ fn ordinary_recursive_entry_keeps_requires() {
 fn mutual_tail_entry_uses_target_precondition_and_identity() {
     let diagnostic = exercise(
         "mutual_tail_entry_uses_target_precondition_and_identity",
-        "fn opaque(int n) -> int { return n; } #[mutual_tail_call] fn first(int n) -> int requires n >= 0 { return second(opaque(n - 1)); } #[mutual_tail_call] fn second(int n) -> int requires n > 0 { println(\"FORBIDDEN_BODY\"); return n; } println(first(1));",
+        "fn opaque(int n) -> int { return n; } #[mutual_tail_call] fn first(int n) -> int requires n >= 0 { return second(opaque(n - 1)); } #[mutual_tail_call] fn second(int n) -> int requires n > 0 { if n == 0 { println(\"FORBIDDEN_BODY\"); return n; } return first(n - 1); } println(first(1));",
         true,
         &[],
     );
