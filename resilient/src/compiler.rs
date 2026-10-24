@@ -723,6 +723,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             locals.insert(pname.clone(), next_local);
             next_local += 1;
         }
+        if !requires.is_empty() && !fails.is_empty() {
+            chunk.emit(Op::EntryGuardsStart, fn_line);
+        }
         requires_entry::compile_requires_entry(
             name,
             requires,

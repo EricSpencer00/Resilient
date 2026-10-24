@@ -1330,7 +1330,7 @@ fn run_dispatch_loop(
                 validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
                 let defer_injection = !try_stack.is_empty()
                     && !func.fails.is_empty()
-                    && func.chunk.code.contains(&Op::EntryGuardsComplete);
+                    && func.chunk.code.contains(&Op::EntryGuardsStart);
                 if !try_stack.is_empty() && !func.fails.is_empty() && !defer_injection {
                     let variant = &func.fails[0];
                     for _ in 0..func.arity {
@@ -2599,6 +2599,7 @@ fn run_dispatch_loop(
                 };
                 return Err(VmError::AssumeViolated(msg));
             }
+            Op::EntryGuardsStart => {}
             Op::EntryGuardsComplete => {
                 if let Some(variant) = pending_checked_failures
                     .get_mut(frame_idx)
@@ -3797,7 +3798,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 
 /// Number of dispatch slots, including appended opcode groups. The explicit
 /// mapping below preserves all existing indexes when a handler is appended.
-const OP_KIND_COUNT: usize = 65;
+const OP_KIND_COUNT: usize = 66;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -3876,6 +3877,7 @@ fn op_to_index(op: Op) -> usize {
         Op::ContractViolation { .. } => OP_KIND_CONTRACT_VIOLATION,
         Op::RequiresViolation { .. } => OP_KIND_REQUIRES_VIOLATION,
         Op::EntryGuardsComplete => OP_KIND_ENTRY_GUARDS_COMPLETE,
+        Op::EntryGuardsStart => OP_KIND_ENTRY_GUARDS_START,
     }
 }
 
@@ -3935,6 +3937,7 @@ const OP_KIND_OPT_CHAIN_UNWRAP: usize = 61;
 const OP_KIND_DEFER_PUSH: usize = 62;
 const OP_KIND_REQUIRES_VIOLATION: usize = 63;
 const OP_KIND_ENTRY_GUARDS_COMPLETE: usize = 64;
+const OP_KIND_ENTRY_GUARDS_START: usize = 65;
 const HANDLER_TABLE_LEN: usize = OP_KIND_COUNT;
 
 /// The dispatch table. Each entry is a handler keyed by the index
@@ -4006,6 +4009,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_DEFER_PUSH] = h_defer_push;
     table[OP_KIND_REQUIRES_VIOLATION] = h_requires_violation;
     table[OP_KIND_ENTRY_GUARDS_COMPLETE] = h_entry_guards_complete;
+    table[OP_KIND_ENTRY_GUARDS_START] = h_entry_guards_start;
     table
 };
 
@@ -4504,7 +4508,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
     let defer_injection = !state.try_stack.is_empty()
         && !func.fails.is_empty()
-        && func.chunk.code.contains(&Op::EntryGuardsComplete);
+        && func.chunk.code.contains(&Op::EntryGuardsStart);
     if !state.try_stack.is_empty() && !func.fails.is_empty() && !defer_injection {
         let variant = func.fails[0].clone();
         let arity = func.arity as usize;
@@ -5328,6 +5332,11 @@ fn h_shl(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         return Err(VmError::ShiftOutOfRange(b));
     }
     state.stack.push(Value::Int(a << b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_entry_guards_start(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 

@@ -415,6 +415,9 @@ pub enum Op {
     /// Compiler boundary after a guarded fallible function entry prologue.
     /// Only direct calls with deferred injection act on this marker.
     EntryGuardsComplete,
+    /// Reachable identity for compiler-produced guarded fallible entries.
+    /// Unlike the completion boundary, it survives a proven-false guard.
+    EntryGuardsStart,
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.

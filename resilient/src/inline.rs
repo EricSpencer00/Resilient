@@ -672,6 +672,7 @@ fn rewrite_inlined_op(
             match other {
                 Op::TailCall(_)
                 | Op::EntryGuardsComplete
+                | Op::EntryGuardsStart
                 | Op::MakeClosure { .. }
                 | Op::LoadUpvalue(_)
                 | Op::CallForeign(_) => {

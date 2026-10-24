@@ -138,6 +138,7 @@ fn write_op(
         }
         Op::ReturnFromCall => write!(out, "ReturnFromCall")?,
         Op::EntryGuardsComplete => write!(out, "EntryGuardsComplete")?,
+        Op::EntryGuardsStart => write!(out, "EntryGuardsStart")?,
         Op::DeferPush(idx) => {
             write!(out, "DeferPush {}", idx)?;
             if let Some(name) = fn_names.get(idx as usize) {
