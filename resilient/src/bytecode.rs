@@ -409,6 +409,9 @@ pub enum Op {
         clause_const: u16,
         is_recovers_to: bool,
     },
+    /// A false precondition at actual function entry. No stack operands:
+    /// the preceding JumpIfTrue already consumed the predicate.
+    RequiresViolation { name_const: u16, clause_const: u16 },
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.

@@ -141,6 +141,7 @@ fn remove_unreachable(chunk: &mut Chunk) {
                 | Op::AssertFail
                 | Op::AssumeFail
                 | Op::ContractViolation { .. }
+                | Op::RequiresViolation { .. }
         );
         let next_pc = pc + 1;
         if falls_through && next_pc < n && !reachable[next_pc] {

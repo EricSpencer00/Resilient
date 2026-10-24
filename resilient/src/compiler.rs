@@ -16,6 +16,8 @@ use crate::{ChainAccess, Node, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+mod requires_entry;
+
 thread_local! {
     static ENUM_INDEX: RefCell<HashMap<String, Vec<crate::EnumVariant>>> = RefCell::new(HashMap::new());
     /// RES-3994: struct name → declared field names (declaration order),
@@ -703,6 +705,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                body: &Node,
                                fn_line: u32,
                                fails: Box<[String]>,
+                               requires: &[Node],
                                ensures: &[Node],
                                recovers_to: &Option<Box<Node>>,
                                functions: &mut Vec<Function>,
@@ -720,6 +723,18 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             locals.insert(pname.clone(), next_local);
             next_local += 1;
         }
+        requires_entry::compile_requires_entry(
+            name,
+            requires,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            &fn_index,
+            &ffi_index,
+            functions,
+            next_fn_idx,
+            fn_line,
+        )?;
         let inner = match body {
             Node::Block { stmts: b, .. } => b.as_slice(),
             single => std::slice::from_ref(single),
@@ -789,6 +804,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 parameters,
                 body,
                 fails,
+                requires,
                 ensures,
                 recovers_to,
                 ..
@@ -799,6 +815,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     body,
                     spanned.span.start.line as u32,
                     fails.clone().into_boxed_slice(),
+                    requires,
                     ensures,
                     recovers_to,
                     &mut functions,
@@ -818,6 +835,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                         name,
                         parameters,
                         body,
+                        requires,
                         ensures,
                         recovers_to,
                         ..
@@ -833,6 +851,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             body,
                             line,
                             Box::default(),
+                            requires,
                             ensures,
                             recovers_to,
                             &mut functions,
@@ -865,6 +884,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             line,
                             Box::default(),
                             &[],
+                            &[],
                             &None,
                             &mut functions,
                             &mut next_fn_idx,
@@ -886,6 +906,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             name,
                             parameters,
                             body,
+                            requires,
                             ensures,
                             recovers_to,
                             ..
@@ -898,6 +919,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                 body,
                                 line,
                                 Box::default(),
+                                requires,
                                 ensures,
                                 recovers_to,
                                 &mut functions,
@@ -926,6 +948,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                     name,
                                     parameters,
                                     body,
+                                    requires,
                                     ensures,
                                     recovers_to,
                                     ..
@@ -939,6 +962,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                         body,
                                         line,
                                         Box::default(),
+                                        requires,
                                         ensures,
                                         recovers_to,
                                         &mut functions,
@@ -966,6 +990,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                         body,
                                         line,
                                         Box::default(),
+                                        &[],
                                         &[],
                                         &None,
                                         &mut functions,
@@ -2060,6 +2085,7 @@ fn compile_stmt(
             name,
             parameters,
             body,
+            requires,
             ensures,
             recovers_to,
             ..
@@ -2067,6 +2093,7 @@ fn compile_stmt(
             name,
             parameters,
             body,
+            requires,
             ensures,
             recovers_to,
             chunk,
@@ -2949,6 +2976,7 @@ fn compile_nested_fn(
     name: &str,
     parameters: &[(String, String)],
     body: &Node,
+    requires: &[Node],
     ensures: &[Node],
     recovers_to: &Option<Box<Node>>,
     outer_chunk: &mut Chunk,
@@ -2978,7 +3006,14 @@ fn compile_nested_fn(
     // they keep resolving through `inner_fn_index`, not as an upvalue.
     let param_names: std::collections::HashSet<&str> =
         parameters.iter().map(|(_, n)| n.as_str()).collect();
-    let captured = analyze_and_box_captures(body, &param_names, outer_chunk, outer_locals, line)?;
+    let captured = analyze_and_box_captures(
+        body,
+        requires,
+        &param_names,
+        outer_chunk,
+        outer_locals,
+        line,
+    )?;
     if captured.len() > u8::MAX as usize {
         return Err(CompileError::Unsupported("fn with >255 captured upvalues"));
     }
@@ -3011,6 +3046,18 @@ fn compile_nested_fn(
     });
     let mut inner_fn_index = fn_index.clone();
     inner_fn_index.insert(name.to_string(), fn_idx);
+    requires_entry::compile_requires_entry(
+        name,
+        requires,
+        &mut chunk,
+        &mut locals,
+        &mut next_local,
+        &inner_fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     let inner = match body {
         Node::Block { stmts: b, .. } => b.as_slice(),
         single => std::slice::from_ref(single),
@@ -3094,6 +3141,7 @@ fn compile_nested_fn(
 /// name already boxed by an earlier sibling closure in this same scope).
 fn analyze_and_box_captures(
     body: &Node,
+    requires: &[Node],
     param_names: &std::collections::HashSet<&str>,
     chunk: &mut Chunk,
     locals: &mut HashMap<String, u16>,
@@ -3101,6 +3149,9 @@ fn analyze_and_box_captures(
 ) -> Result<Vec<(u16, String)>, CompileError> {
     let mut captured: Vec<(u16, String)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for clause in requires {
+        collect_free_vars(clause, param_names, locals, &mut captured, &mut seen);
+    }
     collect_free_vars(body, param_names, locals, &mut captured, &mut seen);
 
     for (outer_slot, name) in &mut captured {
@@ -3917,6 +3968,7 @@ fn compile_stmt_in_fn(
             name,
             parameters,
             body,
+            requires,
             ensures,
             recovers_to,
             ..
@@ -3924,6 +3976,7 @@ fn compile_stmt_in_fn(
             name,
             parameters,
             body,
+            requires,
             ensures,
             recovers_to,
             chunk,
@@ -5686,6 +5739,7 @@ fn compile_expr(
         Node::FunctionLiteral {
             parameters,
             body,
+            requires,
             ensures,
             recovers_to,
             ..
@@ -5708,7 +5762,8 @@ fn compile_expr(
             // RES-3914/RES-4046 boxing semantics now live in
             // `analyze_and_box_captures` (shared with `compile_nested_fn`,
             // RES-4063) — see that function's doc comment.
-            let captured = analyze_and_box_captures(body, &param_names, chunk, locals, line)?;
+            let captured =
+                analyze_and_box_captures(body, requires, &param_names, chunk, locals, line)?;
 
             // Build the closure's local map: params at 0..arity, then upvalues
             // accessible via LoadUpvalue. The body chunk uses LoadUpvalue(i) for
@@ -5736,6 +5791,19 @@ fn compile_expr(
                 &captured,
                 line,
             );
+
+            requires_entry::compile_requires_entry(
+                "<anon>",
+                requires,
+                &mut fn_chunk,
+                &mut fn_locals,
+                &mut fn_next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
 
             // Compile the body statements.
             let inner_stmts = match body.as_ref() {
@@ -6923,8 +6991,24 @@ fn collect_free_vars(
         Node::NamedArg { value, .. } | Node::NewtypeConstruct { value, .. } => {
             collect_free_vars(value, param_names, outer_locals, out, seen);
         }
-        Node::FunctionLiteral { body, .. } => {
-            collect_free_vars(body, param_names, outer_locals, out, seen);
+        Node::FunctionLiteral {
+            parameters,
+            requires,
+            body,
+            ..
+        }
+        | Node::Function {
+            parameters,
+            requires,
+            body,
+            ..
+        } => {
+            let mut bound = param_names.clone();
+            bound.extend(parameters.iter().map(|(_, name)| name.as_str()));
+            for clause in requires {
+                collect_free_vars(clause, &bound, outer_locals, out, seen);
+            }
+            collect_free_vars(body, &bound, outer_locals, out, seen);
         }
         Node::OptionalChain { object, access, .. } => {
             collect_free_vars(object, param_names, outer_locals, out, seen);

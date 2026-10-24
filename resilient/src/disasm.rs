@@ -281,6 +281,14 @@ fn write_op(
         Op::PushStaticInitialized(idx) => write!(out, "PushStaticInitialized {}", idx)?,
         Op::StoreStatic(idx) => write!(out, "StoreStatic {}", idx)?,
         Op::LoadStatic(idx) => write!(out, "LoadStatic {}", idx)?,
+        Op::RequiresViolation {
+            name_const,
+            clause_const,
+        } => write!(
+            out,
+            "RequiresViolation name={} clause={}",
+            name_const, clause_const
+        )?,
         Op::ContractViolation {
             name_const,
             clause_const,
