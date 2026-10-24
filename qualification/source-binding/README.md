@@ -44,3 +44,8 @@ of emitted proof obligations, correctness of the signing producer, or external
 qualification acceptance. The paired hosted workflow retains the same new CLI
 regressions on the pinned production baseline and candidate, with real signed
 manifests and solver executable/library identity.
+
+The [retained paired record](../hosted-records/2026-10-source-binding/README.md)
+preserves all 48 source-bound bundles, 23 verified red-green attestations, raw
+hosted output and reconstructible source trees from run 40056681094. Its tested
+revision is explicit; later binary baselines must rerun the applicable suites.

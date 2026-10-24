@@ -33,6 +33,8 @@ jobs:
           BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
           LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
         run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          set -o pipefail
           python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/tests" \
             --input Cargo.lock \
             --input resilient/tests/contract_replay_roundtrip.rs \
@@ -41,11 +43,14 @@ jobs:
             --input resilient/tests/finite_loop_certificate_guards.rs \
             --input resilient/tests/solver_replay_bounds.rs \
             --input resilient/tests/solver_replay_required.rs \
-            --input resilient/tests/solver_replay_conformance.rs -- \
+            --input resilient/tests/solver_replay_conformance.rs \
+            --input resilient/tests/source_binding.rs \
+            --input resilient/tests/source_binding_graph.rs -- \
             cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
               --test contract_replay_roundtrip --test manifest_authentication \
               --test loop_certificate_roundtrip --test finite_loop_certificate_guards \
-              --test solver_replay_bounds --test solver_replay_required --test solver_replay_conformance
+              --test solver_replay_bounds --test solver_replay_required --test solver_replay_conformance \
+              --test source_binding --test source_binding_graph 2>&1 | tee "$EVIDENCE_ROOT/test-output.log"
           python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/tests"
       - name: Identify and retain the tested host compiler
         env:
@@ -56,19 +61,41 @@ jobs:
           root = pathlib.Path(os.environ['EVIDENCE_ROOT'])
           def command(*args):
               return subprocess.check_output(args, text=True).strip()
-          metadata = json.loads(command('cargo', 'metadata', '--manifest-path', 'resilient/Cargo.toml', '--no-deps', '--format-version', '1'))
+          metadata = json.loads(command('cargo', 'metadata', '--manifest-path', 'resilient/Cargo.toml', '--no-deps', '--locked', '--format-version', '1'))
+          assert command('git', 'status', '--porcelain') == '', 'qualification build changed the source checkout'
           compiler = pathlib.Path(metadata['target_directory']) / 'debug' / 'rz'
           shutil.copy2(compiler, root / 'rz')
           def digest(path):
               return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+          def linked_libraries(path):
+              output = command('ldd', str(path))
+              libraries = {}
+              for token in output.split():
+                  if token.startswith('/'):
+                      resolved = pathlib.Path(token).resolve(strict=True)
+                      libraries[str(resolved)] = digest(resolved)
+              return {'ldd': output, 'sha256': libraries}
+          banner = command(str(compiler), '--version', '--verbose')
+          embedded = dict(line.strip().split(': ', 1) for line in banner.splitlines()[1:] if ': ' in line)
+          expected_commit = command('git', 'rev-parse', '--short=12', 'HEAD')
+          assert embedded.get('commit') == expected_commit, (embedded, expected_commit)
+          assert embedded.get('profile') == 'debug'
+          assert embedded.get('target') == 'x86_64-unknown-linux-gnu'
+          version = next(package['version'] for package in metadata['packages'] if package['name'] == 'resilient')
+          assert banner.startswith('rz ' + version), banner
           record = {
               'source_revision': command('git', 'rev-parse', 'HEAD'),
               'source_tree': command('git', 'rev-parse', 'HEAD^{tree}'),
               'compiler_sha256': digest(root / 'rz'),
+              'compiler_version': banner,
+              'compiler_dynamic_libraries': linked_libraries(compiler),
+              'solver_dynamic_libraries': linked_libraries(shutil.which('z3')),
               'profile': 'debug; host CLI; not a release or embedded-target qualification',
-              'features': ['z3'], 'locked': True,
+              'features': ['z3'], 'default_features': True, 'locked': True,
+              'embedded_features': embedded.get('features'),
               'cargo_lock_sha256': digest('Cargo.lock'),
               'rustc': command('rustc', '-vV'), 'cargo': command('cargo', '-V'),
+              'available_tool_versions': {tool: command(tool, '--version') for tool in ('cc', 'ld', 'clang')},
               'platform': platform.platform(), 'machine': platform.machine(),
               'runner_image': {key: os.environ.get(key) for key in ('ImageOS', 'ImageVersion')},
               'z3_version': command('z3', '-version'),

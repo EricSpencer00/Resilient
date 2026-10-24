@@ -1,0 +1,18 @@
+[
+  {
+    "label": "baseline test-only overlay",
+    "base": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+    "patch": "baseline-tests.patch",
+    "tree": "0a12fa21651611d443f39c5f77196c6683144275",
+    "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3",
+    "patch_sha256": "099b09987ae88e14c0a91dc31900622befc09ea3669c2ea22dfb9ebe6f533a33"
+  },
+  {
+    "label": "validated source-binding candidate",
+    "base": "c86c0af1111952ebdb2db8449e6bee3182f434e3",
+    "patch": "validated-source.patch",
+    "tree": "35ef3bbc8065d6aed643ea7a37fe9ee4e8bf05a4",
+    "tested_revision": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+    "patch_sha256": "5f6aa3b1903522bfe22f02c3e85ef12d3d1faec8c9630cfcc3969978152d60e7"
+  }
+]

@@ -1,0 +1,1370 @@
+[
+  {
+    "phase": "baseline",
+    "outcomes": [
+      {
+        "test": "absolute_target_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "absolute_target_is_rejected",
+              "status": "failed"
+            },
+            {
+              "name": "command",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "cache_and_no_cache_emit_identical_binding",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "cache_and_no_cache_emit_identical_binding",
+              "status": "failed"
+            },
+            {
+              "name": "command",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "changed_entry_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "changed_entry_is_rejected",
+              "status": "failed"
+            },
+            {
+              "name": "command",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "changed_import_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "changed_import_is_rejected",
+              "status": "failed"
+            },
+            {
+              "name": "command",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "coherently_omitted_import_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "coherently_omitted_import_is_rejected",
+              "status": "failed"
+            },
+            {
+              "name": "command",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "cyclic_graph_and_excessive_inventory_are_bounded",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "cyclic_graph_and_excessive_inventory_are_bounded",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "duplicate_edge_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "duplicate_edge_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "duplicate_inventory_file_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "duplicate_inventory_file_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "extra_edge_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "extra_edge_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "identical_relocated_sources_verify",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "identical_relocated_sources_verify",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "legacy_replay_remains_compatible_without_binding",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "legacy_replay_remains_compatible_without_binding",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "malformed_inventory_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "malformed_inventory_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_import_edge_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "missing_import_edge_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_inventory_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "missing_inventory_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_source_and_invalid_root_are_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "missing_source_and_invalid_root_are_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "nested_diamond_graph_relocates_with_its_common_root",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "nested_diamond_graph_relocates_with_its_common_root",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "outside_root_fifo_is_rejected_without_opening_it",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "outside_root_fifo_is_rejected_without_opening_it",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "package_resolution_graph_does_not_invoke_git",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "package_resolution_graph_does_not_invoke_git",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "signed_inventory_binds_all_parsed_inputs",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "signed_inventory_binds_all_parsed_inputs",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "symlink_import_outside_root_is_rejected_before_read",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "symlink_import_outside_root_is_rejected_before_read",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "traversal_inventory_path_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "traversal_inventory_path_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unreachable_inventory_file_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "unreachable_inventory_file_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unsigned_inventory_is_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "unsigned_inventory_is_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unsupported_version_and_empty_inventory_are_rejected",
+        "result": {
+          "exit_code": 101,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "failed"
+            },
+            {
+              "name": "unsupported_version_and_empty_inventory_are_rejected",
+              "status": "failed"
+            }
+          ],
+          "status": "failed"
+        },
+        "source": {
+          "commit": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+          "dirty": true,
+          "worktree_sha256": "37594f475f19d5def9974fa7cdbc77a873477484bce2f9a49e23b1591fb07ae3"
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      }
+    ],
+    "solver": {
+      "libz3_sha256": {
+        "libz3.so.4": "ca6bd765b3c1c3402781741acf4184eb91833ea0b80ac69cca504a3d57a62c48"
+      },
+      "z3_sha256": "a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3",
+      "z3_version": "Z3 version 4.13.3 - 64 bit"
+    }
+  },
+  {
+    "phase": "final",
+    "outcomes": [
+      {
+        "test": "absolute_target_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "absolute_target_is_rejected",
+              "status": "passed"
+            },
+            {
+              "name": "command",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "cache_and_no_cache_emit_identical_binding",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "cache_and_no_cache_emit_identical_binding",
+              "status": "passed"
+            },
+            {
+              "name": "command",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "changed_entry_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "changed_entry_is_rejected",
+              "status": "passed"
+            },
+            {
+              "name": "command",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "changed_import_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "changed_import_is_rejected",
+              "status": "passed"
+            },
+            {
+              "name": "command",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "coherently_omitted_import_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "coherently_omitted_import_is_rejected",
+              "status": "passed"
+            },
+            {
+              "name": "command",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "cyclic_graph_and_excessive_inventory_are_bounded",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "cyclic_graph_and_excessive_inventory_are_bounded",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "duplicate_edge_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "duplicate_edge_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "duplicate_inventory_file_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "duplicate_inventory_file_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "extra_edge_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "extra_edge_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "identical_relocated_sources_verify",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "identical_relocated_sources_verify",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "legacy_replay_remains_compatible_without_binding",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "legacy_replay_remains_compatible_without_binding",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "malformed_inventory_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "malformed_inventory_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_import_edge_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "missing_import_edge_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_inventory_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "missing_inventory_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "missing_source_and_invalid_root_are_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "missing_source_and_invalid_root_are_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "nested_diamond_graph_relocates_with_its_common_root",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "nested_diamond_graph_relocates_with_its_common_root",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "outside_root_fifo_is_rejected_without_opening_it",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "outside_root_fifo_is_rejected_without_opening_it",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "package_resolution_graph_does_not_invoke_git",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "package_resolution_graph_does_not_invoke_git",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      },
+      {
+        "test": "signed_inventory_binds_all_parsed_inputs",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "signed_inventory_binds_all_parsed_inputs",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "symlink_import_outside_root_is_rejected_before_read",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "symlink_import_outside_root_is_rejected_before_read",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "traversal_inventory_path_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "traversal_inventory_path_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unreachable_inventory_file_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "unreachable_inventory_file_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unsigned_inventory_is_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "unsigned_inventory_is_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding.rs",
+            "sha256": "c1b9b00e863f60c530fe902a04fb1ae4a946ce701663432c82d39ec76ca3d066"
+          }
+        ]
+      },
+      {
+        "test": "unsupported_version_and_empty_inventory_are_rejected",
+        "result": {
+          "exit_code": 0,
+          "outcomes": [
+            {
+              "name": "command",
+              "status": "passed"
+            },
+            {
+              "name": "unsupported_version_and_empty_inventory_are_rejected",
+              "status": "passed"
+            }
+          ],
+          "status": "passed"
+        },
+        "source": {
+          "commit": "065b5640925aefd5bc2656f1379057306b7aeb6f",
+          "dirty": false,
+          "worktree_sha256": null
+        },
+        "inputs": [
+          {
+            "path": "resilient/tests/source_binding_graph.rs",
+            "sha256": "e6d72cac446b7c11d0c0e5a74b7d90355283f00b8aa4213b1458972bdb70d772"
+          }
+        ]
+      }
+    ],
+    "solver": {
+      "libz3_sha256": {
+        "libz3.so.4": "ca6bd765b3c1c3402781741acf4184eb91833ea0b80ac69cca504a3d57a62c48"
+      },
+      "z3_sha256": "a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3",
+      "z3_version": "Z3 version 4.13.3 - 64 bit"
+    }
+  }
+]
