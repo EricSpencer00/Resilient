@@ -108,3 +108,50 @@ fn vm_match_valid_call_injects_declared_failure() {
 fn vm_direct_valid_call_injects_declared_failure() {
     valid("direct");
 }
+
+const GUARD_FAULT: &str = "fn zero() -> int { let n = 0; return n; } fn risky(int x) -> int requires x / zero() > 0 fails Failure { return x; } try { println(risky(1)); } catch Failure { println(\"FORBIDDEN_CATCH\"); }";
+const NESTED_GUARD: &str = "fn positive() -> int { let n = 1; return n; } fn gate(int x) -> bool { return x > 0; } fn risky(int x) -> int requires gate(x) fails Failure { println(\"FORBIDDEN_BODY\"); return x; } try { println(risky(positive())); } catch Failure { println(\"EXPECTED_CATCH\"); }";
+fn guard_fault(backend: &str) {
+    let output = run(GUARD_FAULT, backend);
+    let out = String::from_utf8_lossy(&output.stdout);
+    let err = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(out.contains("Type check passed"), "{output:?}");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(!out.contains("FORBIDDEN_CATCH"), "{output:?}");
+    assert!(err.contains("zero"), "{output:?}");
+}
+fn nested_guard(backend: &str) {
+    let output = run(NESTED_GUARD, backend);
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(out.contains("Type check passed"), "{output:?}");
+    assert!(
+        out.lines().any(|line| line == "EXPECTED_CATCH"),
+        "{output:?}"
+    );
+    assert!(!out.contains("FORBIDDEN_BODY"), "{output:?}");
+}
+#[test]
+fn treewalker_guard_fault_precedes_injection() {
+    guard_fault("treewalker");
+}
+#[test]
+fn vm_match_guard_fault_precedes_injection() {
+    guard_fault("match");
+}
+#[test]
+fn vm_direct_guard_fault_precedes_injection() {
+    guard_fault("direct");
+}
+#[test]
+fn treewalker_nested_guard_preserves_injection() {
+    nested_guard("treewalker");
+}
+#[test]
+fn vm_match_nested_guard_preserves_injection() {
+    nested_guard("match");
+}
+#[test]
+fn vm_direct_nested_guard_preserves_injection() {
+    nested_guard("direct");
+}
