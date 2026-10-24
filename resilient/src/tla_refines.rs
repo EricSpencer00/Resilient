@@ -10,6 +10,8 @@
 
 use crate::Node;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 
 const ATTRIBUTE: &str = "refines";
 
@@ -129,7 +131,107 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         mappings.push(mapping);
     }
 
+    check_external_targets(source_path, &mappings)?;
     check_reachable_extern_contracts(program, source_path, &mappings)
+}
+
+fn check_external_targets(source_path: &str, mappings: &[RefinesMapping]) -> Result<(), String> {
+    let source = Path::new(source_path);
+    // In-memory callers (including the LSP and unit-test harness) do not have
+    // a stable directory against which a relative spec can be resolved.
+    // Preserve their existing semantic checks and defer file validation to
+    // the file-backed compiler path.
+    if source_path.starts_with('<') && source_path.ends_with('>') || !source.is_file() {
+        return Ok(());
+    }
+
+    let source_dir = source
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    for mapping in mappings {
+        let spec_path = source_dir.join(&mapping.spec);
+        if !spec_path.is_file() {
+            return Err(diagnostic(
+                source_path,
+                mapping.line,
+                &format!(
+                    "@refines spec '{}' was not found at '{}'",
+                    mapping.spec,
+                    spec_path.display()
+                ),
+            ));
+        }
+
+        let spec_source = fs::read_to_string(&spec_path).map_err(|error| {
+            diagnostic(
+                source_path,
+                mapping.line,
+                &format!(
+                    "@refines spec '{}' could not be read at '{}': {}",
+                    mapping.spec,
+                    spec_path.display(),
+                    error
+                ),
+            )
+        })?;
+        if !tla_defines_action(&spec_source, &mapping.action) {
+            return Err(diagnostic(
+                source_path,
+                mapping.line,
+                &format!(
+                    "@refines spec '{}' does not define action '{}'",
+                    mapping.spec, mapping.action
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn tla_defines_action(source: &str, action: &str) -> bool {
+    let mut in_block_comment = false;
+    for line in source.lines() {
+        let code = strip_tla_comments(line, &mut in_block_comment);
+        let Some((left, _)) = code.split_once("==") else {
+            continue;
+        };
+        let left = left.trim();
+        let name = left
+            .split_once('(')
+            .map(|(name, _)| name.trim())
+            .unwrap_or(left);
+        if name == action {
+            return true;
+        }
+    }
+    false
+}
+
+fn strip_tla_comments(line: &str, in_block_comment: &mut bool) -> String {
+    let mut output = String::new();
+    let mut rest = line;
+    loop {
+        if *in_block_comment {
+            let Some(end) = rest.find("*)") else {
+                break;
+            };
+            *in_block_comment = false;
+            rest = &rest[end + 2..];
+        } else if let Some(start) = rest.find("(*") {
+            output.push_str(&rest[..start]);
+            *in_block_comment = true;
+            rest = &rest[start + 2..];
+        } else {
+            if let Some(start) = rest.find("\\*") {
+                output.push_str(&rest[..start]);
+            } else {
+                output.push_str(rest);
+            }
+            break;
+        }
+    }
+    output
 }
 
 fn collect_summaries(
@@ -235,15 +337,38 @@ fn diagnostic_at(source_path: &str, line: usize, column: usize, message: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
     fn check_source(source: &str) -> Result<(), String> {
+        check_source_at(source, "refines.rz")
+    }
+
+    fn check_source_at(source: &str, source_path: &str) -> Result<(), String> {
         let _guard = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         let (program, errors) = crate::parse(source);
         assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
-        let result = check(&program, "refines.rz");
+        let result = check(&program, source_path);
         crate::feature_attrs::reset();
         result
+    }
+
+    fn fixture(source: &str, spec: Option<&str>) -> (PathBuf, PathBuf) {
+        let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("resilient-refines-{}-{}", std::process::id(), id));
+        fs::create_dir(&dir).expect("temporary refinement directory should be created");
+        let source_path = dir.join("program.rz");
+        fs::write(&source_path, source).expect("temporary Resilient source should be written");
+        if let Some(spec) = spec {
+            fs::write(dir.join("counter.tla"), spec)
+                .expect("temporary TLA+ spec should be written");
+        }
+        (dir, source_path)
     }
 
     fn record(args: &str) -> crate::feature_attrs::AttrRecord {
@@ -356,5 +481,64 @@ mod tests {
             };
         "#;
         check_source(source).expect("contract rule is opt-in through @refines");
+    }
+    #[test]
+    fn validates_external_spec_and_action_relative_to_source() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return value; }
+        "#;
+        let (dir, source_path) = fixture(
+            source,
+            Some(
+                r#"
+                    ---- MODULE Counter ----
+                    Inc == value' = value + 1
+                    ====
+                "#,
+            ),
+        );
+        let result = check_source_at(source, source_path.to_str().expect("UTF-8 fixture path"));
+        fs::remove_dir_all(dir).expect("temporary refinement directory should be removed");
+        result.expect("relative spec with a declared action should pass");
+    }
+
+    #[test]
+    fn reports_missing_external_spec_at_annotation() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return value; }
+        "#;
+        let (dir, source_path) = fixture(source, None);
+        let error = check_source_at(source, source_path.to_str().expect("UTF-8 fixture path"))
+            .expect_err("missing spec should be rejected");
+        fs::remove_dir_all(dir).expect("temporary refinement directory should be removed");
+        assert!(error.contains("program.rz:2:1"), "{error}");
+        assert!(error.contains("counter.tla"), "{error}");
+        assert!(error.contains("was not found"), "{error}");
+    }
+
+    #[test]
+    fn reports_missing_external_action_at_annotation() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return value; }
+        "#;
+        let (dir, source_path) = fixture(
+            source,
+            Some(
+                r#"
+                    ---- MODULE Counter ----
+                    (* Inc == this is only a comment *)
+                    Init == value = 0
+                    ====
+                "#,
+            ),
+        );
+        let error = check_source_at(source, source_path.to_str().expect("UTF-8 fixture path"))
+            .expect_err("missing action should be rejected");
+        fs::remove_dir_all(dir).expect("temporary refinement directory should be removed");
+        assert!(error.contains("program.rz:2:1"), "{error}");
+        assert!(error.contains("does not define action 'Inc'"), "{error}");
     }
 }
