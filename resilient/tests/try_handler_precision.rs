@@ -67,3 +67,28 @@ fn wrong_defined_try_body_still_hard_refutes() {
         "{output:?}"
     );
 }
+#[test]
+fn typed_try_fallthrough_remains_rejected() {
+    let output = run(
+        "fn missing(int x) -> int { try { println(x); } catch Failure { return 1; } }",
+        false,
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("return"),
+        "{output:?}"
+    );
+}
+#[test]
+fn typed_try_mixed_handler_return_remains_rejected() {
+    let output = run(
+        "fn mixed(int x) -> int { try { return x; } catch Failure { return \"bad\"; } }",
+        false,
+    );
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("return type mismatch") && diagnostic.contains("string"),
+        "{output:?}"
+    );
+}
