@@ -1,0 +1,125 @@
+{
+  "schema": "resilient-structural-source-checkpoints",
+  "version": 1,
+  "profile": "legacy-lia-identity-v1",
+  "source": {
+    "path": "program.rz",
+    "sha256": "0072a18c8c00064d7cfb8981f9fe2d500ee25ed39fea4bf69f5967f794230bdc",
+    "bytes": 97
+  },
+  "qualified_declaration": "program::identity",
+  "clause": 0,
+  "paths": [
+    {
+      "id": "then",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 0
+      },
+      "domain": [
+        ">=",
+        "x",
+        "0"
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            ">=",
+            "x",
+            "0"
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    },
+    {
+      "id": "else",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 1
+      },
+      "domain": [
+        "not",
+        [
+          ">=",
+          "x",
+          "0"
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "AUFLIA"
+        ],
+        [
+          "declare-const",
+          "x",
+          "Int"
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              ">=",
+              "x",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "=",
+              "x",
+              "x"
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    }
+  ],
+  "claim": "Manually source-authored exact legacy-LIA path/return checkpoints. No BV reinterpretation, automatic source enumeration, or whole-query equivalence oracle. Source expectation authored before this fixture query capture."
+}
