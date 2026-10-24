@@ -1,0 +1,40 @@
+name: Published installer qualification
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release tag to verify
+        type: string
+        required: true
+        default: v1.2.0
+permissions:
+  contents: read
+jobs:
+  install:
+    name: public curl install ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Verify the public one-command installation
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set +e
+          python3 agent-scripts/e2e-evidence.py run --output "${{ runner.temp }}/public-install-evidence" --input scripts/install.sh --input scripts/public-install-smoke.py -- python3 scripts/public-install-smoke.py "$RELEASE_TAG"
+          result=$?
+          set -e
+          python3 agent-scripts/e2e-evidence.py verify "${{ runner.temp }}/public-install-evidence"
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-install-${{ matrix.os }}-${{ inputs.release_tag }}
+          path: ${{ runner.temp }}/public-install-evidence
+          retention-days: 90
