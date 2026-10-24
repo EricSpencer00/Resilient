@@ -159,17 +159,20 @@ impl TypeChecker {
         module: &str,
         body: &[Node],
     ) -> Result<Type, String> {
-        let exports = self.with_module_bindings(|checker| {
-            for node in body {
-                if let Node::Function { name, .. } = node {
-                    checker.bind_module_function(node, name, false)?;
-                    checker.bind_module_function(node, &format!("{module}::{name}"), false)?;
-                }
-            }
-            let mut exports = Vec::new();
-            for node in body {
-                if let Node::Function { name, .. } = node {
-                    let qualified = format!("{module}::{name}");
+        for node in body {
+            if let Node::Function { name, .. } = node {
+                let qualified = format!("{module}::{name}");
+                let export = self.with_module_bindings(|checker| {
+                    for sibling in body {
+                        if let Node::Function { name, .. } = sibling {
+                            checker.bind_module_function(sibling, name, false)?;
+                            checker.bind_module_function(
+                                sibling,
+                                &format!("{module}::{name}"),
+                                false,
+                            )?;
+                        }
+                    }
                     // Rename only the declaration identity. Parameters/body bindings
                     // stay local; proof caches/captured sites use exactly module::fn.
                     let mut declaration = node.clone();
@@ -177,37 +180,41 @@ impl TypeChecker {
                         *name = qualified.clone();
                     }
                     checker.check_node(&declaration)?;
-                    let ty = checker
-                        .env
-                        .get(&qualified)
-                        .expect("checked function binding");
-                    checker.env.set(name.clone(), ty.clone());
-                    exports.push(FunctionExport {
+                    Ok(FunctionExport {
                         name: qualified.clone(),
-                        ty,
+                        ty: checker
+                            .env
+                            .get(&qualified)
+                            .expect("checked function binding"),
                         contract: checker.contract_table[&qualified].clone(),
                         span: checker.fn_decl_spans[&qualified],
                         parameters: checker.fn_type_params.get(&qualified).cloned(),
                         bounds: checker.fn_type_param_bounds.get(&qualified).cloned(),
-                    });
-                } else {
-                    // The interpreter gives ordinary module statements temporary
-                    // environments; a helper let must not become a module capture.
-                    checker.with_module_bindings(|child| child.check_node(node))?;
+                    })
+                })?;
+                self.env.set(export.name.clone(), export.ty);
+                self.contract_table
+                    .insert(export.name.clone(), export.contract);
+                self.fn_decl_spans.insert(export.name.clone(), export.span);
+                if let Some(parameters) = export.parameters {
+                    self.fn_type_params.insert(export.name.clone(), parameters);
                 }
-            }
-            Ok(exports)
-        })?;
-        for export in exports {
-            self.env.set(export.name.clone(), export.ty);
-            self.contract_table
-                .insert(export.name.clone(), export.contract);
-            self.fn_decl_spans.insert(export.name.clone(), export.span);
-            if let Some(parameters) = export.parameters {
-                self.fn_type_params.insert(export.name.clone(), parameters);
-            }
-            if let Some(bounds) = export.bounds {
-                self.fn_type_param_bounds.insert(export.name, bounds);
+                if let Some(bounds) = export.bounds {
+                    self.fn_type_param_bounds.insert(export.name, bounds);
+                }
+            } else if matches!(
+                node,
+                Node::ImplBlock { .. } | Node::StructDecl { .. } | Node::EnumDecl { .. }
+            ) {
+                // Preserve legacy declaration checking. In particular runtime
+                // impl methods deliberately use outer Struct$method identities,
+                // with no module prefix, and must remain visible after the mod.
+                // This does not introduce qualified struct/enum type support.
+                self.check_node(node)?;
+            } else {
+                // Runtime ordinary module statements have temporary environments;
+                // restore constant/type/callable metadata as well as variables.
+                self.with_module_bindings(|checker| checker.check_node(node))?;
             }
         }
         Ok(Type::Void)
