@@ -7281,29 +7281,29 @@ impl TypeChecker {
                 // Unknown and nothing can reach the refuted state.
                 crate::ensures_refutation::check(program, source_path)?;
                 #[cfg(feature = "z3")]
-                if self.emit_certificates {
-                    if let Node::Program(statements) = program {
-                        for statement in statements {
-                            if let Node::Function {
-                                name,
-                                requires,
-                                ensures,
-                                body,
-                                ..
-                            } = &statement.node
-                            {
-                                for (clause, ensures) in ensures.iter().enumerate() {
-                                    if let Some(paths) = crate::contract_verify::replay_ensures(
-                                        ensures, requires, body,
-                                    ) {
-                                        for (idx, smt2) in paths.into_iter().enumerate() {
-                                            self.certificates.push(CapturedCertificate {
-                                                fn_name: format!("{name}:ensures:{clause}"),
-                                                kind: "ensures_implementation",
-                                                idx,
-                                                smt2,
-                                            });
-                                        }
+                if self.emit_certificates
+                    && let Node::Program(statements) = program
+                {
+                    for statement in statements {
+                        if let Node::Function {
+                            name,
+                            requires,
+                            ensures,
+                            body,
+                            ..
+                        } = &statement.node
+                        {
+                            for (clause, ensures) in ensures.iter().enumerate() {
+                                if let Some(paths) =
+                                    crate::contract_verify::replay_ensures(ensures, requires, body)
+                                {
+                                    for (idx, smt2) in paths.into_iter().enumerate() {
+                                        self.certificates.push(CapturedCertificate {
+                                            fn_name: format!("{name}:ensures:{clause}"),
+                                            kind: "ensures_implementation",
+                                            idx,
+                                            smt2,
+                                        });
                                     }
                                 }
                             }

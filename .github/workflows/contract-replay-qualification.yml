@@ -41,6 +41,19 @@ jobs:
         with:
           workspaces: resilient
           key: contract-replay-qualification
+      - name: Record solver identity
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/contract-replay-qualification
+        run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          binary = pathlib.Path(shutil.which('z3'))
+          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
+                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    'libz3_sha256': hashlib.sha256(pathlib.Path('/usr/lib/x86_64-linux-gnu/libz3.so').read_bytes()).hexdigest()}
+          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
       - name: Record each regression and its control
         env:
           PHASE: ${{ matrix.phase }}
@@ -91,6 +104,7 @@ jobs:
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}
         run: |
+          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
           for test in straight_return_replays branch_returns_replay_separately constant_return_replays; do
             python3 agent-scripts/e2e-evidence.py attest --test "$test" \
               --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
