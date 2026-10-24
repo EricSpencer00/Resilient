@@ -33,7 +33,7 @@
       <a href="{{ '/getting-started' | relative_url }}">Get started</a>
       <a href="{{ '/syntax' | relative_url }}">Syntax</a>
       <a href="{{ '/language-reference' | relative_url }}">Reference</a>
-      <a href="{{ '/certification' | relative_url }}">Certification</a>
+      <a href="{{ '/qualification-readiness' | relative_url }}">Qualification</a>
       <a href="{{ '/community' | relative_url }}">Community</a>
     </nav>
 
@@ -59,7 +59,7 @@
   </div>
 
   <div class="rl-hero-v2__rule">
-    <span>RESILIENT &nbsp;·&nbsp; v1.0 &nbsp;·&nbsp; MIT</span>
+    <span>RESILIENT &nbsp;·&nbsp; v1.2.0 &nbsp;·&nbsp; MIT</span>
     <span>EST. 2024 &nbsp;·&nbsp; CORTEX-M · RISC-V · X86_64</span>
     <span>EDITION 01</span>
   </div>
@@ -74,10 +74,9 @@
       </h1>
 
       <p class="rl-hero-v2__lede">
-        Resilient is a statically-typed, compiled language for software where
-        failure is not an option. Contracts are proven at compile time. Hardware
-        faults self&#8209;heal. The same source runs on a development laptop or
-        on a bare&#8209;metal microcontroller.
+        Resilient is a compiled language with typed contracts and supervised
+        recovery. Check contracts with Z3 on your laptop and deploy supported
+        bytecode to a bare&#8209;metal microcontroller.
       </p>
 
       <div class="rl-hero-v2__cta">
@@ -147,9 +146,9 @@
   <div class="rl-manifesto__inner">
     <p class="rl-manifesto__index">§ 01 · The thesis</p>
     <p class="rl-manifesto__lead">
-      Most languages assume the happy path. Resilient assumes the
-      <em>worst</em> path — and refuses to ship until you have proven your
-      software survives it.
+      Put failure handling in the language.
+      State contracts, check supported obligations, and recover
+      inside <em>live</em> blocks.
     </p>
 
     <div class="rl-manifesto__cols">
@@ -162,17 +161,15 @@
       </div>
       <div>
         <h3>Proof is preferred to prose</h3>
-        <p>Function contracts are not documentation — they are formal
-        obligations. Where the verifier can decide them, they are proven at
-        compile time and a re-checkable SMT&#8209;LIB2 certificate is
-        emitted. Where it cannot, they become typed runtime guards.</p>
+        <p>Function contracts define obligations. The verifier discharges
+        supported cases at compile time; request SMT&#8209;LIB2 export for
+        independent replay. Undischarged contracts retain runtime checks.</p>
       </div>
       <div>
         <h3>The same source, dev laptop to bare metal</h3>
-        <p>No allocator. No exceptions. No panics in the default runtime.
-        The compiler emits binaries small enough for a Cortex&#8209;M0
-        and proofs strong enough for a DO&#8209;178C audit — from a single
-        source tree.</p>
+        <p>Develop programs with the host compiler and deploy supported
+        bytecode to the no_std embedded runtime. Export proof artifacts for
+        the contract obligations the verifier can discharge.</p>
       </div>
     </div>
 
@@ -262,38 +259,36 @@
       <div class="rl-contracts__codeside">
         <div class="rl-codeplate rl-codeplate--light">
           <div class="rl-codeplate__chrome">
-            <span class="rl-codeplate__name">infusion_pump.rz</span>
+            <span class="rl-codeplate__name">ident_round.rz</span>
             <span class="rl-codeplate__badge rl-codeplate__badge--proved">proved</span>
           </div>
-<pre class="rl-codeplate__code"><span class="t-k">fn</span> <span class="t-f">deliver_dose</span>(<span class="t-t">float</span> ml_per_hr, <span class="t-t">int</span> seconds)
-    <span class="t-k">requires</span> ml_per_hr &gt;= <span class="t-n">0.1</span> &amp;&amp; ml_per_hr &lt;= <span class="t-n">300.0</span>
-    <span class="t-k">requires</span> seconds  &gt; <span class="t-n">0</span>     &amp;&amp; seconds  &lt;= <span class="t-n">86_400</span>
-    <span class="t-k">ensures</span>  total_ml(result) &lt;= MAX_DAILY_ML
+<pre class="rl-codeplate__code"><span class="t-k">fn</span> <span class="t-f">ident_round</span>(<span class="t-t">int</span> x) -&gt; <span class="t-t">int</span>
+    <span class="t-k">requires</span> x + <span class="t-n">0</span> == x
 {
-    <span class="t-k">let</span> total = ml_per_hr * (seconds <span class="t-k">as</span> <span class="t-t">float</span>) / <span class="t-n">3600.0</span>;
-    pump::dispense(total);
-    <span class="t-k">return</span> Dose { ml: total };
-}</pre>
+    <span class="t-k">return</span> x;
+}
+
+<span class="t-k">fn</span> <span class="t-f">main</span>() {
+    println(ident_round(<span class="t-n">42</span>));
+}
+
+main();</pre>
         </div>
 
         <div class="rl-terminal-v2">
-          <div class="rl-terminal-v2__prompt">$ rz --audit infusion_pump.rz</div>
-<pre class="rl-terminal-v2__out"><span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  ml_per_hr ∈ [0.1, 300.0]    <span class="t-mu">proved</span>
-<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  seconds   ∈ (0, 86_400]   <span class="t-mu">proved</span>
-<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">ensures</span>   total_ml ≤ MAX_DAILY_ML <span class="t-mu">proved</span>
-
-<span class="t-cert">→</span>  <span class="t-mu">certificate emitted at</span> ./certs/infusion_pump.smtlib2
-<span class="t-cert">→</span>  <span class="t-mu">re-checkable under any SMT solver</span></pre>
+          <div class="rl-terminal-v2__prompt">$ rz --emit-certificate ./certs ident_round.rz</div>
+<pre class="rl-terminal-v2__out">Wrote 1 verification certificate(s) to certs</pre>
         </div>
       </div>
 
       <div class="rl-contracts__copy">
         <p class="rl-contracts__lede">
           <code>requires</code> states what must hold on entry.
-          <code>ensures</code> states what holds on exit. The Z3 backend
-          decides them statically when it can — and emits an SMT&#8209;LIB2
-          certificate so a downstream auditor can re&#8209;verify under
-          their own solver of record.
+          <code>ensures</code> states what must hold on exit. The Z3 backend
+          checks supported obligations. Request SMT&#8209;LIB2 export with
+          <code>--emit-certificate</code>. Replay the example query with
+          <code>z3 -smt2 ./certs/ident_round__decl__0.smt2</code>
+          using a separately installed Z3 command-line tool.
         </p>
 
         <ul class="rl-contracts__list">
@@ -314,8 +309,8 @@
           <li>
             <span class="rl-contracts__bullet">C</span>
             <div>
-              <strong>Certified</strong>
-              <span>Every proof is exportable as SMT&#8209;LIB2 — auditable under your own solver of record.</span>
+              <strong>Exported</strong>
+              <span>Supported discharged obligations have independently replayable SMT&#8209;LIB2 queries.</span>
             </div>
           </li>
         </ul>
@@ -431,34 +426,33 @@
   <div class="rl-standards__inner">
     <p class="rl-standards__index">§ 06 · The standards</p>
     <h2 class="rl-standards__title">
-      Mapped, objective by objective,<br>
-      to the regimes that audit you.
+      Prepare the evidence.<br>
+      Define the intended use.
     </h2>
     <p class="rl-standards__lede">
-      Resilient is not itself a certified tool. Its surface is mapped, line by
-      line, to the objectives that the major safety regimes enforce — so the
-      qualification kit you build downstream begins from a defensible
-      starting point, not a clean&#8209;sheet defense.
+      Review the qualification guides and baseline-specific verification records.
+      Use the <a href="{{ '/qualification-readiness' | relative_url }}">preparation checklist</a>
+      to define intended use, evidence and assessment responsibilities.
     </p>
 
     <div class="rl-standards__grid">
       <a class="rl-standard" href="{{ '/standards/do-178c' | relative_url }}">
         <p class="rl-standard__sector">Avionics</p>
         <h3 class="rl-standard__name">DO-178C</h3>
-        <p class="rl-standard__desc">Software considerations in airborne systems. Maps to A&#8209;1 through A&#8209;7 objective tables for Levels A &amp; B.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Planning guidance for DO-178C and DO-330 tool-use evidence.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
       <a class="rl-standard" href="{{ '/standards/iso-26262' | relative_url }}">
         <p class="rl-standard__sector">Automotive</p>
         <h3 class="rl-standard__name">ISO 26262</h3>
-        <p class="rl-standard__desc">Functional safety for road vehicles. Mapping covers ASIL D software — Part 6, Tables 1–10.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Guidance for evaluating intended tool use and assembling project-specific evidence.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
       <a class="rl-standard" href="{{ '/standards/iec-62304' | relative_url }}">
         <p class="rl-standard__sector">Medical</p>
         <h3 class="rl-standard__name">IEC 62304</h3>
-        <p class="rl-standard__desc">Medical device software lifecycle. Class C software — pacemakers, infusion pumps, ventilators.</p>
-        <span class="rl-standard__cta">View mapping →</span>
+        <p class="rl-standard__desc">Guidance for software lifecycle evidence and validation planning.</p>
+        <span class="rl-standard__cta">Read guide →</span>
       </a>
     </div>
   </div>
@@ -564,14 +558,12 @@
     <p class="rl-cta__index">§ 09 · Begin</p>
     <h2 class="rl-cta__title">
       Pick&nbsp;up&nbsp;the&nbsp;compiler.<br>
-      <em>Prove your first contract<br>in five minutes.</em>
+      <em>Start with a contract.</em>
     </h2>
 
     <div class="rl-cta__install">
       <span class="rl-cta__prompt">$</span>
-<pre class="rl-cta__cmd">git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient &amp;&amp; cargo install --path resilient
-rz resilient/examples/sensor_monitor.rz</pre>
+<pre class="rl-cta__cmd">curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/v1.2.0/install.sh | bash</pre>
       <button class="rl-cta__copy" aria-label="Copy install command">copy</button>
     </div>
 
@@ -617,7 +609,7 @@ rz resilient/examples/sensor_monitor.rz</pre>
       </div>
       <div>
         <h4>Verify</h4>
-        <a href="{{ '/certification' | relative_url }}">Certification</a>
+        <a href="{{ '/qualification-readiness' | relative_url }}">Qualification</a>
         <a href="{{ '/standards/do-178c' | relative_url }}">DO-178C</a>
         <a href="{{ '/standards/iso-26262' | relative_url }}">ISO 26262</a>
         <a href="{{ '/standards/iec-62304' | relative_url }}">IEC 62304</a>
@@ -641,7 +633,7 @@ rz resilient/examples/sensor_monitor.rz</pre>
     <div class="rl-foot__base">
       <span>© {{ 'now' | date: '%Y' }} Eric Spencer &middot; MIT License</span>
       <span>Photography: <a href="https://unsplash.com/license">Unsplash License</a></span>
-      <span>Resilient v1.0</span>
+      <span>Resilient v1.2.0</span>
     </div>
   </div>
 </footer>
