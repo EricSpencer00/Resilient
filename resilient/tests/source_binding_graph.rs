@@ -1,0 +1,336 @@
+//! Authenticated frozen translation inputs, independently checked through the CLI.
+#![cfg(feature = "z3")]
+
+use ed25519_dalek::SigningKey;
+use ed25519_dalek::ed25519::signature::Signer;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct Fixture {
+    root: PathBuf,
+    key: SigningKey,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "source_binding_graph_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("inputs")).unwrap();
+        let key = SigningKey::generate(&mut rand_core::OsRng);
+        for (name, label, bytes) in [
+            ("private.pem", "PRIVATE", key.to_bytes()),
+            ("public.pem", "PUBLIC", key.verifying_key().to_bytes()),
+        ] {
+            std::fs::write(
+                root.join(name),
+                format!(
+                    "-----BEGIN ED25519 {label} KEY-----\n{}\n-----END ED25519 {label} KEY-----\n",
+                    hex(&bytes)
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.join("inputs/program.rz"),
+            "use \"dep.rz\"; let n = 0; while n < 3 invariant n >= 0 { n = n + 1; }",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("inputs/dep.rz"),
+            "pub fn identity(int x) -> int { return x; }",
+        )
+        .unwrap();
+        let fixture = Self { root, key };
+        fixture.emit("certs", true);
+        fixture
+    }
+
+    fn emit(&self, destination: &str, no_cache: bool) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
+        command
+            .arg("-t")
+            .arg("--emit-certificate")
+            .arg(self.root.join(destination))
+            .arg("--sign-cert")
+            .arg(self.root.join("private.pem"))
+            .arg(self.root.join("inputs/program.rz"));
+        if no_cache {
+            command.arg("--no-cache");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    fn manifest(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(self.root.join("certs/manifest.json")).unwrap())
+            .unwrap()
+    }
+
+    fn resign(&self, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut value = self.manifest();
+        edit(&mut value);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        std::fs::write(
+            self.root.join("certs/manifest.sig"),
+            hex(&self.key.sign(&bytes).to_bytes()),
+        )
+        .unwrap();
+        std::fs::write(self.root.join("certs/manifest.json"), bytes).unwrap();
+    }
+
+    fn check(&self, root: Option<&Path>, expected: bool) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rz"));
+        command
+            .arg("verify-all")
+            .arg(self.root.join("certs"))
+            .arg("--pubkey")
+            .arg(self.root.join("public.pem"))
+            .arg("--z3")
+            .env("Z3_BINARY", "z3");
+        if let Some(root) = root {
+            command.arg("--source-root").arg(root);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.success(), expected, "{output:?}");
+        if !expected {
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("source binding") || error.contains("manifest signature"),
+                "{output:?}"
+            );
+        }
+    }
+
+    fn strict(&self, expected: bool) {
+        self.check(Some(&self.root.join("inputs")), expected);
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn coherently_omitted_import_is_rejected() {
+    let f = Fixture::new();
+    f.resign(|m| {
+        m["source_binding"]["files"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|file| file["path"] != "dep.rz");
+        m["source_binding"]["imports"] = serde_json::json!([]);
+    });
+    f.strict(false);
+}
+
+#[test]
+fn duplicate_edge_is_rejected() {
+    let f = Fixture::new();
+    f.resign(|m| {
+        let edges = m["source_binding"]["imports"].as_array_mut().unwrap();
+        edges.push(edges[0].clone());
+    });
+    f.strict(false);
+}
+
+#[test]
+fn extra_edge_is_rejected() {
+    let f = Fixture::new();
+    f.resign(|m| {
+        let mut edge = m["source_binding"]["imports"][0].clone();
+        edge["specifier"] = "unused.rz".into();
+        m["source_binding"]["imports"]
+            .as_array_mut()
+            .unwrap()
+            .push(edge);
+    });
+    f.strict(false);
+}
+
+#[test]
+fn unsupported_version_and_empty_inventory_are_rejected() {
+    for invalid in [
+        serde_json::json!({"version":2,"entry":"program.rz","files":[],"imports":[],"builtins":[]}),
+        serde_json::json!({"version":1,"entry":"program.rz","files":[],"imports":[],"builtins":[]}),
+    ] {
+        let f = Fixture::new();
+        f.resign(|m| m["source_binding"] = invalid);
+        f.strict(false);
+    }
+}
+
+#[test]
+fn absolute_target_is_rejected() {
+    let f = Fixture::new();
+    f.resign(|m| m["source_binding"]["imports"][0]["target"] = "/outside.rz".into());
+    f.strict(false);
+}
+
+#[test]
+fn missing_source_and_invalid_root_are_rejected() {
+    let f = Fixture::new();
+    std::fs::remove_file(f.root.join("inputs/dep.rz")).unwrap();
+    f.strict(false);
+    f.check(Some(&f.root.join("inputs/program.rz")), false);
+}
+
+#[test]
+fn nested_diamond_graph_relocates_with_its_common_root() {
+    let f = Fixture::new();
+    let root = f.root.join("inputs");
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(
+        root.join("program.rz"),
+        "use \"nested/left.rz\"; use \"right.rz\"; let n=0; while n<3 invariant n>=0 { n=n+1; }",
+    )
+    .unwrap();
+    std::fs::write(root.join("nested/left.rz"), "use \"../dep.rz\";").unwrap();
+    std::fs::write(root.join("right.rz"), "use \"dep.rz\";").unwrap();
+    f.emit("certs", true);
+    f.strict(true);
+    let relocated = f.root.join("relocated");
+    std::fs::create_dir_all(relocated.join("nested")).unwrap();
+    for file in ["program.rz", "dep.rz", "nested/left.rz", "right.rz"] {
+        std::fs::copy(root.join(file), relocated.join(file)).unwrap();
+    }
+    f.check(Some(&relocated), true);
+}
+
+#[cfg(unix)]
+#[test]
+fn package_resolution_graph_does_not_invoke_git() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let root = f.root.join("inputs");
+    let source = std::fs::read_to_string(root.join("program.rz"))
+        .unwrap()
+        .replace("\"dep.rz\"", "pkg::module");
+    std::fs::write(root.join("program.rz"), &source).unwrap();
+    std::fs::write(root.join("resilient.toml"),"[package]\nname=\"sentinel\"\n[dependencies]\npkg={git=\"https://invalid.example/repository\"}\n").unwrap();
+    f.resign(|m| {
+        for file in m["source_binding"]["files"].as_array_mut().unwrap() {
+            if file["path"] == "program.rz" {
+                file["sha256"] = format!("{:x}", Sha256::digest(source.as_bytes())).into();
+                file["bytes"] = (source.len() as u64).into();
+            }
+        }
+        m["source_binding"]["imports"][0]["specifier"] = "pkg::module".into();
+        m["source_binding"]["imports"][0]["namespace"] = "pkg".into();
+    });
+    let bin = f.root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let marker = f.root.join("git-invoked");
+    std::fs::write(
+        bin.join("git"),
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rz"))
+        .arg("verify-all")
+        .arg(f.root.join("certs"))
+        .arg("--source-root")
+        .arg(root)
+        .arg("--pubkey")
+        .arg(f.root.join("public.pem"))
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!marker.exists());
+}
+#[cfg(unix)]
+#[test]
+fn outside_root_fifo_is_rejected_without_opening_it() {
+    let f = Fixture::new();
+    let fifo = f.root.join("outside-fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let dep = f.root.join("inputs/dep.rz");
+    std::fs::remove_file(&dep).unwrap();
+    std::os::unix::fs::symlink(fifo, dep).unwrap();
+    bounded_rejection(&f);
+}
+
+fn bounded_rejection(f: &Fixture) {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rz"))
+        .arg("verify-all")
+        .arg(f.root.join("certs"))
+        .arg("--source-root")
+        .arg(f.root.join("inputs"))
+        .arg("--pubkey")
+        .arg(f.root.join("public.pem"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!(
+                "source binding rejection blocked while reading an out-of-root input or traversing a cycle"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("source binding"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn cyclic_graph_and_excessive_inventory_are_bounded() {
+    let f = Fixture::new();
+    let source = "use \"program.rz\";";
+    std::fs::write(f.root.join("inputs/dep.rz"), source).unwrap();
+    f.resign(|m| {
+        for file in m["source_binding"]["files"].as_array_mut().unwrap() { if file["path"]=="dep.rz" {file["sha256"]=format!("{:x}",Sha256::digest(source.as_bytes())).into();file["bytes"]=(source.len() as u64).into();} }
+        m["source_binding"]["imports"].as_array_mut().unwrap().push(serde_json::json!({"from":"dep.rz","specifier":"program.rz","target":"program.rz","namespace":null}));
+    });
+    bounded_rejection(&f);
+    let f = Fixture::new();
+    f.resign(|m| {
+        let file = m["source_binding"]["files"][0].clone();
+        m["source_binding"]["files"] = (0..257)
+            .map(|i| {
+                let mut file = file.clone();
+                file["path"] = format!("file-{i}.rz").into();
+                file
+            })
+            .collect();
+    });
+    bounded_rejection(&f);
+}
