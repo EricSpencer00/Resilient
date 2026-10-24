@@ -199,3 +199,25 @@ The round-trip regression verifies signed emission, actual Z3 replay and the
 exact number of subproofs for representative while and finite loops. It does
 not authenticate the completeness of an arbitrary caller-supplied manifest;
 that remains a separate qualification requirement.
+
+### Authenticate the complete manifest
+
+Signed emission also writes `manifest.sig`, an Ed25519 signature over the exact
+bytes of `manifest.json`. To require that signature and replay every listed
+obligation, use:
+
+```bash
+rz verify-all certs/ --pubkey approved-public.pem --require-manifest-signature --z3
+```
+
+This mode rejects a missing or invalid manifest signature before checking
+individual obligations. Editing program metadata, removing an obligation or
+reordering entries invalidates the signature. The manifest signature sidecar
+is hexadecimal text, limited to 4096 bytes. Choose the public key through a
+trusted process; a key supplied by the same untrusted bundle is not a trust anchor.
+
+Without `--require-manifest-signature`, verification retains its legacy
+per-obligation behavior and does not authenticate the enumeration. Manifest
+signing authenticates what the signer emitted; it does not establish that every
+source requirement was discovered, translated correctly or proven. The existing
+solver deadlines, output limits and strict UNSAT acceptance still apply.

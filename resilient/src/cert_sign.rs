@@ -158,6 +158,26 @@ pub fn verify_payload(
     Ok(vk.verify(payload, &signature).is_ok())
 }
 
+/// Authenticate the enumeration itself, not only the files it references.
+pub fn verify_manifest_signature(
+    dir: &Path,
+    manifest: &[u8],
+    public_key: &[u8; PUBLIC_KEY_LENGTH],
+) -> Result<bool, String> {
+    let file = fs::File::open(dir.join("manifest.sig"))
+        .map_err(|error| format!("could not read required manifest signature: {error}"))?;
+    let mut text = String::new();
+    file.take(4097)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("could not read manifest signature: {error}"))?;
+    if text.len() > 4096 {
+        return Err("manifest signature exceeds 4096-byte limit".into());
+    }
+    let signature = parse_signature_hex(&text)
+        .map_err(|error| format!("invalid manifest signature: {error}"))?;
+    verify_payload(public_key, manifest, &signature)
+}
+
 /// RES-194: parse our mini-PEM for a public key. Accepts an
 /// ASCII file with the `BEGIN ED25519 PUBLIC KEY` markers and a
 /// hex-encoded 32-byte body. Whitespace is ignored.

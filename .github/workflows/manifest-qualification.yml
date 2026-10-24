@@ -1,0 +1,117 @@
+name: Manifest qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/lib.rs'
+      - 'resilient/src/cert_sign.rs'
+      - 'resilient/tests/manifest_authentication.rs'
+      - '.github/workflows/manifest-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manifest-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: manifest authentication (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && '8a5bdac10da8f8ab3cdaee8175a97bb5b8754861' || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: manifest-qualification
+      - name: Record solver identity
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/manifest-qualification
+        run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          binary = pathlib.Path(shutil.which('z3'))
+          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
+                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/manifest-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in strict_replay_accepts_the_complete_signed_manifest strict_replay_rejects_removed_obligations strict_replay_rejects_reordered_obligations strict_replay_rejects_changed_program_identity strict_replay_rejects_missing_manifest_signature strict_replay_rejects_wrong_manifest_key compiler_signs_the_manifest_for_strict_replay legacy_replay_does_not_require_a_manifest_signature; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/manifest_authentication.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test manifest_authentication "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" != legacy_replay_does_not_require_a_manifest_signature ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/manifest-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
+          for test in strict_replay_accepts_the_complete_signed_manifest strict_replay_rejects_removed_obligations strict_replay_rejects_reordered_obligations strict_replay_rejects_changed_program_identity strict_replay_rejects_missing_manifest_signature strict_replay_rejects_wrong_manifest_key compiler_signs_the_manifest_for_strict_replay; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
