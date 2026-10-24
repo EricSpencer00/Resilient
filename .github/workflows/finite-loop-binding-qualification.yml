@@ -1,0 +1,124 @@
+name: Finite loop binding qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/verifier_loop_invariants.rs'
+      - 'resilient/src/typechecker.rs'
+      - 'resilient/src/verifier_z3.rs'
+      - 'resilient/tests/finite_loop_binding_replay.rs'
+      - 'qualification/finite-loop/**'
+      - '.github/workflows/finite-loop-binding-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finite-loop-binding-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: finite binding (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && 'f1be162391b5f7709e6ecda7735c064992d77d84' || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: finite-loop-binding-qualification
+      - name: Record solver identity
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/finite-loop-binding-qualification
+        run: |
+          mkdir -p "$EVIDENCE_ROOT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          binary = pathlib.Path(shutil.which('z3'))
+          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
+                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    'libz3_sha256': hashlib.sha256(pathlib.Path('/usr/lib/x86_64-linux-gnu/libz3.so').read_bytes()).hexdigest()}
+          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/finite-loop-binding-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in actual_positive_elements_replay_in_both_forms finite_accumulation_uses_reachable_states iteration_assignment_is_scoped_to_current_element final_body_does_not_create_a_nonexistent_check next_element_rebinds_before_its_invariant_check later_negative_element_is_not_proven false_accumulation_is_not_proven empty_iteration_has_no_executed_obligations; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/finite_loop_binding_replay.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test finite_loop_binding_replay "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" =~ ^(actual_positive|finite_accumulation|iteration_assignment|final_body|next_element) ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain independently replayed query examples
+        if: matrix.phase == 'final'
+        run: |
+          python3 qualification/finite-loop/capture_queries.py resilient/target/debug/rz "${{ runner.temp }}/finite-loop-binding-qualification/raw-queries"
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finite-loop-binding-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/finite-loop-binding-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: finite-loop-binding-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: finite-loop-binding-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
+          for test in actual_positive_elements_replay_in_both_forms finite_accumulation_uses_reachable_states iteration_assignment_is_scoped_to_current_element final_body_does_not_create_a_nonexistent_check next_element_rebinds_before_its_invariant_check; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finite-loop-binding-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
