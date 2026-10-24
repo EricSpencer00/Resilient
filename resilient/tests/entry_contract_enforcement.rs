@@ -117,7 +117,7 @@ fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
 fn self_tail_entry_rechecks_requires_before_body() {
     exercise(
         "self_tail_entry_rechecks_requires_before_body",
-        "fn opaque(int n) -> int { return n; } #[must_tail_call] fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(opaque(n - 1)); } println(\"FORBIDDEN_BODY\"); return n; } println(positive(1));",
+        "fn opaque(int n) -> int { return n; } #[must_tail_call] fn positive(int n) -> int requires n > 0 { if n == 1 { return positive(opaque(n - 1)); } else { println(\"FORBIDDEN_BODY\"); return n; } } println(positive(1));",
         true,
         &[],
     );
