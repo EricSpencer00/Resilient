@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   evidence:
-    name: contract replay (${{ matrix.phase }})
+    name: finite binding (${{ matrix.phase }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.phase == 'baseline' && '5651e59e' || github.sha }}
+          ref: ${{ matrix.phase == 'baseline' && '5651e59ec86b0e6a38546d98625d68861c87c72c' || github.sha }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
