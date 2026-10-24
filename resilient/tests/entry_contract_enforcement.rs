@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
+fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) -> String {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
         "entry_contract_{}_{}",
@@ -112,6 +112,7 @@ fn exercise(case: &str, source: &str, violation: bool, numbers: &[&str]) {
         );
     }
     std::fs::remove_dir_all(root).unwrap();
+    diagnostic
 }
 #[test]
 fn self_tail_entry_rechecks_requires_before_body() {
@@ -175,4 +176,19 @@ fn ordinary_recursive_entry_keeps_requires() {
         true,
         &[],
     );
+}
+
+#[test]
+fn mutual_tail_entry_uses_target_precondition_and_identity() {
+    let diagnostic = exercise(
+        "mutual_tail_entry_uses_target_precondition_and_identity",
+        "fn opaque(int n) -> int { return n; } #[mutual_tail_call] fn first(int n) -> int requires n >= 0 { return second(opaque(n - 1)); } #[mutual_tail_call] fn second(int n) -> int requires n > 0 { println(\"FORBIDDEN_BODY\"); return n; } println(first(1));",
+        true,
+        &[],
+    );
+    assert!(
+        diagnostic.contains("Contract violation in fn second: requires"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("n > 0"), "{diagnostic}");
 }
