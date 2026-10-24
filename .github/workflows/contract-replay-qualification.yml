@@ -1,0 +1,106 @@
+name: Contract replay qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/contract_verify.rs'
+      - 'resilient/src/contract_verify/**'
+      - 'resilient/src/typechecker.rs'
+      - 'resilient/src/verifier_z3.rs'
+      - 'resilient/tests/contract_replay_roundtrip.rs'
+      - '.github/workflows/contract-replay-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-replay-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: contract replay (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && 'c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694' || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: contract-replay-qualification
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/contract-replay-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in straight_return_replays branch_returns_replay_separately constant_return_replays false_postcondition_is_rejected; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/contract_replay_roundtrip.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test contract_replay_roundtrip "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" != false_postcondition_is_rejected ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-replay-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/contract-replay-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: contract-replay-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: contract-replay-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          for test in straight_return_replays branch_returns_replay_separately constant_return_replays; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contract-replay-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
