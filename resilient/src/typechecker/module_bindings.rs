@@ -118,6 +118,7 @@ impl TypeChecker {
             self.loop_label_stack.clone(),
             self.fn_type_params.clone(),
             self.fn_type_param_bounds.clone(),
+            self.module_function_origin.clone(),
             self.assoc_type_bindings.clone(),
             self.trait_impls.clone(),
             self.trait_supers.clone(),
@@ -145,6 +146,7 @@ impl TypeChecker {
             self.loop_label_stack,
             self.fn_type_params,
             self.fn_type_param_bounds,
+            self.module_function_origin,
             self.assoc_type_bindings,
             self.trait_impls,
             self.trait_supers,
@@ -179,6 +181,7 @@ impl TypeChecker {
                     if let Node::Function { name, .. } = &mut declaration {
                         *name = qualified.clone();
                     }
+                    checker.module_function_origin = Some((qualified.clone(), name.clone()));
                     checker.check_node(&declaration)?;
                     Ok(FunctionExport {
                         name: qualified.clone(),

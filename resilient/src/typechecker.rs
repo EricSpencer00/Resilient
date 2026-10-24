@@ -1943,6 +1943,9 @@ pub struct TypeChecker {
     /// parameter. Used to resolve an associated-type projection only when
     /// the function's declared bounds provide a sound trait context.
     fn_type_param_bounds: HashMap<String, Vec<Vec<String>>>,
+    /// Original declaration name for an explicitly qualified module check.
+    /// Attribute policy still uses the parser's original item identity.
+    module_function_origin: Option<(String, String)>,
     /// RES-4067: concrete associated-type implementations keyed by
     /// (trait, implementing struct, associated type). Values remain raw
     /// annotations until a call site has enough context to parse them.
@@ -5897,6 +5900,7 @@ impl TypeChecker {
 
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
+            module_function_origin: None,
             assoc_type_bindings: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
@@ -8543,9 +8547,19 @@ impl TypeChecker {
                 // regress compile time / false-timeout rate before the
                 // false-positive rate has been measured (see #4112).
                 #[cfg(feature = "z3")]
-                let overflow_checked = crate::feature_attrs::find_kind("overflow_checked")
-                    .iter()
-                    .any(|(item_name, _)| item_name == name);
+                let overflow_checked = {
+                    // Preserve the attribute policy of this exact declaration;
+                    // never infer an origin from a generic qualified basename.
+                    let attribute_name = self
+                        .module_function_origin
+                        .as_ref()
+                        .filter(|(qualified, _)| qualified == name)
+                        .map(|(_, original)| original)
+                        .unwrap_or(name);
+                    crate::feature_attrs::find_kind("overflow_checked")
+                        .iter()
+                        .any(|(item_name, _)| item_name == attribute_name)
+                };
                 for (decl_idx, clause) in requires.iter().chain(ensures.iter()).enumerate() {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.
