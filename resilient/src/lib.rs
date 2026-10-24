@@ -260,6 +260,8 @@ mod pkg_deps;
 // `#[cfg(feature = "z3")]` (see write_proof_artifacts / dispatch_verify_*).
 #[cfg(feature = "z3")]
 mod cert_sign;
+#[cfg(feature = "z3")]
+mod proof_sources;
 // RES-198: starter linter. 5 lints with stable codes; consumed
 // from main() when the `lint <file>` subcommand runs.
 mod lint;
@@ -31036,6 +31038,7 @@ fn write_proof_artifacts(
     certificates: &[typechecker::CapturedCertificate],
     dir: &Path,
     source_filename: &str,
+    source_binding: serde_json::Value,
     sign_key_path: Option<&Path>,
 ) -> RResult<usize> {
     fs::create_dir_all(dir).map_err(|e| {
@@ -31106,7 +31109,12 @@ fn write_proof_artifacts(
         obligations,
     };
     let manifest_path = dir.join("manifest.json");
-    let manifest_json = cert_sign::format_manifest_json(&manifest);
+    let mut manifest_value: serde_json::Value =
+        serde_json::from_str(&cert_sign::format_manifest_json(&manifest))
+            .map_err(|error| error.to_string())?;
+    manifest_value["source_binding"] = source_binding;
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest_value).map_err(|error| error.to_string())?;
     fs::write(&manifest_path, &manifest_json)
         .map_err(|e| format!("could not write {}: {}", manifest_path.display(), e))?;
 
@@ -31519,6 +31527,12 @@ fn execute_file(
 
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
+    #[cfg(feature = "z3")]
+    let mut source_capture = if emit_cert_dir.is_some() {
+        Some(proof_sources::Capture::new(Path::new(filename), &contents)?)
+    } else {
+        None
+    };
 
     // RES-355: incremental cache — compute SHA-256 of the source text,
     // check for a stored entry, and record whether this run hit the
@@ -31624,9 +31638,23 @@ fn execute_file(
             loaded.insert(canon);
         }
         let mut std_imports = Vec::new();
-        if let Err(e) =
+        #[cfg(feature = "z3")]
+        let expanded = if let Some(capture) = source_capture.as_mut() {
+            imports::expand_uses_traced(
+                &mut program,
+                Path::new(filename),
+                &mut loaded,
+                &mut std_imports,
+                capture,
+                true,
+            )
+        } else {
             imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports)
-        {
+        };
+        #[cfg(not(feature = "z3"))]
+        let expanded =
+            imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports);
+        if let Err(e) = expanded {
             return Err(format!("Import error: {}", e));
         }
         for si in &std_imports {
@@ -31808,7 +31836,11 @@ fn execute_file(
         // running there are no obligations to sign.
         #[cfg(feature = "z3")]
         if let Some(dir) = emit_cert_dir {
-            let n = write_proof_artifacts(&tc.certificates, dir, filename, sign_cert_key)?;
+            let binding = source_capture
+                .as_ref()
+                .ok_or("source binding: missing parsed input capture")?
+                .json()?;
+            let n = write_proof_artifacts(&tc.certificates, dir, filename, binding, sign_cert_key)?;
             println!("\x1B[36mWrote {} verification certificate(s)\x1B[0m", n);
             if sign_cert_key.is_some() {
                 println!("\x1B[36mWrote Ed25519 signature\x1B[0m");
@@ -32972,6 +33004,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     let mut pubkey_path: Option<PathBuf> = None;
     let mut run_z3 = false;
     let mut require_manifest_signature = false;
+    let mut source_root: Option<PathBuf> = None;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
@@ -32984,6 +33017,17 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
             pubkey_path = Some(PathBuf::from(&args[i]));
         } else if let Some(p) = a.strip_prefix("--pubkey=") {
             pubkey_path = Some(PathBuf::from(p));
+        } else if a == "--source-root" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --source-root requires a directory");
+                return Some(2);
+            }
+            source_root = Some(PathBuf::from(&args[i]));
+            require_manifest_signature = true;
+        } else if let Some(root) = a.strip_prefix("--source-root=") {
+            source_root = Some(PathBuf::from(root));
+            require_manifest_signature = true;
         } else if a == "--require-manifest-signature" {
             require_manifest_signature = true;
         } else if a == "--z3" {
@@ -33060,6 +33104,13 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
                 eprintln!("Error: manifest signature verification failed: {error}");
                 return Some(1);
             }
+        }
+    }
+
+    if let Some(root) = source_root {
+        if let Err(error) = proof_sources::verify(&manifest_text, &root) {
+            eprintln!("Error: {error}");
+            return Some(1);
         }
     }
 
@@ -34438,7 +34489,7 @@ Run `rz --help` for global flags and other subcommands.
 const VERIFY_ALL_HELP_TEXT: &str = r#"rz verify-all — re-check every obligation in a manifest
 
 USAGE:
-    rz verify-all <dir> [--pubkey <path>] [--z3] [--require-manifest-signature]
+    rz verify-all <dir> [--pubkey <path>] [--z3] [--require-manifest-signature] [--source-root <dir>]
 
 STATUS:
     backend-limited; requires --features z3
@@ -34451,6 +34502,8 @@ CHECKS:
 FLAGS:
         --require-manifest-signature
                          Require a valid signature over the exact manifest bytes
+        --source-root DIR
+                         Authenticate and verify frozen source inputs under DIR
         --pubkey PATH    Verify signatures with a PEM public key override
         --z3             Re-run Z3 on each certificate when the z3 binary is available
                          Fail if the solver is unavailable or obligations are empty
