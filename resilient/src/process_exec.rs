@@ -139,9 +139,14 @@ fn collect_output(
             Ok((_, result)) => stderr = Some(result?),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(CaptureError::Wait(io::Error::other(
-                    "output reader thread ended without reporting",
-                )));
+                if stdout.is_some() && stderr.is_some() {
+                    // EOF on both pipes may precede the child's exit.
+                    status = Some(child.wait().map_err(CaptureError::Wait)?);
+                } else {
+                    return Err(CaptureError::Wait(io::Error::other(
+                        "output reader thread ended without reporting",
+                    )));
+                }
             }
         }
     }
