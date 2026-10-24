@@ -1,5 +1,5 @@
 //! Requested implementation coverage is separate from signed replay of a subset.
-#![cfg(feature = "z3")]
+#![cfg(all(feature = "z3", unix))]
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{Value, json};
@@ -491,8 +491,10 @@ fn hardening_embedded_infeasible_entry_is_not_reachable_credit() {
 }
 
 fn invoke_with_watchdog(f: &Fixture, policy_hash: &str) -> Output {
-    Command::new("timeout")
-        .args(["--kill-after=1s", "4s", "python3"])
+    Command::new("python3")
+        .arg("-c")
+        .arg("import os,signal,subprocess,sys\np=subprocess.Popen(sys.argv[1:],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)\ntry:\n o,e=p.communicate(timeout=4); code=p.returncode\nexcept subprocess.TimeoutExpired:\n os.killpg(p.pid,signal.SIGKILL);o,e=p.communicate();code=124\nsys.stdout.buffer.write(o);sys.stderr.buffer.write(e);sys.exit(code)")
+        .arg("python3")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../agent-scripts/audit-proof-coverage.py"))
         .arg("--rz")
         .arg(env!("CARGO_BIN_EXE_rz"))
@@ -588,4 +590,218 @@ fn hardening_oversized_manifest_has_structured_resource_rejection() {
         .unwrap_or_else(|_| panic!("structured resource rejection required: {result:?}"));
     assert_eq!(report["code"], "resource_limit", "{report}");
     assert!(!result.status.success());
+}
+
+fn bv_commands(idx: usize) -> Value {
+    let guard = if idx == 0 {
+        json!(["bvsge", "x", "#x0000000000000000"])
+    } else {
+        json!(["not", ["bvsge", "x", "#x0000000000000000"]])
+    };
+    json!([
+        ["set-logic", "QF_BV"],
+        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
+        ["assert", guard],
+        ["assert", ["not", ["=", "x", "x"]]],
+        ["check-sat"]
+    ])
+}
+fn bv_feasibility(idx: usize) -> Value {
+    let guard = if idx == 0 {
+        json!(["bvsge", "x", "#x0000000000000000"])
+    } else {
+        json!(["not", ["bvsge", "x", "#x0000000000000000"]])
+    };
+    json!([
+        ["set-logic", "QF_BV"],
+        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
+        ["assert", guard],
+        ["check-sat"]
+    ])
+}
+fn bv_branch() -> Fixture {
+    let f = branch();
+    let mut m = f.manifest();
+    for idx in 0..2 {
+        let query = if idx == 0 {
+            "(set-logic QF_BV)\n(declare-fun x () (_ BitVec 64))\n(assert (bvsge x #x0000000000000000))\n(assert (not (= x x)))\n(check-sat)\n"
+        } else {
+            "(set-logic QF_BV)\n(declare-fun x () (_ BitVec 64))\n(assert (not (bvsge x #x0000000000000000)))\n(assert (not (= x x)))\n(check-sat)\n"
+        };
+        let name = format!("reviewed_bv_{idx}.smt2");
+        std::fs::write(f.root.join("certs").join(&name), query).unwrap();
+        m["obligations"][idx]["cert"] = json!(name);
+        m["obligations"][idx]["sha256"] = json!(hash(query.as_bytes()));
+        m["obligations"][idx]["sig"] = json!(hex(&f.key.sign(query.as_bytes()).to_bytes()));
+    }
+    f.save_manifest(&m);
+    f
+}
+fn bv_policy(f: &Fixture) -> Value {
+    let mut p = f.policy(2);
+    for idx in 0..2 {
+        p["sites"][idx]["commands"] = bv_commands(idx);
+        p["sites"][idx]["feasibility_commands"] = bv_feasibility(idx);
+    }
+    p
+}
+#[test]
+fn integration_zeroarity_bv_branch_checkpoints_are_supported() {
+    let f = bv_branch();
+    f.replay();
+    f.audit(&bv_policy(&f), "covered");
+}
+#[test]
+fn integration_bv_wrong_guard_rejects_valid_unsat_subset() {
+    let f = bv_branch();
+    let p = bv_policy(&f);
+    let mut m = f.manifest();
+    let mut entry = m["obligations"][0].clone();
+    entry["idx"] = json!(1);
+    std::fs::copy(
+        f.root.join("certs").join(entry["cert"].as_str().unwrap()),
+        f.root.join("certs/bv_wrong_guard.smt2"),
+    )
+    .unwrap();
+    entry["cert"] = json!("bv_wrong_guard.smt2");
+    m["obligations"][1] = entry;
+    f.save_manifest(&m);
+    f.replay();
+    f.audit(&p, "checkpoint_mismatch");
+}
+#[test]
+fn integration_nonzeroarity_function_is_not_a_scalar_checkpoint() {
+    let f = branch();
+    let query = "(set-logic QF_UFBV)\n(declare-fun x ((_ BitVec 64)) (_ BitVec 64))\n(assert (not (= (x #x0000000000000000) (x #x0000000000000000))))\n(check-sat)\n";
+    let mut m = f.manifest();
+    std::fs::write(f.root.join("certs/nonzeroarity.smt2"), query).unwrap();
+    m["obligations"] = json!([{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":0,"cert":"nonzeroarity.smt2","sha256":hash(query.as_bytes()),"sig":hex(&f.key.sign(query.as_bytes()).to_bytes())}]);
+    f.save_manifest(&m);
+    f.replay();
+    let mut p = f.policy(1);
+    p["sites"][0]["commands"] = json!([
+        ["set-logic", "QF_UFBV"],
+        [
+            "declare-fun",
+            "x",
+            [["_", "BitVec", "64"]],
+            ["_", "BitVec", "64"]
+        ],
+        [
+            "assert",
+            [
+                "not",
+                [
+                    "=",
+                    ["x", "#x0000000000000000"],
+                    ["x", "#x0000000000000000"]
+                ]
+            ]
+        ],
+        ["check-sat"]
+    ]);
+    p["sites"][0]["feasibility_commands"] = json!([
+        ["set-logic", "QF_UFBV"],
+        [
+            "declare-fun",
+            "x",
+            [["_", "BitVec", "64"]],
+            ["_", "BitVec", "64"]
+        ],
+        ["check-sat"]
+    ]);
+    f.audit(&p, "unsupported_session");
+}
+
+// Reviewed from source: safety factors are true (no faulting arithmetic),
+// entry is true, each path guard implies returned x == x. Preserve the exact
+// emitted let tree; feasibility is the independently written source guard.
+fn actual_bv_commands(idx: usize) -> Value {
+    let guard = json!(["bvsge", "x", "#x0000000000000000"]);
+    let assertion = if idx == 0 {
+        json!([
+            "let",
+            [
+                [
+                    "a!1",
+                    ["and", "true", ["=>", ["and", guard.clone()], "true"]]
+                ],
+                [
+                    "a!2",
+                    ["=>", "true", ["=>", ["and", guard], ["=", "x", "x"]]]
+                ]
+            ],
+            ["not", ["and", "true", ["=>", "true", "a!1"], "a!2"]]
+        ])
+    } else {
+        json!([
+            "let",
+            [
+                ["a!1", ["=>", ["and", ["not", guard.clone()]], "true"]],
+                ["a!2", ["=>", ["and", ["not", guard]], ["=", "x", "x"]]]
+            ],
+            [
+                "not",
+                [
+                    "and",
+                    "true",
+                    ["=>", "true", ["and", "true", "a!1"]],
+                    ["=>", "true", "a!2"]
+                ]
+            ]
+        ])
+    };
+    json!([
+        ["set-logic", "QF_BV"],
+        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
+        ["assert", assertion],
+        ["check-sat"]
+    ])
+}
+#[test]
+fn integration_actual_compiler_branch_matches_reviewed_checkpoints() {
+    let f = Fixture::new(
+        "fn identity(int x) -> int ensures result == x { if x >= 0 { return x; } else { return x; } }",
+    );
+    f.replay();
+    let manifest = f.manifest();
+    let obligations: Vec<_> = manifest["obligations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "ensures_implementation")
+        .collect();
+    assert_eq!(obligations.len(), 2, "both actual compiler paths required");
+    let first = std::fs::read_to_string(
+        f.root
+            .join("certs")
+            .join(obligations[0]["cert"].as_str().unwrap()),
+    )
+    .unwrap();
+    let machine = first.starts_with("; implementation-profile: vm-i64-wrap-v1\n");
+    let profile = if machine {
+        "vm-i64-wrap-v1"
+    } else {
+        "reviewed-integer-equality-v1"
+    };
+    let mut p = f.policy(2);
+    p["profile"] = json!(profile);
+    for idx in 0..2 {
+        p["sites"][idx]["declaration"] = json!("program::identity");
+        p["sites"][idx]["obligation"]["fn"] = json!("identity:ensures:0");
+        if machine {
+            p["sites"][idx]["commands"] = actual_bv_commands(idx);
+            p["sites"][idx]["feasibility_commands"] = bv_feasibility(idx);
+        }
+    }
+    let bytes = canonical(&p);
+    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
+    let result = f.invoke(&hash(&bytes), profile);
+    let report: Value =
+        serde_json::from_slice(&result.stdout).unwrap_or_else(|_| panic!("{result:?}"));
+    assert_eq!(
+        report["code"], "covered",
+        "actual compiler must match independently reviewed checkpoints: {report}"
+    );
+    assert!(result.status.success());
 }
