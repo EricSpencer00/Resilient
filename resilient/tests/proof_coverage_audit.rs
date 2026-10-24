@@ -102,8 +102,8 @@ impl Fixture {
     }
     fn policy(&self, count: usize) -> Value {
         let manifest = self.manifest();
-        let sites: Vec<_> = (0..count).map(|idx| json!({"source":"program.rz","declaration":"program::covered","clause":0,"path":if idx==0 {"then"}else{"else"},"status":"required","obligation":{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":idx},"commands":commands(idx)})).collect();
-        json!({"schema":"resilient-expected-implementation-coverage","version":1,"profile":"reviewed-integer-equality-v1","compiler":{"sha256":hash(&std::fs::read(env!("CARGO_BIN_EXE_rz")).unwrap()),"build_profile":"debug"},"source_graph_sha256":hash(&canonical(&manifest["source_binding"])),"sites":sites})
+        let sites: Vec<_> = (0..count).map(|idx| json!({"source":"program.rz","declaration":"program::covered","clause":0,"path":if idx==0 {"then"}else{"else"},"status":"required","obligation":{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":idx},"commands":commands(idx),"feasibility_commands":feasibility_commands(idx)})).collect();
+        json!({"schema":"resilient-expected-implementation-coverage","version":1,"profile":"reviewed-integer-equality-v1","compiler":{"sha256":hash(&std::fs::read(env!("CARGO_BIN_EXE_rz")).unwrap()),"build_profile":"debug"},"solver":{"sha256":hash(&std::fs::read(solver()).unwrap())},"source_graph_sha256":hash(&canonical(&manifest["source_binding"])),"sites":sites})
     }
     fn audit(&self, policy: &Value, expected: &str) {
         let bytes = canonical(policy);
@@ -405,4 +405,87 @@ fn duplicate_guard_assertion_is_not_normalized_away() {
     f.save_manifest(&m);
     f.replay();
     f.audit(&p, "checkpoint_mismatch");
+}
+
+fn solver() -> PathBuf {
+    let name = std::env::var("Z3_BINARY").unwrap_or_else(|_| "z3".into());
+    if name.contains('/') {
+        return PathBuf::from(name);
+    }
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join(&name))
+        .find(|path| path.is_file())
+        .unwrap()
+}
+fn feasibility_commands(idx: usize) -> Value {
+    let guard = if idx == 0 {
+        json!([">=", "x", "0"])
+    } else {
+        json!(["not", [">=", "x", "0"]])
+    };
+    json!([
+        ["set-logic", "AUFLIA"],
+        ["declare-const", "x", "Int"],
+        ["assert", guard],
+        ["check-sat"]
+    ])
+}
+#[test]
+fn hardening_matching_trusted_solver_is_accepted() {
+    let f = branch();
+    f.replay();
+    f.audit(&f.policy(2), "covered");
+}
+#[test]
+fn hardening_changed_trusted_solver_is_rejected() {
+    let f = branch();
+    let mut p = f.policy(2);
+    p["solver"]["sha256"] = json!("0".repeat(64));
+    let bytes = canonical(&p);
+    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
+    let result = f.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["stage"], "binding", "{report}");
+    assert_eq!(report["code"], "solver_hash_mismatch", "{report}");
+    assert!(!result.status.success());
+}
+#[test]
+fn hardening_embedded_infeasible_entry_is_not_reachable_credit() {
+    let f = Fixture::new(
+        "fn covered(int x) -> int requires x > 0 requires x < 0 ensures result == x { return x; }",
+    );
+    let query = "(set-logic AUFLIA)\n(declare-const x Int)\n(assert (not (=> (and (> x 0) (< x 0)) (= x x))))\n(check-sat)\n";
+    let mut m = f.manifest();
+    std::fs::write(f.root.join("certs/embedded_entry.smt2"), query).unwrap();
+    m["obligations"] = json!([{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":0,"cert":"embedded_entry.smt2","sha256":hash(query.as_bytes()),"sig":hex(&f.key.sign(query.as_bytes()).to_bytes())}]);
+    f.save_manifest(&m);
+    f.replay();
+    let mut p = f.policy(1);
+    p["sites"][0]["path"] = json!("return");
+    p["sites"][0]["commands"] = json!([
+        ["set-logic", "AUFLIA"],
+        ["declare-const", "x", "Int"],
+        [
+            "assert",
+            [
+                "not",
+                [
+                    "=>",
+                    ["and", [">", "x", "0"], ["<", "x", "0"]],
+                    ["=", "x", "x"]
+                ]
+            ]
+        ],
+        ["check-sat"]
+    ]);
+    // Independently authored from both source requires; it is not the full
+    // query with its only assertion blindly removed.
+    p["sites"][0]["feasibility_commands"] = json!([
+        ["set-logic", "AUFLIA"],
+        ["declare-const", "x", "Int"],
+        ["assert", [">", "x", "0"]],
+        ["assert", ["<", "x", "0"]],
+        ["check-sat"]
+    ]);
+    f.audit(&p, "infeasible_obligation");
 }
