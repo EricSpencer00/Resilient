@@ -1,0 +1,23 @@
+{
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cargo_lock_sha256": "b4f6e62a8d081da34b6d45174a8ea964f85eb9e128a4d8ac2bf2d8752e6de58f",
+  "compiler_sha256": "314632ab21416bfa826be8af6852744865cfef673375ac073b912d90887a4358",
+  "features": [
+    "z3"
+  ],
+  "libz3_sha256": "ca6bd765b3c1c3402781741acf4184eb91833ea0b80ac69cca504a3d57a62c48",
+  "locked": true,
+  "machine": "x86_64",
+  "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.43",
+  "profile": "debug; host CLI; not a release or embedded-target qualification",
+  "run_url": "https://github.com/EricSpencer00/Resilient/actions/runs/40055340145",
+  "runner_image": {
+    "ImageOS": "ubuntu26",
+    "ImageVersion": "20261012.163.1"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "source_revision": "6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3",
+  "source_tree": "3f65cf36295003eaa2bc3fc0c130400e9aac38ee",
+  "z3_sha256": "a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3",
+  "z3_version": "Z3 version 4.13.3 - 64 bit"
+}

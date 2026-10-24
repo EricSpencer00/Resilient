@@ -1,0 +1,973 @@
+baseline	Set up job	﻿2026-10-24T02:43:21.8778366Z Current runner version: '2.338.0'
+baseline	Set up job	2026-10-24T02:43:21.8803568Z ##[group]Runner Image Provisioner
+baseline	Set up job	2026-10-24T02:43:21.8804781Z Hosted Compute Agent
+baseline	Set up job	2026-10-24T02:43:21.8805363Z Version: 20261012.601
+baseline	Set up job	2026-10-24T02:43:21.8806097Z Commit: f3dc54e1fb89da6852db922499a0233137369e1d
+baseline	Set up job	2026-10-24T02:43:21.8806834Z Build Date: 2026-10-12T17:48:21Z
+baseline	Set up job	2026-10-24T02:43:21.8807602Z Worker ID: {964c7e63-e6e0-41db-b6f0-175d659c6795}
+baseline	Set up job	2026-10-24T02:43:21.8808350Z Region: westus
+baseline	Set up job	2026-10-24T02:43:21.8808903Z Cloud: Azure
+baseline	Set up job	2026-10-24T02:43:21.8809495Z ##[endgroup]
+baseline	Set up job	2026-10-24T02:43:21.8810961Z ##[group]Operating System
+baseline	Set up job	2026-10-24T02:43:21.8811670Z Ubuntu
+baseline	Set up job	2026-10-24T02:43:21.8812283Z 26.04.1
+baseline	Set up job	2026-10-24T02:43:21.8812788Z LTS
+baseline	Set up job	2026-10-24T02:43:21.8813348Z ##[endgroup]
+baseline	Set up job	2026-10-24T02:43:21.8814096Z ##[group]Runner Image
+baseline	Set up job	2026-10-24T02:43:21.8814806Z Image: ubuntu-26.04
+baseline	Set up job	2026-10-24T02:43:21.8815433Z Version: 20261012.163.1
+baseline	Set up job	2026-10-24T02:43:21.8816508Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261012.163/images/ubuntu/Ubuntu2604-Readme.md
+baseline	Set up job	2026-10-24T02:43:21.8818272Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261012.163
+baseline	Set up job	2026-10-24T02:43:21.8819674Z ##[endgroup]
+baseline	Set up job	2026-10-24T02:43:21.8820873Z ##[group]GITHUB_TOKEN Permissions
+baseline	Set up job	2026-10-24T02:43:21.8822809Z Contents: read
+baseline	Set up job	2026-10-24T02:43:21.8823472Z Metadata: read
+baseline	Set up job	2026-10-24T02:43:21.8824454Z ##[endgroup]
+baseline	Set up job	2026-10-24T02:43:21.8827013Z Secret source: Actions
+baseline	Set up job	2026-10-24T02:43:21.8828014Z Cache mode: write
+baseline	Set up job	2026-10-24T02:43:21.8828950Z Prepare workflow directory
+baseline	Set up job	2026-10-24T02:43:21.9168140Z Prepare all required actions
+baseline	Set up job	2026-10-24T02:43:21.9217328Z Getting action download info
+baseline	Set up job	2026-10-24T02:43:22.2588852Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+baseline	Set up job	2026-10-24T02:43:22.3736470Z Download action repository 'dtolnay/rust-toolchain@stable' (SHA:b725eda525362e7cf34af9a7243cac1e3f01a7ec)
+baseline	Set up job	2026-10-24T02:43:22.5738332Z Download action repository 'Swatinem/rust-cache@v2' (SHA:d1527c8f67ef9af357290475d4af4b0fab8f12e0)
+baseline	Set up job	2026-10-24T02:43:22.9123059Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+baseline	Set up job	2026-10-24T02:43:23.1539123Z Complete job name: baseline
+baseline	Run actions/checkout@v4	﻿2026-10-24T02:43:23.2470742Z ##[group]Run actions/checkout@v4
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2471728Z with:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2472221Z   fetch-depth: 0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2472749Z   repository: EricSpencer00/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2477158Z   token: ***
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2477659Z   ssh-strict: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2478144Z   ssh-user: git
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2478640Z   persist-credentials: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2479184Z   clean: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2479681Z   sparse-checkout-cone-mode: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2480295Z   fetch-tags: false
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2480800Z   show-progress: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2481303Z   lfs: false
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2481770Z   submodules: false
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2482268Z   set-safe-directory: true
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2482815Z   allow-unsafe-pr-checkout: false
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.2483689Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3528735Z Syncing repository: EricSpencer00/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3532097Z ##[group]Getting Git version info
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3533677Z Working directory is '/home/runner/work/Resilient/Resilient'
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3536318Z [command]/usr/bin/git version
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3551743Z git version 2.55.0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3575228Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3591816Z Temporarily overriding HOME='/home/runner/work/_temp/ef0dbb58-3068-4425-8e36-684ecf8132ac' before making global git config changes
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3595262Z Adding repository directory to the temporary git global config as a safe directory
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3597995Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Resilient/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3668908Z Deleting the contents of '/home/runner/work/Resilient/Resilient'
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3671957Z ##[group]Initializing the repository
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3674300Z [command]/usr/bin/git init /home/runner/work/Resilient/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3797396Z hint: Using 'master' as the name for the initial branch. This default branch name
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3799319Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3801073Z hint: to use in all of your new repositories, which will suppress this warning,
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3802500Z hint: call:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3803600Z hint:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3804812Z hint: 	git config --global init.defaultBranch <name>
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3805949Z hint:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3807010Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3808848Z hint: 'development'. The just-created branch can be renamed via this command:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3810234Z hint:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3810993Z hint: 	git branch -m <name>
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3811874Z hint:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3813383Z hint: Disable this message with "git config set advice.defaultBranchName false"
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3815483Z Initialized empty Git repository in /home/runner/work/Resilient/Resilient/.git/
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3818276Z [command]/usr/bin/git remote add origin https://github.com/EricSpencer00/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3859870Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3861344Z ##[group]Disabling automatic garbage collection
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3870338Z [command]/usr/bin/git config --local gc.auto 0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3902660Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3904164Z ##[group]Setting up auth
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3910867Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.3945066Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.4409660Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.4449352Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.4722090Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.4757372Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.5030446Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.5070413Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.5072108Z ##[group]Fetching the repository
+baseline	Run actions/checkout@v4	2026-10-24T02:43:23.5082290Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2703150Z From https://github.com/EricSpencer00/Resilient
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2705446Z  * [new branch]        agent-claims            -> origin/agent-claims
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2706514Z  * [new branch]        agents/integration      -> origin/agents/integration
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2707706Z  * [new branch]        chore/release-claims-4030-29314839540 -> origin/chore/release-claims-4030-29314839540
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2708994Z  * [new branch]        codex/pr-4272-perf      -> origin/codex/pr-4272-perf
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2709999Z  * [new branch]        codex/pr4272-fix        -> origin/codex/pr4272-fix
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2710988Z  * [new branch]        fleet/c_0ab94278f2      -> origin/fleet/c_0ab94278f2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2711965Z  * [new branch]        fleet/c_0c2066571a      -> origin/fleet/c_0c2066571a
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2712882Z  * [new branch]        fleet/c_131ee9fd3f      -> origin/fleet/c_131ee9fd3f
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2713757Z  * [new branch]        fleet/c_1d8856083e      -> origin/fleet/c_1d8856083e
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2714921Z  * [new branch]        fleet/c_317871d5f4      -> origin/fleet/c_317871d5f4
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2715845Z  * [new branch]        fleet/c_31e1ab1265      -> origin/fleet/c_31e1ab1265
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2717162Z  * [new branch]        fleet/c_373053b37a      -> origin/fleet/c_373053b37a
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2718064Z  * [new branch]        fleet/c_38ec62cef2      -> origin/fleet/c_38ec62cef2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2719023Z  * [new branch]        fleet/c_4323f04975      -> origin/fleet/c_4323f04975
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2719690Z  * [new branch]        fleet/c_458301d1b9      -> origin/fleet/c_458301d1b9
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2720207Z  * [new branch]        fleet/c_51f87becf9      -> origin/fleet/c_51f87becf9
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2720723Z  * [new branch]        fleet/c_61f18e736b      -> origin/fleet/c_61f18e736b
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2721520Z  * [new branch]        fleet/c_63224a2122      -> origin/fleet/c_63224a2122
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2722326Z  * [new branch]        fleet/c_676e6eccae      -> origin/fleet/c_676e6eccae
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2722844Z  * [new branch]        fleet/c_8aa469477a      -> origin/fleet/c_8aa469477a
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2723356Z  * [new branch]        fleet/c_8d782d43aa      -> origin/fleet/c_8d782d43aa
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2724071Z  * [new branch]        fleet/c_a616405d87      -> origin/fleet/c_a616405d87
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2724684Z  * [new branch]        fleet/c_b4741938a9      -> origin/fleet/c_b4741938a9
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2725204Z  * [new branch]        fleet/c_b87b1353b0      -> origin/fleet/c_b87b1353b0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2725961Z  * [new branch]        fleet/c_be859c3fce      -> origin/fleet/c_be859c3fce
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2726493Z  * [new branch]        fleet/c_d5a7f32f1a      -> origin/fleet/c_d5a7f32f1a
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2727012Z  * [new branch]        fleet/c_d6bf22ba08      -> origin/fleet/c_d6bf22ba08
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2727537Z  * [new branch]        fleet/c_d744ad57cf      -> origin/fleet/c_d744ad57cf
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2728156Z  * [new branch]        fleet/c_de0b66ffaf      -> origin/fleet/c_de0b66ffaf
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2729081Z  * [new branch]        fleet/c_e0fbc968e7      -> origin/fleet/c_e0fbc968e7
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2729643Z  * [new branch]        fleet/c_eca848b810      -> origin/fleet/c_eca848b810
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2730129Z  * [new branch]        main                    -> origin/main
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2731253Z  * [new branch]        pr-2853                 -> origin/pr-2853
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2732341Z  * [new branch]        res-3442-session-types-check-should-validate-sess -> origin/res-3442-session-types-check-should-validate-sess
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2733426Z  * [new branch]        res-3480-package-manager-check-should-align-compi -> origin/res-3480-package-manager-check-should-align-compi
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2734588Z  * [new branch]        res-3766-async-await-corpus -> origin/res-3766-async-await-corpus
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2735220Z  * [new branch]        res-3770-fix-corpus-tests -> origin/res-3770-fix-corpus-tests
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2735857Z  * [new branch]        res-3772-fix-const-eval-corpus -> origin/res-3772-fix-const-eval-corpus
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2736592Z  * [new branch]        res-3930-refines-extern-contracts -> origin/res-3930-refines-extern-contracts
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2737274Z  * [new branch]        res-3930-refines-parse  -> origin/res-3930-refines-parse
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2737834Z  * [new branch]        res-3939-mcp-api-key    -> origin/res-3939-mcp-api-key
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2738373Z  * [new branch]        res-3940-http-compat    -> origin/res-3940-http-compat
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2739020Z  * [new branch]        res-3940-http-versioning -> origin/res-3940-http-versioning
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2739670Z  * [new branch]        res-3943-http-fuzz      -> origin/res-3943-http-fuzz
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2740179Z  * [new branch]        res-3945-mcp-seam       -> origin/res-3945-mcp-seam
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2740684Z  * [new branch]        res-3952-metrics        -> origin/res-3952-metrics
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2741183Z  * [new branch]        res-3959-contracts      -> origin/res-3959-contracts
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2741704Z  * [new branch]        res-3960-mcp-streaming  -> origin/res-3960-mcp-streaming
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2742406Z  * [new branch]        res-3962-cors           -> origin/res-3962-cors
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2742897Z  * [new branch]        res-3963-readyz         -> origin/res-3963-readyz
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2743424Z  * [new branch]        res-3966-mcp-fallback   -> origin/res-3966-mcp-fallback
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2744250Z  * [new branch]        res-3968-http-security  -> origin/res-3968-http-security
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2744889Z  * [new branch]        res-3977-typed-array-flat-map -> origin/res-3977-typed-array-flat-map
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2745534Z  * [new branch]        res-3977-typed-array-ops -> origin/res-3977-typed-array-ops
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2746169Z  * [new branch]        res-4067-default-projections -> origin/res-4067-default-projections
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2746796Z  * [new branch]        res-4067-generic-body   -> origin/res-4067-generic-body
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2747461Z  * [new branch]        res-4067-generic-param-projection -> origin/res-4067-generic-param-projection
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2748228Z  * [new branch]        res-4067-late-param-projection -> origin/res-4067-late-param-projection
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2748882Z  * [new branch]        res-4070-advanced-alias -> origin/res-4070-advanced-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2749466Z  * [new branch]        res-4070-array-alias    -> origin/res-4070-array-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2750152Z  * [new branch]        res-4070-array-helper-slice-20260919 -> origin/res-4070-array-helper-slice-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2750895Z  * [new branch]        res-4070-array-literal-helper -> origin/res-4070-array-literal-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2751635Z  * [new branch]        res-4070-array-local-alias-20260919 -> origin/res-4070-array-local-alias-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2752368Z  * [new branch]        res-4070-array-nested-helper -> origin/res-4070-array-nested-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2753051Z  * [new branch]        res-4070-array-slice-alias -> origin/res-4070-array-slice-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2753766Z  * [new branch]        res-4070-array-struct-fields -> origin/res-4070-array-struct-fields
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2754750Z  * [new branch]        res-4070-array-struct-slices -> origin/res-4070-array-struct-slices
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2755418Z  * [new branch]        res-4070-array-tuple-slices -> origin/res-4070-array-tuple-slices
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2756217Z  * [new branch]        res-4070-array-tuples   -> origin/res-4070-array-tuples
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2756806Z  * [new branch]        res-4070-closure-alias  -> origin/res-4070-closure-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2757452Z  * [new branch]        res-4070-composite-let-copies -> origin/res-4070-composite-let-copies
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2758284Z  * [new branch]        res-4070-conditional-region-aliasing-guard -> origin/res-4070-conditional-region-aliasing-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2759041Z  * [new branch]        res-4070-const-if-alias -> origin/res-4070-const-if-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2759718Z  * [new branch]        res-4070-constructor-alias-tags -> origin/res-4070-constructor-alias-tags
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2760487Z  * [new branch]        res-4070-constructor-destructuring -> origin/res-4070-constructor-destructuring
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2761305Z  * [new branch]        res-4070-direct-helper-slice-20260919 -> origin/res-4070-direct-helper-slice-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2762008Z  * [new branch]        res-4070-field-alias    -> origin/res-4070-field-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2762655Z  * [new branch]        res-4070-helper-composite-args -> origin/res-4070-helper-composite-args
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2763374Z  * [new branch]        res-4070-match-enum-provenance -> origin/res-4070-match-enum-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2764448Z  * [new branch]        res-4070-match-struct-provenance -> origin/res-4070-match-struct-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2765217Z  * [new branch]        res-4070-match-tuple-provenance -> origin/res-4070-match-tuple-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2765911Z  * [new branch]        res-4070-nested-array-alias -> origin/res-4070-nested-array-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2766978Z  * [new branch]        res-4070-nested-array-composite-place -> origin/res-4070-nested-array-composite-place
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2767787Z  * [new branch]        res-4070-nested-array-slice-alias -> origin/res-4070-nested-array-slice-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2768509Z  * [new branch]        res-4070-nested-array-struct -> origin/res-4070-nested-array-struct
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2769175Z  * [new branch]        res-4070-nested-array-tuple -> origin/res-4070-nested-array-tuple
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2769930Z  * [new branch]        res-4070-nested-constructor-patterns -> origin/res-4070-nested-constructor-patterns
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2770786Z  * [new branch]        res-4070-nested-constructor-provenance -> origin/res-4070-nested-constructor-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2771501Z  * [new branch]        res-4070-nested-fields  -> origin/res-4070-nested-fields
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2772219Z  * [new branch]        res-4070-nested-helper-slice-20260919 -> origin/res-4070-nested-helper-slice-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2772924Z  * [new branch]        res-4070-nested-tuples  -> origin/res-4070-nested-tuples
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2773466Z  * [new branch]        res-4070-next           -> origin/res-4070-next
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2774272Z  * [new branch]        res-4070-next-20260919  -> origin/res-4070-next-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2775035Z  * [new branch]        res-4070-option-result-composite-places -> origin/res-4070-option-result-composite-places
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2775885Z  * [new branch]        res-4070-option-result-helper-chain -> origin/res-4070-option-result-helper-chain
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2776641Z  * [new branch]        res-4070-option-result-helpers -> origin/res-4070-option-result-helpers
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2777388Z  * [new branch]        res-4070-option-result-local-alias -> origin/res-4070-option-result-local-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2778126Z  * [new branch]        res-4070-option-result-slices -> origin/res-4070-option-result-slices
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2778884Z  * [new branch]        res-4070-option-result-struct-fields -> origin/res-4070-option-result-struct-fields
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2779579Z  * [new branch]        res-4070-return-forward -> origin/res-4070-return-forward
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2780148Z  * [new branch]        res-4070-return-paths   -> origin/res-4070-return-paths
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2781018Z  * [new branch]        res-4070-struct-composite-place-alias -> origin/res-4070-struct-composite-place-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2781765Z  * [new branch]        res-4070-struct-composites -> origin/res-4070-struct-composites
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2782521Z  * [new branch]        res-4070-struct-constructor-provenance -> origin/res-4070-struct-constructor-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2783270Z  * [new branch]        res-4070-struct-destructure -> origin/res-4070-struct-destructure
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2784096Z  * [new branch]        res-4070-struct-literal-helper -> origin/res-4070-struct-literal-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2784863Z  * [new branch]        res-4070-struct-local-alias-20260919 -> origin/res-4070-struct-local-alias-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2785564Z  * [new branch]        res-4070-struct-return  -> origin/res-4070-struct-return
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2786181Z  * [new branch]        res-4070-struct-slice-alias -> origin/res-4070-struct-slice-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2787096Z  * [new branch]        res-4070-tagged-enum-slices -> origin/res-4070-tagged-enum-slices
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2787724Z  * [new branch]        res-4070-tuple-alias    -> origin/res-4070-tuple-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2788406Z  * [new branch]        res-4070-tuple-array-literal -> origin/res-4070-tuple-array-literal
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2789630Z  * [new branch]        res-4070-tuple-array-literal-helper -> origin/res-4070-tuple-array-literal-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2790402Z  * [new branch]        res-4070-tuple-composite-alias -> origin/res-4070-tuple-composite-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2791530Z  * [new branch]        res-4070-tuple-destructure-composites -> origin/res-4070-tuple-destructure-composites
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2792604Z  * [new branch]        res-4070-tuple-helper-slice-20260919 -> origin/res-4070-tuple-helper-slice-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2793408Z  * [new branch]        res-4070-tuple-literal-helper -> origin/res-4070-tuple-literal-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2794548Z  * [new branch]        res-4070-tuple-local-alias-20260919 -> origin/res-4070-tuple-local-alias-20260919
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2795298Z  * [new branch]        res-4070-tuple-return   -> origin/res-4070-tuple-return
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2795939Z  * [new branch]        res-4070-tuple-slice-alias -> origin/res-4070-tuple-slice-alias
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2796605Z  * [new branch]        res-4070-tuple-struct-helper -> origin/res-4070-tuple-struct-helper
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2797788Z  * [new branch]        res-4070-variant-aware-match -> origin/res-4070-variant-aware-match
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2798743Z  * [new branch]        res-4110-glob-import    -> origin/res-4110-glob-import
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2799411Z  * [new branch]        res-4110-nested-inline-glob -> origin/res-4110-nested-inline-glob
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2800212Z  * [new branch]        res-4115-integer-literal-overflow-code -> origin/res-4115-integer-literal-overflow-code
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2801022Z  * [new branch]        res-4211-deterministic-mcp-overlap -> origin/res-4211-deterministic-mcp-overlap
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2801732Z  * [new branch]        res-4218-ensures-refutation -> origin/res-4218-ensures-refutation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2802362Z  * [new branch]        res-4224-mcp-smoke-retry -> origin/res-4224-mcp-smoke-retry
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2802980Z  * [new branch]        res-4227-ffi-trust-boundary -> origin/res-4227-ffi-trust-boundary
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2803564Z  * [new branch]        res-4227-hstcore        -> origin/res-4227-hstcore
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2804489Z  * [new branch]        res-4230-buffer-ptr     -> origin/res-4230-buffer-ptr
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2805227Z  * [new branch]        res-4230-buffer-surface -> origin/res-4230-buffer-surface
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2805856Z  * [new branch]        res-4230-buffer-typecheck -> origin/res-4230-buffer-typecheck
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2806450Z  * [new branch]        res-4230-buffer-value   -> origin/res-4230-buffer-value
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2807057Z  * [new branch]        res-4233-array-builtins-docs -> origin/res-4233-array-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2807897Z  * [new branch]        res-4233-char-builtins-docs -> origin/res-4233-char-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2808525Z  * [new branch]        res-4233-csv-builtins-docs -> origin/res-4233-csv-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2809119Z  * [new branch]        res-4233-enumerate-docs -> origin/res-4233-enumerate-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2809768Z  * [new branch]        res-4233-file-builtins-docs-next -> origin/res-4233-file-builtins-docs-next
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2810503Z  * [new branch]        res-4233-format-builtins-docs -> origin/res-4233-format-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2811149Z  * [new branch]        res-4233-lock-builtins-docs -> origin/res-4233-lock-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2811816Z  * [new branch]        res-4233-matrix-builtins-docs -> origin/res-4233-matrix-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2812513Z  * [new branch]        res-4233-network-builtins-docs -> origin/res-4233-network-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2813195Z  * [new branch]        res-4233-parse-fallback-docs -> origin/res-4233-parse-fallback-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2814000Z  * [new branch]        res-4233-pow2-builtins-docs -> origin/res-4233-pow2-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2814711Z  * [new branch]        res-4233-process-builtins-docs -> origin/res-4233-process-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2815393Z  * [new branch]        res-4233-range-builtins-docs -> origin/res-4233-range-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2816030Z  * [new branch]        res-4233-rle-builtins-docs -> origin/res-4233-rle-builtins-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2816707Z  * [new branch]        res-4233-string-predicates-docs -> origin/res-4233-string-predicates-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2817351Z  * [new branch]        res-4234-complex-docs   -> origin/res-4234-complex-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2818082Z  * [new branch]        res-4235-bit-docs       -> origin/res-4235-bit-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2818650Z  * [new branch]        res-4236-deque-heap-docs -> origin/res-4236-deque-heap-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2819226Z  * [new branch]        res-4237-stats-docs     -> origin/res-4237-stats-docs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2819768Z  * [new branch]        res-4239-docs-ratchet   -> origin/res-4239-docs-ratchet
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2820385Z  * [new branch]        res-4240-4241-golden-allowlist -> origin/res-4240-4241-golden-allowlist
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2821013Z  * [new branch]        res-4242-dedupe-stdlib  -> origin/res-4242-dedupe-stdlib
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2822157Z  * [new branch]        res-4243-doc-reconciliation -> origin/res-4243-doc-reconciliation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2823164Z  * [new branch]        res-4246-extern-callsite-typecheck -> origin/res-4246-extern-callsite-typecheck
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2824229Z  * [new branch]        res-4247-ffi-struct-signatures -> origin/res-4247-ffi-struct-signatures
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2825162Z  * [new branch]        res-4251-license-metadata -> origin/res-4251-license-metadata
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2826303Z  * [new branch]        res-4254-atomic-coverage -> origin/res-4254-atomic-coverage
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2827462Z  * [new branch]        res-4254-atomic-coverage-next -> origin/res-4254-atomic-coverage-next
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2828286Z  * [new branch]        res-4255-const-validation -> origin/res-4255-const-validation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2828913Z  * [new branch]        res-4256-datetime-checks -> origin/res-4256-datetime-checks
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2829557Z  * [new branch]        res-4257-derive-enforcement -> origin/res-4257-derive-enforcement
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2830212Z  * [new branch]        res-4258-float32-contract -> origin/res-4258-float32-contract
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2830885Z  * [new branch]        res-4259-http-url-validation -> origin/res-4259-http-url-validation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2831576Z  * [new branch]        res-4260-hw-state-machine -> origin/res-4260-hw-state-machine
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2832218Z  * [new branch]        res-4261-mmio-validation -> origin/res-4261-mmio-validation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2833027Z  * [new branch]        res-4263-param-wiring   -> origin/res-4263-param-wiring
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2834343Z  * [new branch]        res-4264-phantom-arithmetic -> origin/res-4264-phantom-arithmetic
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2835248Z  * [new branch]        res-4265-probabilistic-validation -> origin/res-4265-probabilistic-validation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2836026Z  * [new branch]        res-4267-regex-const    -> origin/res-4267-regex-const
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2836710Z  * [new branch]        res-4269-typestate-enforcement -> origin/res-4269-typestate-enforcement
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2837485Z  * [new branch]        res-4269-typestate-enforcement-final -> origin/res-4269-typestate-enforcement-final
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2838162Z  * [new branch]        res-4270-mutex-origin   -> origin/res-4270-mutex-origin
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2838777Z  * [new branch]        res-4270-mutex-origin-final -> origin/res-4270-mutex-origin-final
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2839435Z  * [new branch]        res-4272-strict-bounds-nested -> origin/res-4272-strict-bounds-nested
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2840148Z  * [new branch]        res-4306-codeql-cleartext-logging -> origin/res-4306-codeql-cleartext-logging
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2840883Z  * [new branch]        res-4367-release-claims-identity -> origin/res-4367-release-claims-identity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2841772Z  * [new branch]        res-4369-tuple-type-annotations -> origin/res-4369-tuple-type-annotations
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2842471Z  * [new branch]        res-4443-incomplete-ranges -> origin/res-4443-incomplete-ranges
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2843118Z  * [new branch]        res-4445-repl-typecheck-sync -> origin/res-4445-repl-typecheck-sync
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2843766Z  * [new branch]        res-4447-share-jit-metadata -> origin/res-4447-share-jit-metadata
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2844848Z  * [new branch]        res-4451-generic-enum-payload -> origin/res-4451-generic-enum-payload
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2845733Z  * [new branch]        res-4463-bytecode-control-flow -> origin/res-4463-bytecode-control-flow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2846364Z  * [new branch]        res-4466-heap-counters  -> origin/res-4466-heap-counters
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2847023Z  * [new branch]        res-4483-random-int-range-safety -> origin/res-4483-random-int-range-safety
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2847778Z  * [new branch]        res-4486-nested-function-indexes -> origin/res-4486-nested-function-indexes
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2848431Z  * [new branch]        res-4493-dma-beat-length -> origin/res-4493-dma-beat-length
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2849058Z  * [new branch]        res-4494-host-vm-frame-layout -> origin/res-4494-host-vm-frame-layout
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2849780Z  * [new branch]        res-4500-percentile-total-order -> origin/res-4500-percentile-total-order
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2850437Z  * [new branch]        res-4502-module-impl-vm -> origin/res-4502-module-impl-vm
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2851100Z  * [new branch]        res-4503-ready-or-bail-idempotent -> origin/res-4503-ready-or-bail-idempotent
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2851825Z  * [new branch]        res-4509-guardrail-rest-fallback -> origin/res-4509-guardrail-rest-fallback
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2853254Z  * [new branch]        res-4515-res-fail-closed-when-integration-sync-re -> origin/res-4515-res-fail-closed-when-integration-sync-re
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2854909Z  * [new branch]        res-4517-trailing-bytecode -> origin/res-4517-trailing-bytecode
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2855970Z  * [new branch]        res-4521-nvic-irq-bounds -> origin/res-4521-nvic-irq-bounds
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2857114Z  * [new branch]        res-4524-vm-zero-call-capacity -> origin/res-4524-vm-zero-call-capacity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2858281Z  * [new branch]        res-4525-contract-fallback -> origin/res-4525-contract-fallback
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2859463Z  * [new branch]        res-4528-reconcile-integration -> origin/res-4528-reconcile-integration
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2860417Z  * [new branch]        res-4545-function-variance -> origin/res-4545-function-variance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2861344Z  * [new branch]        res-4550-embedded-local-refs -> origin/res-4550-embedded-local-refs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2862251Z  * [new branch]        res-4551-flat-loader-boundary -> origin/res-4551-flat-loader-boundary
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2862930Z  * [new branch]        res-4557-logos-keyword-parity -> origin/res-4557-logos-keyword-parity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2863592Z  * [new branch]        res-4558-live-handler-remap -> origin/res-4558-live-handler-remap
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2864589Z  * [new branch]        res-4558-live-retry-pc  -> origin/res-4558-live-retry-pc
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2865225Z  * [new branch]        res-4562-guarded-nested-enum -> origin/res-4562-guarded-nested-enum
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2865864Z  * [new branch]        res-4563-newtype-lowering -> origin/res-4563-newtype-lowering
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2866477Z  * [new branch]        res-4566-named-default-args -> origin/res-4566-named-default-args
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2867164Z  * [new branch]        res-4577-number-theory-overflow -> origin/res-4577-number-theory-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2867808Z  * [new branch]        res-4578-dma-move-relink -> origin/res-4578-dma-move-relink
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2868498Z  * [new branch]        res-4584-strict-nested-termination -> origin/res-4584-strict-nested-termination
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2869218Z  * [new branch]        res-4585-range-length-overflow -> origin/res-4585-range-length-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2869972Z  * [new branch]        res-4587-unsafe-capability-boundaries -> origin/res-4587-unsafe-capability-boundaries
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2870740Z  * [new branch]        res-4592-linear-exit-consumption -> origin/res-4592-linear-exit-consumption
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2871428Z  * [new branch]        res-4599-semver-caret-bounds -> origin/res-4599-semver-caret-bounds
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2872137Z  * [new branch]        res-4605-quantifier-iterable-check -> origin/res-4605-quantifier-iterable-check
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2872957Z  * [new branch]        res-4606-power-paths    -> origin/res-4606-power-paths
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2873628Z  * [new branch]        res-4613-global-hook-serialization -> origin/res-4613-global-hook-serialization
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2874661Z  * [new branch]        res-4617-pure-defer-guard -> origin/res-4617-pure-defer-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2875284Z  * [new branch]        res-4619-async-call-effects -> origin/res-4619-async-call-effects
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2875900Z  * [new branch]        res-4619-async-call-paths -> origin/res-4619-async-call-paths
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2876533Z  * [new branch]        res-4622-range-loop-contracts -> origin/res-4622-range-loop-contracts
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2877160Z  * [new branch]        res-4626-dce-handler-pcs -> origin/res-4626-dce-handler-pcs
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2877751Z  * [new branch]        res-4636-catch-match-arms -> origin/res-4636-catch-match-arms
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2878408Z  * [new branch]        res-4649-monomorph-ast-coverage -> origin/res-4649-monomorph-ast-coverage
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2879065Z  * [new branch]        res-4654-parser-recovery -> origin/res-4654-parser-recovery
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2879731Z  * [new branch]        res-4656-namespaced-import-bodies -> origin/res-4656-namespaced-import-bodies
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2880400Z  * [new branch]        res-4657-hof-array-budget -> origin/res-4657-hof-array-budget
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2881051Z  * [new branch]        res-4659-jit-pattern-fail-closed -> origin/res-4659-jit-pattern-fail-closed
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2881720Z  * [new branch]        res-4662-recovery-traversal -> origin/res-4662-recovery-traversal
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2882662Z  * [new branch]        res-4663-refinement-constant-proof -> origin/res-4663-refinement-constant-proof
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2884230Z  * [new branch]        res-4663-refinement-constant-proof-v2 -> origin/res-4663-refinement-constant-proof-v2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2885421Z  * [new branch]        res-4664-loop-bound-structured -> origin/res-4664-loop-bound-structured
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2886181Z  * [new branch]        res-4665-row-match      -> origin/res-4665-row-match
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2886792Z  * [new branch]        res-4671-never-nested-returns -> origin/res-4671-never-nested-returns
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2887644Z  * [new branch]        res-4679-dma-range-overflow -> origin/res-4679-dma-range-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2888283Z  * [new branch]        res-4683-mat-identity-bound -> origin/res-4683-mat-identity-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2888945Z  * [new branch]        res-4686-bound-socket-receives -> origin/res-4686-bound-socket-receives
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2889973Z  * [new branch]        res-4688-json-depth-guard -> origin/res-4688-json-depth-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2891170Z  * [new branch]        res-4689-jit-handle-provenance -> origin/res-4689-jit-handle-provenance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2892471Z  * [new branch]        res-4697-zero-realloc-accounting -> origin/res-4697-zero-realloc-accounting
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2893723Z  * [new branch]        res-4699-string-repeat-width -> origin/res-4699-string-repeat-width
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2895125Z  * [new branch]        res-4706-bytes-repeat-empty -> origin/res-4706-bytes-repeat-empty
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2896402Z  * [new branch]        res-4709-array-chunk-target-boundary -> origin/res-4709-array-chunk-target-boundary
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2897797Z  * [new branch]        res-4711-number-theory-overflow -> origin/res-4711-number-theory-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2899152Z  * [new branch]        res-4712-http-chunked-overflow -> origin/res-4712-http-chunked-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2899816Z  * [new branch]        res-4715-round-to-boundary -> origin/res-4715-round-to-boundary
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2900426Z  * [new branch]        res-4716-data-utils-bound -> origin/res-4716-data-utils-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2901065Z  * [new branch]        res-4717-fixed-width-metadata -> origin/res-4717-fixed-width-metadata
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2901748Z  * [new branch]        res-4721-bound-mcp-worker-pool -> origin/res-4721-bound-mcp-worker-pool
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2902672Z  * [new branch]        res-4722-template-capacity -> origin/res-4722-template-capacity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2903307Z  * [new branch]        res-4726-array-sort-staging -> origin/res-4726-array-sort-staging
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2904342Z  * [new branch]        res-4728-array-windows-budget -> origin/res-4728-array-windows-budget
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2905064Z  * [new branch]        res-4729-dce-malformed-input -> origin/res-4729-dce-malformed-input
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2905733Z  * [new branch]        res-4732-bytecode-patch-guard -> origin/res-4732-bytecode-patch-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2906614Z  * [new branch]        res-4735-regex-cache-churn -> origin/res-4735-regex-cache-churn
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2907729Z  * [new branch]        res-4738-actor-pid-boundary -> origin/res-4738-actor-pid-boundary
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2908904Z  * [new branch]        res-4739-bandwidth-budget-overflow -> origin/res-4739-bandwidth-budget-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2909678Z  * [new branch]        res-4740-string-map-output-bound -> origin/res-4740-string-map-output-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2910632Z  * [new branch]        res-4745-bound-combinatorial-collection-expansion -> origin/res-4745-bound-combinatorial-collection-expansion
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2911487Z  * [new branch]        res-4745-combinatorial-bound -> origin/res-4745-combinatorial-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2912147Z  * [new branch]        res-4746-peephole-jump-bound -> origin/res-4746-peephole-jump-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2912772Z  * [new branch]        res-4748-source-map-count -> origin/res-4748-source-map-count
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2913447Z  * [new branch]        res-4752-rzbc-capacity-overflow -> origin/res-4752-rzbc-capacity-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2914386Z  * [new branch]        res-4754-bytes-slice-width -> origin/res-4754-bytes-slice-width
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2915218Z  * [new branch]        res-4756-bound-file-read-chunk-allocation-before -> origin/res-4756-bound-file-read-chunk-allocation-before
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2916016Z  * [new branch]        res-4756-file-read-bound -> origin/res-4756-file-read-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2916642Z  * [new branch]        res-4757-heap-overflow-guard -> origin/res-4757-heap-overflow-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2917525Z  * [new branch]        res-4760-deque-capacity-overflow -> origin/res-4760-deque-capacity-overflow
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2918185Z  * [new branch]        res-4761-const-fold-guard -> origin/res-4761-const-fold-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2919198Z  * [new branch]        res-4762-bound-stats-histogram-bin-allocation -> origin/res-4762-bound-stats-histogram-bin-allocation
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2920038Z  * [new branch]        res-4762-stats-histogram-bound -> origin/res-4762-stats-histogram-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2920947Z  * [new branch]        res-4766-archive-size   -> origin/res-4766-archive-size
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2921610Z  * [new branch]        res-4767-buffer-capacity -> origin/res-4767-buffer-capacity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2922226Z  * [new branch]        res-4768-cert-manifest-path -> origin/res-4768-cert-manifest-path
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2922926Z  * [new branch]        res-4770-diagnostic-column-guard -> origin/res-4770-diagnostic-column-guard
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2923563Z  * [new branch]        res-4774-cert-schema    -> origin/res-4774-cert-schema
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2924723Z  * [new branch]        res-4776-generic-structured-traversal -> origin/res-4776-generic-structured-traversal
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2925817Z  * [new branch]        res-4782-complex-stability -> origin/res-4782-complex-stability
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2926422Z  * [new branch]        res-4783-int-variance   -> origin/res-4783-int-variance
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2927055Z  * [new branch]        res-4787-array-intersperse-bound -> origin/res-4787-array-intersperse-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2927948Z  * [new branch]        res-4788-preserve-i64-max-in-inclusive-range-iter -> origin/res-4788-preserve-i64-max-in-inclusive-range-iter
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2928779Z  * [new branch]        res-4788-range-max-inclusive -> origin/res-4788-range-max-inclusive
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2929636Z  * [new branch]        res-4797-array-dedup-identity -> origin/res-4797-array-dedup-identity
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2930491Z  * [new branch]        res-4799-bound-enumerate-output-before-nested-all -> origin/res-4799-bound-enumerate-output-before-nested-all
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2931491Z  * [new branch]        res-4799-enumerate-output-bound -> origin/res-4799-enumerate-output-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2932261Z  * [new branch]        res-4806-array-windows-bound -> origin/res-4806-array-windows-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2933104Z  * [new branch]        res-4806-bound-array-windows-total-expansion-befo -> origin/res-4806-bound-array-windows-total-expansion-befo
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2934339Z  * [new branch]        res-4807-stable-diagnostic-position -> origin/res-4807-stable-diagnostic-position
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2935132Z  * [new branch]        res-4813-loop-counter-initializer -> origin/res-4813-loop-counter-initializer
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2935809Z  * [new branch]        res-4818-int-pow-width  -> origin/res-4818-int-pow-width
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2936481Z  * [new branch]        res-4819-token-parity-fail-closed -> origin/res-4819-token-parity-fail-closed
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2937377Z  * [new branch]        res-4820-bound-captured-process-output-before-all -> origin/res-4820-bound-captured-process-output-before-all
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2938248Z  * [new branch]        res-4824-format-validation-bound -> origin/res-4824-format-validation-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2938910Z  * [new branch]        res-4832-json-depth-bound -> origin/res-4832-json-depth-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2939506Z  * [new branch]        res-4833-mcp-stdio-bound -> origin/res-4833-mcp-stdio-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2940163Z  * [new branch]        res-4835-actor-deregister-cleanup -> origin/res-4835-actor-deregister-cleanup
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2940938Z  * [new branch]        res-4837-format-validation-structured -> origin/res-4837-format-validation-structured
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2941677Z  * [new branch]        res-4839-http-response-bound -> origin/res-4839-http-response-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2942320Z  * [new branch]        res-4839-response-evidence -> origin/res-4839-response-evidence
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2942914Z  * [new branch]        res-4842-dir-list-bound -> origin/res-4842-dir-list-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2943649Z  * [new branch]        res-4844-lsp-index-bound -> origin/res-4844-lsp-index-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2944726Z  * [new branch]        res-4845-string-interp-bound -> origin/res-4845-string-interp-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2945461Z  * [new branch]        res-4848-struct-pattern-containers -> origin/res-4848-struct-pattern-containers
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2946167Z  * [new branch]        res-4849-cert-payload-bound -> origin/res-4849-cert-payload-bound
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2946858Z  * [new branch]        res-4861-unsafe-keyword-guardrail -> origin/res-4861-unsafe-keyword-guardrail
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2947736Z  * [new branch]        res-4873-attest-test-first-e2e-red-green-evidence -> origin/res-4873-attest-test-first-e2e-red-green-evidence
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2948589Z  * [new branch]        res-4879-strict-solver-replay -> origin/res-4879-strict-solver-replay
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2949191Z  * [new branch]        res-next-survey         -> origin/res-next-survey
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2949655Z  * [new tag]           v0.1.1                  -> v0.1.1
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2950047Z  * [new tag]           v0.1.2                  -> v0.1.2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2950427Z  * [new tag]           v0.1.3                  -> v0.1.3
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2950815Z  * [new tag]           v0.1.4                  -> v0.1.4
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2951193Z  * [new tag]           v0.1.5                  -> v0.1.5
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2951570Z  * [new tag]           v0.1.6                  -> v0.1.6
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2951952Z  * [new tag]           v0.1.7                  -> v0.1.7
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2952333Z  * [new tag]           v0.2.0                  -> v0.2.0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2952713Z  * [new tag]           v0.2.1                  -> v0.2.1
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2953264Z  * [new tag]           v0.2.2                  -> v0.2.2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2953649Z  * [new tag]           v0.2.3                  -> v0.2.3
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2954328Z  * [new tag]           v1.0.0                  -> v1.0.0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2954761Z  * [new tag]           v1.0.0-rc.1             -> v1.0.0-rc.1
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2955197Z  * [new tag]           v1.0.0-rc.2             -> v1.0.0-rc.2
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2955658Z  * [new tag]           v1.0.0-rc.3             -> v1.0.0-rc.3
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2956073Z  * [new tag]           v1.1.0                  -> v1.1.0
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2957428Z [command]/usr/bin/git branch --list --remote origin/main
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2957812Z   origin/main
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2958499Z [command]/usr/bin/git rev-parse refs/remotes/origin/main
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2958910Z 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2959769Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2960223Z ##[group]Determining the checkout info
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2960715Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2961016Z [command]/usr/bin/git sparse-checkout disable
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2961888Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2962884Z ##[group]Checking out the ref
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.2963372Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.4707695Z Switched to a new branch 'main'
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.4709450Z branch 'main' set up to track 'origin/main'.
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.4728426Z ##[endgroup]
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.4780355Z [command]/usr/bin/git log -1 --format=%H
+baseline	Run actions/checkout@v4	2026-10-24T02:43:27.4806328Z 6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3
+baseline	Run dtolnay/rust-toolchain@stable	﻿2026-10-24T02:43:27.5181477Z ##[group]Run dtolnay/rust-toolchain@stable
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5181885Z with:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5182135Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5182400Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5252225Z ##[start-action display=Parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5311478Z ##[group]Run if [[ -z $toolchain ]]; then
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5311953Z ^[[36;1mif [[ -z $toolchain ]]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5312575Z ^[[36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5313216Z ^[[36;1m  echo "'toolchain' is a required input" >&2^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5313573Z ^[[36;1m  exit 1^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5314375Z ^[[36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5314902Z ^[[36;1m  if [[ Linux == macOS ]]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5315527Z ^[[36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5316180Z ^[[36;1m  else^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5316670Z ^[[36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5317201Z ^[[36;1m  fi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5317563Z ^[[36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5318165Z ^[[36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5318702Z ^[[36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5319293Z ^[[36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5319847Z ^[[36;1melse^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5320103Z ^[[36;1m  delimiter=EOF^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5320475Z ^[[36;1m  while [[ $toolchain == *$delimiter* ]]; do delimiter+=_; done^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5321074Z ^[[36;1m  printf 'toolchain<<%s\n%s\n%s\n' "$delimiter" "$toolchain" "$delimiter" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5321561Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5483479Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5484408Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5484693Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5484984Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5626462Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=37]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5631493Z ##[start-action display=Set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5667348Z ##[group]Run echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5667936Z ^[[36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5726493Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5726913Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5818666Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=18]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5842280Z ##[start-action display=Install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5873129Z ##[group]Run if ! command -v rustup &>/dev/null; then
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5873594Z ^[[36;1mif ! command -v rustup &>/dev/null; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5874731Z ^[[36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5875556Z ^[[36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5875900Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5937780Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5938189Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5938453Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.5938763Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6029260Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=18]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6031999Z ##[start-action display=Install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6039409Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6054532Z ##[start-action display=rustup toolchain install 1.99.1;id=__dtolnay_rust-toolchain.__run_4]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6076089Z ##[group]Run set -f  # split targets and components on commas and whitespace, without glob expansion
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6076848Z ^[[36;1mset -f  # split targets and components on commas and whitespace, without glob expansion^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6077364Z ^[[36;1mflags=()^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6077705Z ^[[36;1mfor t in ${targets//,/ }; do flags+=(--target "$t"); done^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6078180Z ^[[36;1mfor c in ${components//,/ }; do flags+=(--component "$c"); done^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6078753Z ^[[36;1mif [[ $toolchain == nightly && -n $components ]]; then flags+=(--allow-downgrade); fi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6079238Z ^[[36;1mlog=$(mktemp)^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6079546Z ^[[36;1mtrap 'rm -f "$log"' EXIT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6079865Z ^[[36;1mfor attempt in 1 2 3 4 5; do^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6080502Z ^[[36;1m  if rustup toolchain install "$toolchain" "${flags[@]}" --profile minimal --no-self-update --force-non-host 2>&1 | tee "$log"; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6081140Z ^[[36;1m    break^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6081394Z ^[[36;1m  else^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6081649Z ^[[36;1m    status=$?^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6081915Z ^[[36;1m  fi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6082273Z ^[[36;1m  if [[ $attempt == 5 ]] || ! grep -Fq 'checksum failed for ' "$log" \^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6082918Z ^[[36;1m      || ! grep -Fq 'this is likely due to an ongoing update of the official release server' "$log"; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6083448Z ^[[36;1m    exit "$status"^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6083731Z ^[[36;1m  fi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6084420Z ^[[36;1m  echo "Retrying rustup toolchain install in 30 seconds (retry $attempt of 4)" >&2^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6084931Z ^[[36;1m  sleep 30^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6085187Z ^[[36;1mdone^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6145834Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6146247Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6146508Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6146995Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6147256Z   targets: 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6147504Z   components: 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6147782Z   RUSTUP_PERMIT_COPY_RENAME: 1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6148084Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.6687498Z info: syncing channel updates for 1.99.1-x86_64-unknown-linux-gnu
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.7810611Z info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:27.7811612Z info: downloading 3 components
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7058823Z 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7127648Z   1.99.1-x86_64-unknown-linux-gnu installed - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7128156Z 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7365318Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=8130]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7371983Z ##[start-action display=rustup default 1.99.1;id=__dtolnay_rust-toolchain.__run_5]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7390480Z ##[group]Run rustup default "$toolchain" --force-non-host
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7390899Z ^[[36;1mrustup default "$toolchain" --force-non-host^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7450904Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7451260Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7451466Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7451729Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7451941Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7570982Z info: using existing install for 1.99.1-x86_64-unknown-linux-gnu
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7580206Z info: default toolchain set to 1.99.1-x86_64-unknown-linux-gnu
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7580559Z 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7644402Z   1.99.1-x86_64-unknown-linux-gnu unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7645196Z 
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7661490Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=28]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7665402Z ##[start-action display=Create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7682719Z ##[group]Run DATE=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7683621Z ^[[36;1mDATE=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7684708Z ^[[36;1mHASH=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-hash: //p')^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7685249Z ^[[36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7740469Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7740803Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7741000Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7741251Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.7741458Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8087758Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=42]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8090705Z ##[start-action display=Disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8123051Z ##[group]Run if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8123447Z ^[[36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8123791Z ^[[36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8124410Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8183179Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8183527Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8183732Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8184292Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8261904Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=17]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8264286Z ##[start-action display=Enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8279872Z ##[group]Run if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8280237Z ^[[36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8280559Z ^[[36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8281023Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8332785Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8333118Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8333324Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8333578Z   CARGO_INCREMENTAL: 0
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8333793Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8408989Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=14]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8411965Z ##[start-action display=Enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8429660Z ##[group]Run # implemented in 1.66, stabilized in 1.68, made default in 1.70
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8430176Z ^[[36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8430940Z ^[[36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8431712Z ^[[36;1m  if rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.6[89]\.'; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8432330Z ^[[36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8432897Z ^[[36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8433430Z ^[[36;1m  elif rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.6[67]\.'; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8434241Z ^[[36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8434847Z ^[[36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8435202Z ^[[36;1m  fi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8435393Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8487184Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8487706Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8487905Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8488160Z   CARGO_INCREMENTAL: 0
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8488386Z   CARGO_TERM_COLOR: always
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8488608Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8488805Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8787938Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=37]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8791725Z ##[start-action display=Work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8809610Z ##[group]Run # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8810388Z ^[[36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8811033Z ^[[36;1mif rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.7[01]\.'; then^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8811531Z ^[[36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8811843Z ^[[36;1mfi^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8870425Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8870771Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8870983Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8871236Z   CARGO_INCREMENTAL: 0
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8871454Z   CARGO_TERM_COLOR: always
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8871673Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.8871872Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9062998Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=27]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9068333Z ##[start-action display=rustc +1.99.1 --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9085513Z ##[group]Run rustc +"$toolchain" --version --verbose
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9085988Z ^[[36;1mrustc +"$toolchain" --version --verbose^[[0m
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9141931Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9142376Z env:
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9142708Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9143067Z   CARGO_INCREMENTAL: 0
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9143427Z   CARGO_TERM_COLOR: always
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9143790Z   toolchain: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9144595Z ##[endgroup]
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9379789Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9380682Z binary: rustc
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9381569Z commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9382169Z commit-date: 2026-10-13
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9382467Z host: x86_64-unknown-linux-gnu
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9382710Z release: 1.99.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9382915Z LLVM version: 23.1.1
+baseline	Run dtolnay/rust-toolchain@stable	2026-10-24T02:43:35.9398939Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=32]
+baseline	Install solver dependencies	﻿2026-10-24T02:43:35.9454809Z ##[group]Run sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+baseline	Install solver dependencies	2026-10-24T02:43:35.9455387Z ^[[36;1msudo apt-get update && sudo apt-get install -y libz3-dev z3 clang^[[0m
+baseline	Install solver dependencies	2026-10-24T02:43:35.9516726Z shell: /usr/bin/bash -e {0}
+baseline	Install solver dependencies	2026-10-24T02:43:35.9516976Z env:
+baseline	Install solver dependencies	2026-10-24T02:43:35.9517174Z   CARGO_HOME: /home/runner/.cargo
+baseline	Install solver dependencies	2026-10-24T02:43:35.9517431Z   CARGO_INCREMENTAL: 0
+baseline	Install solver dependencies	2026-10-24T02:43:35.9517650Z   CARGO_TERM_COLOR: always
+baseline	Install solver dependencies	2026-10-24T02:43:35.9517878Z ##[endgroup]
+baseline	Install solver dependencies	2026-10-24T02:43:36.0383315Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+baseline	Install solver dependencies	2026-10-24T02:43:36.0808672Z Hit:2 http://azure.archive.ubuntu.com/ubuntu resolute InRelease
+baseline	Install solver dependencies	2026-10-24T02:43:36.0828132Z Get:6 https://packages.microsoft.com/ubuntu/26.04/prod resolute InRelease [3964 B]
+baseline	Install solver dependencies	2026-10-24T02:43:36.0841753Z Get:3 http://azure.archive.ubuntu.com/ubuntu resolute-updates InRelease [137 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.0880052Z Get:4 http://azure.archive.ubuntu.com/ubuntu resolute-backports InRelease [137 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.0904799Z Get:5 http://azure.archive.ubuntu.com/ubuntu resolute-security InRelease [137 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1148706Z Get:7 https://packages.microsoft.com/ubuntu/26.04/prod resolute/main amd64 Packages [121 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1330014Z Get:8 http://azure.archive.ubuntu.com/ubuntu resolute-updates/main amd64v3 Packages [746 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1350377Z Get:12 https://packages.microsoft.com/ubuntu/26.04/prod resolute/main arm64 Packages [112 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1394734Z Get:13 https://packages.microsoft.com/ubuntu/26.04/prod resolute/main armhf Packages [962 B]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1544959Z Get:9 http://azure.archive.ubuntu.com/ubuntu resolute-updates/main Translation-en [176 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1582033Z Get:10 http://azure.archive.ubuntu.com/ubuntu resolute-updates/universe amd64v3 Packages [334 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1644887Z Get:11 http://azure.archive.ubuntu.com/ubuntu resolute-updates/universe Translation-en [110 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1817953Z Get:14 http://azure.archive.ubuntu.com/ubuntu resolute-security/main amd64v3 Packages [607 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1870456Z Get:15 http://azure.archive.ubuntu.com/ubuntu resolute-security/main Translation-en [141 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1887818Z Get:16 http://azure.archive.ubuntu.com/ubuntu resolute-security/universe amd64v3 Packages [206 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:36.1909999Z Get:17 http://azure.archive.ubuntu.com/ubuntu resolute-security/universe Translation-en [67.7 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:38.2426750Z Fetched 3037 kB in 0s (10.0 MB/s)
+baseline	Install solver dependencies	2026-10-24T02:43:38.8840055Z Reading package lists...
+baseline	Install solver dependencies	2026-10-24T02:43:38.9181224Z Reading package lists...
+baseline	Install solver dependencies	2026-10-24T02:43:39.0751762Z Building dependency tree...
+baseline	Install solver dependencies	2026-10-24T02:43:39.0759866Z Reading state information...
+baseline	Install solver dependencies	2026-10-24T02:43:39.1073634Z libz3-dev is already the newest version (4.13.3-1build1).
+baseline	Install solver dependencies	2026-10-24T02:43:39.1074476Z libz3-dev set to manually installed.
+baseline	Install solver dependencies	2026-10-24T02:43:39.1644427Z Solving dependencies...
+baseline	Install solver dependencies	2026-10-24T02:43:39.2664114Z The following NEW packages will be installed:
+baseline	Install solver dependencies	2026-10-24T02:43:39.2669581Z   clang z3
+baseline	Install solver dependencies	2026-10-24T02:43:39.2876104Z 0 upgraded, 2 newly installed, 0 to remove and 84 not upgraded.
+baseline	Install solver dependencies	2026-10-24T02:43:39.2876786Z Need to get 7051 kB of archives.
+baseline	Install solver dependencies	2026-10-24T02:43:39.2877373Z After this operation, 19.5 MB of additional disk space will be used.
+baseline	Install solver dependencies	2026-10-24T02:43:39.2878100Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+baseline	Install solver dependencies	2026-10-24T02:43:39.4541469Z Get:2 http://azure.archive.ubuntu.com/ubuntu resolute/universe amd64v3 clang amd64 1:21.1.6-71 [3904 B]
+baseline	Install solver dependencies	2026-10-24T02:43:39.5305658Z Get:3 http://azure.archive.ubuntu.com/ubuntu resolute/universe amd64v3 z3 amd64 4.13.3-1build1 [7048 kB]
+baseline	Install solver dependencies	2026-10-24T02:43:40.5376971Z Fetched 7051 kB in 1s (7492 kB/s)
+baseline	Install solver dependencies	2026-10-24T02:43:40.5613521Z Selecting previously unselected package clang.
+baseline	Install solver dependencies	2026-10-24T02:43:40.5915292Z (Reading database ... 
+baseline	Install solver dependencies	2026-10-24T02:43:40.5915996Z (Reading database ... 5%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5916634Z (Reading database ... 10%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5917168Z (Reading database ... 15%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5917625Z (Reading database ... 20%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5918288Z (Reading database ... 25%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5918743Z (Reading database ... 30%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5919243Z (Reading database ... 35%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5919761Z (Reading database ... 40%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5920239Z (Reading database ... 45%
+baseline	Install solver dependencies	2026-10-24T02:43:40.5920717Z (Reading database ... 50%
+baseline	Install solver dependencies	2026-10-24T02:43:40.6584056Z (Reading database ... 55%
+baseline	Install solver dependencies	2026-10-24T02:43:40.6911282Z (Reading database ... 60%
+baseline	Install solver dependencies	2026-10-24T02:43:40.7437992Z (Reading database ... 65%
+baseline	Install solver dependencies	2026-10-24T02:43:40.8185931Z (Reading database ... 70%
+baseline	Install solver dependencies	2026-10-24T02:43:40.8520408Z (Reading database ... 75%
+baseline	Install solver dependencies	2026-10-24T02:43:40.9126452Z (Reading database ... 80%
+baseline	Install solver dependencies	2026-10-24T02:43:41.1101535Z (Reading database ... 85%
+baseline	Install solver dependencies	2026-10-24T02:43:41.2526369Z (Reading database ... 90%
+baseline	Install solver dependencies	2026-10-24T02:43:41.4220864Z (Reading database ... 95%
+baseline	Install solver dependencies	2026-10-24T02:43:41.4221443Z (Reading database ... 100%
+baseline	Install solver dependencies	2026-10-24T02:43:41.4222139Z (Reading database ... 211065 files and directories currently installed.)
+baseline	Install solver dependencies	2026-10-24T02:43:41.4265536Z Preparing to unpack .../clang_1%3a21.1.6-71_amd64v3.deb ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.4294165Z Unpacking clang (1:21.1.6-71) ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.4574674Z Selecting previously unselected package z3.
+baseline	Install solver dependencies	2026-10-24T02:43:41.4716593Z Preparing to unpack .../z3_4.13.3-1build1_amd64v3.deb ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.4725695Z Unpacking z3 (4.13.3-1build1) ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.5885342Z Setting up z3 (4.13.3-1build1) ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.5908619Z Setting up clang (1:21.1.6-71) ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.6119068Z Processing triggers for man-db (2.13.1-1build1) ...
+baseline	Install solver dependencies	2026-10-24T02:43:41.6141161Z Not building database; man-db/auto-update is not 'true'.
+baseline	Install solver dependencies	2026-10-24T02:43:42.2521106Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2521873Z Running kernel seems to be up-to-date.
+baseline	Install solver dependencies	2026-10-24T02:43:42.2522260Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2522421Z Restarting services...
+baseline	Install solver dependencies	2026-10-24T02:43:42.2610850Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2611340Z Service restarts being deferred:
+baseline	Install solver dependencies	2026-10-24T02:43:42.2614950Z  systemctl restart hosted-compute-agent.service
+baseline	Install solver dependencies	2026-10-24T02:43:42.2615391Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2615827Z No containers need to be restarted.
+baseline	Install solver dependencies	2026-10-24T02:43:42.2616152Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2616327Z No user sessions are running outdated binaries.
+baseline	Install solver dependencies	2026-10-24T02:43:42.2616549Z 
+baseline	Install solver dependencies	2026-10-24T02:43:42.2616760Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+baseline	Run Swatinem/rust-cache@v2	﻿2026-10-24T02:43:43.2236965Z ##[group]Run Swatinem/rust-cache@v2
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2237276Z with:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2237480Z   workspaces: resilient
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2237753Z   key: qualification-binary-baseline
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2238043Z   prefix-key: v0-rust
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2238268Z   add-job-id-key: true
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2238506Z   add-rust-environment-hash-key: true
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2238781Z   cache-targets: true
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2238999Z   cache-all-crates: false
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2239241Z   cache-workspace-crates: false
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2239480Z   save-if: true
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2239681Z   cache-provider: github
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2239894Z   cache-bin: true
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2240088Z   lookup-only: false
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2240290Z   cmd-format: {0}
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2240483Z env:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2240672Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2240915Z   CARGO_INCREMENTAL: 0
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2241127Z   CARGO_TERM_COLOR: always
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.2241353Z ##[endgroup]
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7755266Z ##[group]Cache Configuration
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7774681Z Cache Provider:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7784780Z     github
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7785378Z Workspaces:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7786216Z     /home/runner/work/Resilient/Resilient/resilient
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7787126Z Cache Paths:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7787645Z     /home/runner/.cargo/bin
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7788380Z     /home/runner/.cargo/.crates.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7789019Z     /home/runner/.cargo/.crates2.json
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7789637Z     /home/runner/.cargo/registry
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7790209Z     /home/runner/.cargo/git
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7790876Z     /home/runner/work/Resilient/Resilient/resilient/target
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7791655Z Restore Key:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7792389Z     v0-rust-qualification-binary-baseline-baseline-Linux-x64-daeb8fa6
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7793238Z Cache Key:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7794240Z     v0-rust-qualification-binary-baseline-baseline-Linux-x64-daeb8fa6-3782d024
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7795201Z .. Prefix:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7795880Z   - v0-rust-qualification-binary-baseline-baseline-Linux-x64
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7796689Z .. Environment considered:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7797326Z   - Rust Versions:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7797858Z     - 1.99.0 x86_64-unknown-linux-gnu b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7798482Z     - 1.99.1 x86_64-unknown-linux-gnu 58cf8f9c35b355199727627d07ae34a4e2846d67
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7798965Z   - CARGO_HOME
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7799279Z   - CARGO_INCREMENTAL
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7799601Z   - CARGO_TERM_COLOR
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7799928Z .. Lockfiles considered:
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7800333Z   - /home/runner/work/Resilient/Resilient/.cargo/config.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7800872Z   - /home/runner/work/Resilient/Resilient/resilient-runtime/Cargo.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7801449Z   - /home/runner/work/Resilient/Resilient/resilient-span/Cargo.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7802018Z   - /home/runner/work/Resilient/Resilient/resilient/.cargo/config.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7802571Z   - /home/runner/work/Resilient/Resilient/resilient/Cargo.lock
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7803079Z   - /home/runner/work/Resilient/Resilient/resilient/Cargo.toml
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7803726Z ##[endgroup]
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7804313Z 
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:43.7804509Z ... Restoring cache ...
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:44.0357443Z Cache hit for: v0-rust-qualification-binary-baseline-baseline-Linux-x64-daeb8fa6-3782d024
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:45.3351920Z Received 4194304 of 206503820 (2.0%), 4.0 MBs/sec
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:46.3352091Z Received 134217728 of 206503820 (65.0%), 64.0 MBs/sec
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:46.9682867Z Received 206503820 of 206503820 (100.0%), 74.8 MBs/sec
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:46.9684986Z Cache Size: ~197 MB (206503820 B)
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:46.9790715Z [command]/usr/bin/tar -xf /home/runner/work/_temp/da6ff5d5-da0f-4aa5-b584-e8a0cfb155be/cache.tzst -P -C /home/runner/work/Resilient/Resilient --use-compress-program unzstd
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:48.2763084Z Cache restored successfully
+baseline	Run Swatinem/rust-cache@v2	2026-10-24T02:43:48.2852286Z Restored from cache key "v0-rust-qualification-binary-baseline-baseline-Linux-x64-daeb8fa6-3782d024" full match: true.
+baseline	Run qualification suites against the retained binary	﻿2026-10-24T02:43:48.3512894Z ##[group]Run python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/tests" \
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3513736Z ^[[36;1mpython3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/tests" \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3514473Z ^[[36;1m  --input Cargo.lock \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3514882Z ^[[36;1m  --input resilient/tests/contract_replay_roundtrip.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3515403Z ^[[36;1m  --input resilient/tests/manifest_authentication.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3515915Z ^[[36;1m  --input resilient/tests/loop_certificate_roundtrip.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3516454Z ^[[36;1m  --input resilient/tests/finite_loop_certificate_guards.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3516966Z ^[[36;1m  --input resilient/tests/solver_replay_bounds.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3517450Z ^[[36;1m  --input resilient/tests/solver_replay_required.rs \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3517962Z ^[[36;1m  --input resilient/tests/solver_replay_conformance.rs -- \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3518515Z ^[[36;1m  cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3519320Z ^[[36;1m    --test contract_replay_roundtrip --test manifest_authentication \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3519855Z ^[[36;1m    --test loop_certificate_roundtrip --test finite_loop_certificate_guards \^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3520459Z ^[[36;1m    --test solver_replay_bounds --test solver_replay_required --test solver_replay_conformance^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3521074Z ^[[36;1mpython3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/tests"^[[0m
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3581400Z shell: /usr/bin/bash -e {0}
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3581669Z env:
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3581884Z   CARGO_HOME: /home/runner/.cargo
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3582153Z   CARGO_INCREMENTAL: 0
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3582380Z   CARGO_TERM_COLOR: always
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3582612Z   CACHE_ON_FAILURE: false
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3582924Z   EVIDENCE_ROOT: /home/runner/work/_temp/qualification-baseline
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3583334Z   BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3583634Z   LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.3584111Z ##[endgroup]
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:48.5733307Z ^[[1m^[[92m    Updating^[[0m crates.io index
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:49.0849924Z ^[[1m^[[92m   Compiling^[[0m resilient v1.1.0 (/home/runner/work/Resilient/Resilient/resilient)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:49.0851369Z ^[[1m^[[92m   Compiling^[[0m resilient-span v1.1.0 (/home/runner/work/Resilient/Resilient/resilient-span)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:43:49.0852653Z ^[[1m^[[92m   Compiling^[[0m resilient-runtime v1.1.0 (/home/runner/work/Resilient/Resilient/resilient-runtime)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:08.0031343Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 19.45s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:08.0144619Z ^[[1m^[[92m     Running^[[0m tests/contract_replay_roundtrip.rs (resilient/target/debug/deps/contract_replay_roundtrip-9ea8e926b1fbfe06)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:08.0156036Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:08.0156236Z running 4 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:08.9957244Z test false_postcondition_is_rejected ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.0162724Z test constant_return_replays ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.0163157Z test straight_return_replays ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1563012Z test branch_returns_replay_separately ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1563548Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1564223Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1564848Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1567380Z ^[[1m^[[92m     Running^[[0m tests/finite_loop_certificate_guards.rs (resilient/target/debug/deps/finite_loop_certificate_guards-7fcd163b89627b64)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1578034Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1578212Z running 4 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1665426Z test empty_iteration_does_not_claim_an_executed_invariant_proof ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1666312Z test changing_iteration_binding_is_not_certified ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1666801Z test shadowed_iteration_binding_is_not_certified ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1667487Z test valid_iteration_binding_retains_runtime_check ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1667926Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1668387Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1669564Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1670633Z ^[[1m^[[92m     Running^[[0m tests/loop_certificate_roundtrip.rs (resilient/target/debug/deps/loop_certificate_roundtrip-40f36e5db6ac7c95)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1678595Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1678804Z running 3 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.1900724Z test false_loop_invariant_does_not_emit_a_proof ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2220855Z test while_invariant_certificates_replay_with_real_solver ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2462593Z test finite_loop_certificates_replay_with_real_solver ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2463175Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2463595Z test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2464418Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2465826Z ^[[1m^[[92m     Running^[[0m tests/manifest_authentication.rs (resilient/target/debug/deps/manifest_authentication-fa0b5e9c824e8eea)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2476730Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2476923Z running 8 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2554941Z test strict_replay_rejects_changed_program_identity ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2626266Z test strict_replay_rejects_missing_manifest_signature ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2685280Z test strict_replay_rejects_removed_obligations ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2728500Z test strict_replay_rejects_reordered_obligations ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2777095Z test strict_replay_rejects_wrong_manifest_key ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2870208Z test legacy_replay_does_not_require_a_manifest_signature ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.2879638Z test strict_replay_accepts_the_complete_signed_manifest ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3051639Z test compiler_signs_the_manifest_for_strict_replay ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3052240Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3052760Z test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3053497Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3055413Z ^[[1m^[[92m     Running^[[0m tests/solver_replay_bounds.rs (resilient/target/debug/deps/solver_replay_bounds-3e780c0bfa69d87f)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3065492Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3065681Z running 4 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3178667Z test replay_accepts_clean_response_within_budget ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3193605Z test replay_rejects_oversized_whitespace_after_unsat ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3310486Z test replay_rejects_invalid_timeout_configuration ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3638314Z test replay_rejects_response_after_deadline ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3638825Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3639526Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3640109Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3644129Z ^[[1m^[[92m     Running^[[0m tests/solver_replay_conformance.rs (resilient/target/debug/deps/solver_replay_conformance-392bebc5fe194ca6)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3656506Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3656662Z running 6 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3747219Z test replay_accepts_one_clean_unsat_response ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3766180Z test replay_rejects_invalid_utf8_after_unsat ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3810353Z test replay_rejects_stderr_even_after_unsat ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3885328Z test replay_rejects_unsat_from_failed_process ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.3917259Z test replay_rejects_nonproof_responses ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4010165Z test replay_rejects_conflicting_or_extra_responses ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4010734Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4011321Z test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4011979Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4014398Z ^[[1m^[[92m     Running^[[0m tests/solver_replay_required.rs (resilient/target/debug/deps/solver_replay_required-88f1eb37293bad91)
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4024255Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4024426Z running 4 tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4068451Z test requested_replay_rejects_empty_obligation_set ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4069453Z test hash_only_verification_does_not_require_solver ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4073301Z test requested_replay_rejects_missing_absolute_solver ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4074381Z test requested_replay_rejects_solver_absent_from_path ... ok
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4075121Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4075391Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4075746Z 
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4158749Z E2E evidence written to /home/runner/work/_temp/qualification-baseline/tests
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4159388Z E2E evidence verified: c74ae18b6c533b5714d4b544e355b9066d441058031a465e346b1a72f81eb183
+baseline	Run qualification suites against the retained binary	2026-10-24T02:44:09.4810603Z verified passed E2E evidence c74ae18b6c533b5714d4b544e355b9066d441058031a465e346b1a72f81eb183
+baseline	Identify and retain the tested host compiler	﻿2026-10-24T02:44:09.4937138Z ##[group]Run python3 - <<'PY'
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4937758Z ^[[36;1mpython3 - <<'PY'^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4938417Z ^[[36;1mimport hashlib, json, os, pathlib, platform, shutil, subprocess^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4939273Z ^[[36;1mroot = pathlib.Path(os.environ['EVIDENCE_ROOT'])^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4939767Z ^[[36;1mdef command(*args):^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4940124Z ^[[36;1m    return subprocess.check_output(args, text=True).strip()^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4941047Z ^[[36;1mmetadata = json.loads(command('cargo', 'metadata', '--manifest-path', 'resilient/Cargo.toml', '--no-deps', '--format-version', '1'))^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4941818Z ^[[36;1mcompiler = pathlib.Path(metadata['target_directory']) / 'debug' / 'rz'^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4956117Z ^[[36;1mshutil.copy2(compiler, root / 'rz')^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4956492Z ^[[36;1mdef digest(path):^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4957082Z ^[[36;1m    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4957832Z ^[[36;1mrecord = {^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4958449Z ^[[36;1m    'source_revision': command('git', 'rev-parse', 'HEAD'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4959274Z ^[[36;1m    'source_tree': command('git', 'rev-parse', 'HEAD^{tree}'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4959755Z ^[[36;1m    'compiler_sha256': digest(root / 'rz'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4960226Z ^[[36;1m    'profile': 'debug; host CLI; not a release or embedded-target qualification',^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4960706Z ^[[36;1m    'features': ['z3'], 'locked': True,^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4961061Z ^[[36;1m    'cargo_lock_sha256': digest('Cargo.lock'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4961478Z ^[[36;1m    'rustc': command('rustc', '-vV'), 'cargo': command('cargo', '-V'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4961976Z ^[[36;1m    'platform': platform.platform(), 'machine': platform.machine(),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4962525Z ^[[36;1m    'runner_image': {key: os.environ.get(key) for key in ('ImageOS', 'ImageVersion')},^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4963016Z ^[[36;1m    'z3_version': command('z3', '-version'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4963359Z ^[[36;1m    'z3_sha256': digest(shutil.which('z3')),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4963749Z ^[[36;1m    'libz3_sha256': digest('/usr/lib/x86_64-linux-gnu/libz3.so'),^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4964782Z ^[[36;1m    'run_url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'],^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4965328Z ^[[36;1m}^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4965737Z ^[[36;1m(root / 'binary-identity.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4966588Z ^[[36;1m(root / 'SHA256SUMS').write_text(''.join(digest(path) + '  ' + str(path.relative_to(root)) + '\n' for path in sorted(root.rglob('*')) if path.is_file()))^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4967201Z ^[[36;1mPY^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.4967459Z ^[[36;1m(cd "$EVIDENCE_ROOT" && sha256sum -c SHA256SUMS)^[[0m
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5064746Z shell: /usr/bin/bash -e {0}
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5065424Z env:
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5065809Z   CARGO_HOME: /home/runner/.cargo
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5066156Z   CARGO_INCREMENTAL: 0
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5066399Z   CARGO_TERM_COLOR: always
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5066634Z   CACHE_ON_FAILURE: false
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5066953Z   EVIDENCE_ROOT: /home/runner/work/_temp/qualification-baseline
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.5067852Z ##[endgroup]
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9518425Z .tests.lock: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9518966Z binary-identity.json: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9994122Z rz: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9994948Z tests/checksums.sha256: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9995527Z tests/manifest.json: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9996074Z tests/run-metadata.json: OK
+baseline	Identify and retain the tested host compiler	2026-10-24T02:44:09.9996623Z tests/summary.md: OK
+baseline	Retain evidence even after failed tests	﻿2026-10-24T02:44:10.0053061Z ##[group]Run actions/upload-artifact@v4
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0053365Z with:
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0053722Z   name: qualification-binary-baseline-6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0054687Z   path: /home/runner/work/_temp/qualification-baseline
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0055025Z   include-hidden-files: true
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0055273Z   retention-days: 90
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0055494Z   if-no-files-found: error
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0055734Z   compression-level: 6
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0055953Z   overwrite: false
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0056154Z env:
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0056350Z   CARGO_HOME: /home/runner/.cargo
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0056607Z   CARGO_INCREMENTAL: 0
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0056825Z   CARGO_TERM_COLOR: always
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0057058Z   CACHE_ON_FAILURE: false
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.0057465Z ##[endgroup]
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.1737258Z (node:3411) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.1738018Z (Use `node --trace-deprecation ...` to show where the warning was created)
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.1821586Z With the provided path, there will be 8 files uploaded
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.1829185Z Artifact name is valid!
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.1829684Z Root directory input is valid!
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:10.6465837Z Beginning upload of artifact content to blob storage
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:11.5549134Z (node:3411) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:12.8555943Z Uploaded bytes 8388608
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.1177522Z Uploaded bytes 13990783
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.1889914Z Finished uploading artifact content to blob storage!
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.1891182Z SHA256 digest of uploaded artifact zip is ceb43ac425d5f37c5ba23a0a487a86a0d6d12fb3c9ee24a981520018808d33e8
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.1894249Z Finalizing artifact upload
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.6698876Z Artifact qualification-binary-baseline-6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3.zip successfully finalized. Artifact ID 12544164753
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.6701659Z Artifact qualification-binary-baseline-6ad36dfb4b3a9c5d8c2ff396c3d35335e649e3a3 has been successfully uploaded! Final size is 13990783 bytes. Artifact ID is 12544164753
+baseline	Retain evidence even after failed tests	2026-10-24T02:44:13.6706574Z Artifact download URL: https://github.com/EricSpencer00/Resilient/actions/runs/40055340145/artifacts/12544164753
+baseline	Post Run Swatinem/rust-cache@v2	﻿2026-10-24T02:44:13.6992385Z Post job cleanup.
+baseline	Post Run Swatinem/rust-cache@v2	2026-10-24T02:44:13.8313070Z Cache up-to-date.
+baseline	Post Run actions/checkout@v4	﻿2026-10-24T02:44:13.8558561Z Post job cleanup.
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:13.9844354Z [command]/usr/bin/git version
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:13.9892058Z git version 2.55.0
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:13.9998802Z Temporarily overriding HOME='/home/runner/work/_temp/b4d9cd62-1322-4b89-9ea8-c87ad6dcc156' before making global git config changes
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0024755Z Adding repository directory to the temporary git global config as a safe directory
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0042768Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Resilient/Resilient
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0044661Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0049001Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0461966Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0494860Z http.https://github.com/.extraheader
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0508318Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0552987Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0907565Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+baseline	Post Run actions/checkout@v4	2026-10-24T02:44:14.0954659Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+baseline	Complete job	﻿2026-10-24T02:44:14.1474641Z Cleaning up orphan processes
+baseline	Complete job	2026-10-24T02:44:14.1895609Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
