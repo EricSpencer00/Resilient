@@ -16,6 +16,29 @@ fn hash(bytes: &[u8]) -> String {
         .collect()
 }
 
+fn checkout_identity() -> Value {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let commit = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "controlled source checkout required"
+    );
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let commit = commit.trim();
+    assert!(commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let dirty = Command::new("git")
+        .args(["diff", "--quiet", "HEAD", "--"])
+        .current_dir(repo)
+        .status()
+        .unwrap();
+    assert!(matches!(dirty.code(), Some(0 | 1)));
+    json!({"commit":commit, "tracked_dirty":!dirty.success()})
+}
+
 fn capture(name: &str) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let fixtures =
@@ -100,7 +123,7 @@ fn capture(name: &str) {
     let solver_version = Command::new(solver_path).arg("-version").output().unwrap();
     assert!(solver_version.status.success());
     let solver_identity = json!({"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable identity only; complete dynamic linkage/environment not established"});
-    let record = json!({"schema":"resilient-correspondence-capture-v1", "solver":solver_identity, "fixture":name, "claim":"source-authored path inventory and authenticated replay capture; structural correspondence not yet accepted", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "manifest":manifest, "manifest_sha256":hash(&manifest_raw), "manifest_signature":std::fs::read_to_string(root.join("certs/manifest.sig")).unwrap(), "public_key":std::fs::read_to_string(root.join("public.pem")).unwrap(), "queries":queries, "replay_exit":replay.status.code(), "replay_stdout":String::from_utf8_lossy(&replay.stdout), "replay_stderr":String::from_utf8_lossy(&replay.stderr)});
+    let record = json!({"schema":"resilient-correspondence-capture-v1", "source_checkout":checkout_identity(), "solver":solver_identity, "fixture":name, "claim":"source-authored path inventory and authenticated replay capture; structural correspondence not yet accepted", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "manifest":manifest, "manifest_sha256":hash(&manifest_raw), "manifest_signature":std::fs::read_to_string(root.join("certs/manifest.sig")).unwrap(), "public_key":std::fs::read_to_string(root.join("public.pem")).unwrap(), "queries":queries, "replay_exit":replay.status.code(), "replay_stdout":String::from_utf8_lossy(&replay.stdout), "replay_stderr":String::from_utf8_lossy(&replay.stderr)});
     let line = serde_json::to_vec(&record).unwrap();
     assert!(
         line.len() < 256 * 1024,
@@ -211,7 +234,7 @@ fn capture_refutation(name: &str) {
     } else {
         json!({"effective_disposition":"source-input counterexample requires specific implementation refutation"})
     };
-    let record = json!({"schema":"resilient-correspondence-refutation-capture-v1", "expectation_disposition":disposition, "fixture":name, "claim":"source/model negative control only; try handler reachability and full correspondence not established", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "solver":{"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable only; complete linkage/environment not established"}, "exit":result.status.code(), "diagnostic":diagnostic});
+    let record = json!({"schema":"resilient-correspondence-refutation-capture-v1", "source_checkout":checkout_identity(), "expectation_disposition":disposition, "fixture":name, "claim":"source/model negative control only; try handler reachability and full correspondence not established", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "solver":{"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable only; complete linkage/environment not established"}, "exit":result.status.code(), "diagnostic":diagnostic});
     let raw = serde_json::to_vec(&record).unwrap();
     assert!(raw.len() < 256 * 1024, "emitted record bound only");
     let mut stdout = std::io::stdout().lock();
