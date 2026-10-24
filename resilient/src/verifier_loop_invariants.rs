@@ -103,6 +103,7 @@ fn walk(
                 walk(s, bindings, tc, next_idx, timeout_ms, verbose);
             }
             *bindings = snap;
+            invalidate_mutations(node, bindings);
         }
         Node::Function { body, .. } | Node::FunctionLiteral { body, .. } => {
             // Each fn body opens a fresh scope. Pre-loop constants
@@ -115,6 +116,7 @@ fn walk(
             walk(body, &mut fn_bindings, tc, next_idx, timeout_ms, verbose);
         }
         Node::LetStatement { name, value, .. } | Node::Const { name, value, .. } => {
+            invalidate_mutations(value, bindings);
             if let Some(v) = literal_int(value) {
                 bindings.insert(name.clone(), v);
             } else {
@@ -123,21 +125,17 @@ fn walk(
                 bindings.remove(name);
             }
         }
+        Node::Assignment { name, value, .. } => {
+            invalidate_mutations(value, bindings);
+            bindings.remove(name);
+        }
         Node::IfStatement {
+            condition,
             consequence,
             alternative,
             ..
         } => {
-            // Both branches walked under a snapshot — neither
-            // branch's bindings outlive the if.
-            //
-            // RES-1386: branch on `alternative` so the snapshot
-            // restore between consequence and alternative is only
-            // paid for when there *is* an alternative. The previous
-            // shape always did `*bindings = snap.clone()` followed
-            // by `*bindings = snap` (move), so bare `if` (no else)
-            // paid one wasted `HashMap::clone` per such node walked
-            // by the Z3 invariant verifier.
+            invalidate_mutations(condition, bindings);
             let snap = bindings.clone();
             walk(consequence, bindings, tc, next_idx, timeout_ms, verbose);
             match alternative {
@@ -150,6 +148,7 @@ fn walk(
                     *bindings = snap;
                 }
             }
+            invalidate_mutations(node, bindings);
         }
         Node::WhileStatement {
             condition,
@@ -158,11 +157,12 @@ fn walk(
             span,
             ..
         } => {
-            // First, walk the body itself in case it contains nested
-            // loops — those should also get verified, with the OUTER
-            // loop's pre-bindings still in scope. Recursion is safe
-            // because we snapshot at every Block boundary.
+            invalidate_mutations(condition, bindings);
+            let entry_bindings = bindings.clone();
+            // A nested loop can run after any number of outer iterations.
+            invalidate_mutations(body, bindings);
             walk(body, bindings, tc, next_idx, timeout_ms, verbose);
+            invalidate_mutations(body, bindings);
 
             // Collect the full invariant list — both pre-body
             // (RES-132a) and statement-form (RES-222) variants.
@@ -185,7 +185,15 @@ fn walk(
 
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 try_prove_invariant(
-                    tc, inv, condition, body, bindings, &assigned, span, next_idx, timeout_ms,
+                    tc,
+                    inv,
+                    condition,
+                    body,
+                    &entry_bindings,
+                    &assigned,
+                    span,
+                    next_idx,
+                    timeout_ms,
                     verbose,
                 );
             }
@@ -198,9 +206,12 @@ fn walk(
             span,
             ..
         } => {
-            // Recurse so nested loops still get verified before handling
-            // this loop's own invariant obligations.
+            invalidate_mutations(iterable, bindings);
+            let entry_bindings = bindings.clone();
+            invalidate_mutations(body, bindings);
+            bindings.remove(name);
             walk(body, bindings, tc, next_idx, timeout_ms, verbose);
+            invalidate_mutations(body, bindings);
 
             let body_invs = crate::loop_invariants::collect_body_invariants(body);
             if pre_invariants.is_empty() && body_invs.is_empty() {
@@ -217,8 +228,17 @@ fn walk(
             collect_assigned_names(body, &mut assigned);
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 try_prove_for_in_invariant(
-                    tc, inv, name, body, &elements, bindings, &assigned, span, next_idx,
-                    timeout_ms, verbose,
+                    tc,
+                    inv,
+                    name,
+                    body,
+                    &elements,
+                    &entry_bindings,
+                    &assigned,
+                    span,
+                    next_idx,
+                    timeout_ms,
+                    verbose,
                 );
             }
         }
@@ -226,22 +246,40 @@ fn walk(
             walk(body, bindings, tc, next_idx, timeout_ms, verbose);
         }
         Node::TryCatch { body, handlers, .. } => {
+            // A handler can start after any prefix of the protected body.
+            invalidate_mutations(node, bindings);
+            let entry_bindings = bindings.clone();
             for s in body {
                 walk(s, bindings, tc, next_idx, timeout_ms, verbose);
             }
             for (_v, h) in handlers {
+                *bindings = entry_bindings.clone();
                 for s in h {
                     walk(s, bindings, tc, next_idx, timeout_ms, verbose);
                 }
             }
+            *bindings = entry_bindings;
+            invalidate_mutations(node, bindings);
         }
         Node::ImplBlock { methods, .. } => {
             for m in methods {
                 walk(m, bindings, tc, next_idx, timeout_ms, verbose);
             }
         }
-        _ => {}
+        _ => invalidate_mutations(node, bindings),
     }
+}
+
+#[cfg(feature = "z3")]
+fn invalidate_mutations(node: &Node, bindings: &mut HashMap<String, i64>) {
+    crate::uniqueness_walk::visit(node, &mut |child| match child {
+        Node::Assignment { name, .. } => {
+            bindings.remove(name);
+        }
+        // Calls may mutate captured or global state beyond this local model.
+        Node::CallExpression { .. } => bindings.clear(),
+        _ => {}
+    });
 }
 
 /// Run the base + inductive proof for a single invariant. On success,
@@ -837,3 +875,6 @@ mod tests {
         assert_eq!(proven, 1);
     }
 }
+
+#[cfg(all(test, feature = "z3"))]
+mod binding_soundness_tests;
