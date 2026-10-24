@@ -59,6 +59,19 @@ pub(crate) enum ResultModel {
 pub(crate) struct ResultPath {
     pub(crate) condition: Option<Box<Node>>,
     pub(crate) ret: Box<Node>,
+    /// Handler reachability is overapproximated, so SAT here is not an
+    /// actual execution witness. UNSAT still proves the conservative path.
+    pub(crate) conservative_handler: bool,
+}
+
+impl ResultPath {
+    pub(crate) fn origin_label(&self) -> &'static str {
+        if self.conservative_handler {
+            "conservative-handler"
+        } else {
+            "body"
+        }
+    }
 }
 
 /// Model a function body's return value, or `None` when the body falls
@@ -128,6 +141,7 @@ fn try_model(body: &[Node], handlers: &[(String, Vec<Node>)]) -> Option<ResultMo
     let mut paths = vec![ResultPath {
         condition: None,
         ret: Box::new(body_ret.clone()),
+        conservative_handler: false,
     }];
     for (_, handler_body) in handlers {
         let ret = return_from_statements(handler_body)?;
@@ -137,6 +151,7 @@ fn try_model(body: &[Node], handlers: &[(String, Vec<Node>)]) -> Option<ResultMo
         paths.push(ResultPath {
             condition: None,
             ret: Box::new(ret.clone()),
+            conservative_handler: true,
         });
     }
     Some(ResultModel::Paths { paths })
@@ -179,6 +194,7 @@ fn match_model(scrutinee: &Node, arms: &[(Pattern, Option<Node>, Node)]) -> Opti
         paths.push(ResultPath {
             condition: Some(Box::new(effective)),
             ret: Box::new(ret.clone()),
+            conservative_handler: false,
         });
         covered = or(covered, arm_condition);
     }

@@ -279,12 +279,18 @@ pub(crate) fn prove_ensures(
                 let verdicts = paths
                     .into_iter()
                     .map(|path| {
+                        let conservative_handler = path.conservative_handler;
+                        let origin = path.origin_label();
                         let obligation = symbolic_eval::substitute_result(clause, &path.ret);
                         let mut path_axioms = requires.to_vec();
                         if let Some(condition) = path.condition {
                             path_axioms.push(*condition);
                         }
-                        prove_obligation(&obligation, &path_axioms)
+                        path_verdict(
+                            prove_obligation(&obligation, &path_axioms),
+                            conservative_handler,
+                            origin,
+                        )
                     })
                     .collect();
                 combine_path_verdicts(verdicts)
@@ -306,6 +312,7 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
         ResultModel::Straight { ret } => vec![ResultPath {
             condition: None,
             ret,
+            conservative_handler: false,
         }],
         ResultModel::Branch {
             condition,
@@ -315,10 +322,12 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
             ResultPath {
                 condition: Some(condition.clone()),
                 ret: then_ret,
+                conservative_handler: false,
             },
             ResultPath {
                 condition: Some(Box::new(symbolic_eval::negate(&condition))),
                 ret: else_ret,
+                conservative_handler: false,
             },
         ],
         ResultModel::Paths { paths } => paths,
@@ -329,6 +338,7 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
     paths
         .into_iter()
         .map(|path| {
+            let origin = path.origin_label();
             let obligation = symbolic_eval::substitute_result(clause, &path.ret);
             let mut axioms = requires.to_vec();
             if let Some(condition) = path.condition {
@@ -341,12 +351,27 @@ pub(crate) fn replay_ensures(clause: &Node, requires: &[Node], body: &Node) -> O
                 CLAUSE_TIMEOUT_MS,
             );
             if proven {
-                certificate.map(|certificate| certificate.smt2)
+                certificate.map(|certificate| {
+                    format!("; resilient-path-origin: {origin}\n{}", certificate.smt2)
+                })
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// Conservative handler SAT can be spurious; only body-path refutations
+/// are execution counterexamples. Proofs over the larger path set remain valid.
+fn path_verdict(verdict: Verdict, conservative_handler: bool, origin: &str) -> Verdict {
+    match verdict {
+        Verdict::Fail { .. } if conservative_handler => Verdict::Unknown,
+        Verdict::Pass { certificate } => Verdict::Pass {
+            certificate: certificate
+                .map(|query| format!("; resilient-path-origin: {origin}\n{query}")),
+        },
+        verdict => verdict,
+    }
 }
 
 /// Combine the two per-branch verdicts of an `if/else` case split: the
