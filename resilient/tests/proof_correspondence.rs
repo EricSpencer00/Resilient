@@ -162,3 +162,84 @@ fn captures_first_match_guarded_source_inventory() {
 fn captures_try_conservative_model_inventory() {
     capture("try_overapprox");
 }
+
+fn capture_refutation(name: &str) {
+    let fixtures =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proof_correspondence");
+    let expectations_raw = std::fs::read(fixtures.join("negative-expectations.json")).unwrap();
+    let expectations: Value = serde_json::from_slice(&expectations_raw).unwrap();
+    let filename = format!("negative_{name}.rz");
+    let expected = expectations["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["fixture"] == filename)
+        .unwrap();
+    let source = std::fs::read(fixtures.join(&filename)).unwrap();
+    assert_eq!(hash(&source), expected["source_sha256"]);
+    let compiler = env!("CARGO_BIN_EXE_rz");
+    let result = Command::new(compiler)
+        .args(["--no-cache", "-t"])
+        .arg(fixtures.join(filename))
+        .output()
+        .unwrap();
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let version = Command::new(compiler)
+        .args(["--version", "--verbose"])
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    let configured_solver = std::env::var("Z3_BINARY").unwrap_or_else(|_| "z3".into());
+    let lookup = Command::new("which")
+        .arg(configured_solver)
+        .output()
+        .unwrap();
+    assert!(lookup.status.success());
+    let solver_path = String::from_utf8(lookup.stdout).unwrap();
+    let solver_path = solver_path.trim();
+    let solver_version = Command::new(solver_path).arg("-version").output().unwrap();
+    assert!(solver_version.status.success());
+    let record = json!({"schema":"resilient-correspondence-refutation-capture-v1", "fixture":name, "claim":"source/model negative control only; try handler reachability and full correspondence not established", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "solver":{"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable only; complete linkage/environment not established"}, "exit":result.status.code(), "diagnostic":diagnostic});
+    let raw = serde_json::to_vec(&record).unwrap();
+    assert!(raw.len() < 256 * 1024, "emitted record bound only");
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(b"CORRESPONDENCE_REFUTATION_CAPTURE ")
+        .unwrap();
+    stdout.write_all(&raw).unwrap();
+    stdout.write_all(b"\n").unwrap();
+    drop(stdout);
+    assert!(
+        !result.status.success(),
+        "wrong return was accepted for {name}"
+    );
+    assert!(
+        diagnostic.contains("fn `wrong` violates `ensures"),
+        "generic syntax/type failure does not establish expected refutation: {diagnostic}"
+    );
+}
+
+#[test]
+fn captures_straight_wrong_return_refutation() {
+    capture_refutation("straight");
+}
+#[test]
+fn captures_else_wrong_return_refutation() {
+    capture_refutation("if_else");
+}
+#[test]
+fn captures_fallthrough_wrong_return_refutation() {
+    capture_refutation("early_fallthrough");
+}
+#[test]
+fn captures_match_arm_wrong_return_refutation() {
+    capture_refutation("first_match_guarded");
+}
+#[test]
+fn captures_try_wrong_handler_conservative_refutation() {
+    capture_refutation("try_overapprox");
+}
