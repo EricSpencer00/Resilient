@@ -85,7 +85,21 @@ fn capture(name: &str) {
         .args(["--version", "--verbose"])
         .output()
         .unwrap();
-    let record = json!({"schema":"resilient-correspondence-capture-v1", "fixture":name, "claim":"source-authored path inventory and authenticated replay capture; structural correspondence not yet accepted", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "manifest":manifest, "manifest_sha256":hash(&manifest_raw), "manifest_signature":std::fs::read_to_string(root.join("certs/manifest.sig")).unwrap(), "public_key":std::fs::read_to_string(root.join("public.pem")).unwrap(), "queries":queries, "replay_exit":replay.status.code(), "replay_stdout":String::from_utf8_lossy(&replay.stdout), "replay_stderr":String::from_utf8_lossy(&replay.stderr)});
+    let configured_solver = std::env::var("Z3_BINARY").unwrap_or_else(|_| "z3".into());
+    let solver_lookup = Command::new("which")
+        .arg(&configured_solver)
+        .output()
+        .unwrap();
+    assert!(
+        solver_lookup.status.success(),
+        "configured solver unavailable"
+    );
+    let solver_path = String::from_utf8(solver_lookup.stdout).unwrap();
+    let solver_path = solver_path.trim();
+    let solver_version = Command::new(solver_path).arg("-version").output().unwrap();
+    assert!(solver_version.status.success());
+    let solver_identity = json!({"executable_sha256":hash(&std::fs::read(solver_path).unwrap()), "version":String::from_utf8_lossy(&solver_version.stdout), "scope":"executable identity only; complete dynamic linkage/environment not established"});
+    let record = json!({"schema":"resilient-correspondence-capture-v1", "solver":solver_identity, "fixture":name, "claim":"source-authored path inventory and authenticated replay capture; structural correspondence not yet accepted", "expected":expected, "expectations_sha256":hash(&expectations_raw), "source":String::from_utf8(source).unwrap(), "compiler_sha256":hash(&std::fs::read(compiler).unwrap()), "compiler_version":String::from_utf8_lossy(&version.stdout), "manifest":manifest, "manifest_sha256":hash(&manifest_raw), "manifest_signature":std::fs::read_to_string(root.join("certs/manifest.sig")).unwrap(), "public_key":std::fs::read_to_string(root.join("public.pem")).unwrap(), "queries":queries, "replay_exit":replay.status.code(), "replay_stdout":String::from_utf8_lossy(&replay.stdout), "replay_stderr":String::from_utf8_lossy(&replay.stderr)});
     let line = serde_json::to_vec(&record).unwrap();
     assert!(
         line.len() < 256 * 1024,
