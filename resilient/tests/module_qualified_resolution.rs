@@ -50,7 +50,10 @@ fn run(
         "flags":flags,"binary_sha256":identity.0,"version":identity.1,
         "dispatch":"match","overflow":"default","version_status":0,"status":out.status.code(),
         "stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr)});
-    writeln!(std::io::stderr(), "MODULE_RESOLUTION_RECORD {record}").unwrap();
+    std::io::stderr()
+        .lock()
+        .write_all(format!("MODULE_RESOLUTION_RECORD {record}\n").as_bytes())
+        .unwrap();
     fs::remove_dir_all(root).unwrap();
     out
 }
@@ -67,7 +70,16 @@ fn positive(case: &str, source: &str, library: Option<&str>, expected: &str) {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines().rev();
+    assert_eq!(
+        lines.next(),
+        Some("Program executed successfully"),
+        "{stdout}"
+    );
+    for expected_line in expected.lines().rev() {
+        assert_eq!(lines.next(), Some(expected_line), "{stdout}");
+    }
 }
 fn negative(case: &str, source: &str, library: Option<&str>, diagnostic: &str) {
     let checked = run(
@@ -247,7 +259,7 @@ fn module_sibling_and_recursion_have_local_frontend_bindings() {
         "mod m { fn f(int x) -> int { return helper(x); } fn helper(int x) -> int { return x; } fn count(int x) -> int { if x <= 0 { return 0; } return count(x - 1); } }",
         None,
         &["-t"],
-        "typecheck-only-no-runtime-credit",
+        "declarations-only-frontend-no-runtime-call-credit",
     );
     assert!(
         out.status.success(),
