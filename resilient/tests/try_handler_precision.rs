@@ -104,3 +104,10 @@ fn typed_try_handler_fallthrough_remains_rejected() {
         "{output:?}"
     );
 }
+#[test]
+fn declared_failure_call_has_typed_try_return_flow() {
+    assert_one(&run(
+        "fn risky(int x) -> int fails Failure { return x; } fn fallback(int x) -> int ensures result == x || result == 0 { try { return risky(x); } catch Failure { return 0; } } println(fallback(1));",
+        false,
+    ));
+}
