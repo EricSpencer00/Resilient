@@ -132,6 +132,12 @@ fn declared_failure_call_has_typed_try_return_flow() {
         false,
         true,
     );
+    let report = report.unwrap_or_else(|| panic!("{output:?}"));
+    use std::io::Write;
+    std::io::stdout()
+        .lock()
+        .write_all(format!("TRY_FLOW_PUBLIC_REPORT {report}\n").as_bytes())
+        .unwrap();
     // Ordinary try blocks deterministically inject a declared checked failure
     // (FAILURE_MODEL.md, RES-775); the handler, not risky's return, executes.
     assert!(output.status.success(), "{output:?}");
@@ -143,12 +149,6 @@ fn declared_failure_call_has_typed_try_return_flow() {
         ["0"],
         "{output:?}"
     );
-    let report = report.unwrap_or_else(|| panic!("{output:?}"));
-    use std::io::Write;
-    std::io::stdout()
-        .lock()
-        .write_all(format!("TRY_FLOW_PUBLIC_REPORT {report}\n").as_bytes())
-        .unwrap();
     let function = report["functions"]
         .as_array()
         .unwrap()
