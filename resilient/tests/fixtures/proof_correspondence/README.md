@@ -21,3 +21,11 @@ translation correctness, machine arithmetic qualification or external acceptance
 Public test records are bounded to256KiB each; that bounds emitted records,
 not compiler subprocess execution/output. Executable identities do not establish
 complete dynamic linkage or whole-environment identity.
+
+The first-match descriptor is now checkpoint revision2. Its exact variadic
+`and`/`or` print shape was manually reviewed against source after hosted capture
+40073120470; pre-capture exact-serialization provenance does not apply to this
+revision. Revision1 bytes and their earlier source-review hashes remain in
+`first_match_checkpoint_revision1.json`; the revision2 review records both
+hashes and the original failure. The checker still performs no Boolean
+flattening or equivalence normalization.
