@@ -68,7 +68,7 @@ jobs:
         run: |
           unexpected=0
           for suite in proof_coverage_audit; do
-            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
+            for test in $(awk '/^#\[test\]/{is_test=1;next} is_test && /^fn /{sub(/^fn /,"");sub(/\(.*/,"");print;is_test=0}' "resilient/tests/$suite.rs"); do
               set +e
               python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
                 --input "resilient/tests/$suite.rs" -- \
@@ -120,7 +120,7 @@ jobs:
         run: |
           cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
           for suite in proof_coverage_audit; do
-            for test in $(sed -n 's/^fn \([a-z0-9_]*\)().*/\1/p' "resilient/tests/$suite.rs"); do
+            for test in $(awk '/^#\[test\]/{is_test=1;next} is_test && /^fn /{sub(/^fn /,"");sub(/\(.*/,"");print;is_test=0}' "resilient/tests/$suite.rs"); do
               if [[ "$test" == legacy_replay_accepts_the_mixed_subset_control ]]; then continue; fi
               python3 agent-scripts/e2e-evidence.py attest --test "$test" \
                 --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
