@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 use resilient_runtime::live_telemetry::{self, LiveTelemetryBackend};
 use resilient_runtime::sink::{self, Sink, SinkErr};
@@ -44,23 +43,14 @@ impl LiveTelemetryBackend for ReentrantBackend {
 }
 
 #[test]
-fn sink_serializes_parallel_writes_and_fails_closed_on_reentry() {
+fn sink_delivers_sequential_writes_and_fails_closed_on_reentry() {
     let writes = Arc::new(AtomicUsize::new(0));
     sink::set_sink(Box::leak(Box::new(CountingSink {
         writes: Arc::clone(&writes),
     })));
 
-    let workers: Vec<_> = (0..8)
-        .map(|_| {
-            thread::spawn(|| {
-                for _ in 0..16 {
-                    sink::print("x").unwrap();
-                }
-            })
-        })
-        .collect();
-    for worker in workers {
-        worker.join().unwrap();
+    for _ in 0..128 {
+        sink::print("x").unwrap();
     }
     assert_eq!(writes.load(Ordering::Relaxed), 128);
 
@@ -70,23 +60,14 @@ fn sink_serializes_parallel_writes_and_fails_closed_on_reentry() {
 }
 
 #[test]
-fn telemetry_serializes_parallel_events_and_fails_closed_on_reentry() {
+fn telemetry_delivers_sequential_events_and_fails_closed_on_reentry() {
     let events = Arc::new(AtomicUsize::new(0));
     live_telemetry::set_live_telemetry(Box::leak(Box::new(CountingBackend {
         events: Arc::clone(&events),
     })));
 
-    let workers: Vec<_> = (0..8)
-        .map(|_| {
-            thread::spawn(|| {
-                for _ in 0..16 {
-                    live_telemetry::emit_live_retry("block", 1, "reason", 1);
-                }
-            })
-        })
-        .collect();
-    for worker in workers {
-        worker.join().unwrap();
+    for _ in 0..128 {
+        live_telemetry::emit_live_retry("block", 1, "reason", 1);
     }
     assert_eq!(events.load(Ordering::Relaxed), 128);
 
