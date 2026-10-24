@@ -67,6 +67,11 @@ jobs:
                     'libz3_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted({p.resolve() for p in pathlib.Path('/usr/lib/x86_64-linux-gnu').glob('libz3.so*')})}}
           (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
           PY
+      - name: Build the regression executables once
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: cargo test --manifest-path resilient/Cargo.toml --locked --features z3 --no-run --test machine_arithmetic_binding --test machine_arithmetic_boundaries --test machine_arithmetic_const_boundary --test machine_arithmetic_signed_replay --test machine_arithmetic_free_names --test machine_arithmetic_export_boundary --test machine_arithmetic_runtime_guards --test machine_arithmetic_rejected_report
       - name: Record each regression and its control
         env:
           PHASE: ${{ matrix.phase }}

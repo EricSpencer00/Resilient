@@ -8671,7 +8671,7 @@ impl TypeChecker {
                                 && self.warn_unverified
                                 && !(crate::contract_verify::machine_profile(
                                     parameters,
-                                    return_type.as_deref(),
+                                    declared_rt.as_deref(),
                                     requires,
                                     ensures,
                                     body,
