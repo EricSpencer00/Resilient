@@ -10,7 +10,9 @@ fn readme_install_examples_use_current_release_tag() {
         "README should show the current release in the one-liner pin example"
     );
     assert!(
-        readme.contains(&format!("TAG=v{version}  # see the releases page for the latest")),
+        readme.contains(&format!(
+            "TAG=v{version}  # see the releases page for the latest"
+        )),
         "README should show the current release in the pre-built binary example"
     );
     assert!(
