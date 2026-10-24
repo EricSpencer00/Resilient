@@ -1,0 +1,2 @@
+mod m { fn f(int x) -> int ensures result == x { return x; } }
+fn m__f(int x) -> int ensures result == x + 1 { return x + 1; }

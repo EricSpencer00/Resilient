@@ -1,0 +1,3 @@
+// π is two UTF-8 bytes; identical clauses are distinct sites.
+fn first(int x) -> int ensures result == x { return x; }
+fn second(int x) -> int ensures result == x { return x; }

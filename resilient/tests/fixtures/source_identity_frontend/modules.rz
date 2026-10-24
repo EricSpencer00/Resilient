@@ -1,0 +1,3 @@
+mod left { fn f(int x) -> int ensures result == x { return x; } }
+mod right { fn f(int x) -> int ensures result == x + 1 { return x + 1; } }
+println(left::f(7)); println(right::f(7));

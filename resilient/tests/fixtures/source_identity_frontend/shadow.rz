@@ -1,0 +1,3 @@
+fn f(int x) -> int ensures result == x { return x; }
+fn invoke() -> int { let f = fn(int x) -> int { return x + 1; }; return f(1); }
+println(invoke());

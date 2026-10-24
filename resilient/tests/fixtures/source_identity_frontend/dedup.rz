@@ -1,0 +1,3 @@
+use "library.rz";
+use "library.rz";
+println(f(1));
