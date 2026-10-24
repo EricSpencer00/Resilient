@@ -1,0 +1,101 @@
+name: Replay qualification
+
+on:
+  pull_request:
+    paths:
+      - 'resilient/src/solver_replay.rs'
+      - 'resilient/tests/solver_replay_bounds.rs'
+      - '.github/workflows/replay-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: replay bounds (${{ matrix.phase }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [baseline, final]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.phase == 'baseline' && 'b272c109ef1ca61104eeff7f025362a08e053c4b' || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install solver dependencies
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: replay-qualification
+      - name: Record each regression and its control
+        env:
+          PHASE: ${{ matrix.phase }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/replay-qualification
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          for test in replay_rejects_response_after_deadline replay_rejects_oversized_whitespace_after_unsat replay_rejects_invalid_timeout_configuration replay_accepts_clean_response_within_budget; do
+            set +e
+            python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
+              --input resilient/tests/solver_replay_bounds.rs -- \
+              cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
+                --test solver_replay_bounds "$test" -- --exact --nocapture
+            result=$?
+            set -e
+            python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
+            if [[ "$PHASE" == baseline && "$test" != replay_accepts_clean_response_within_budget ]]; then
+              test "$result" -ne 0
+            else
+              test "$result" -eq 0
+            fi
+          done
+      - name: Retain source-bound records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-${{ matrix.phase }}-${{ github.sha }}
+          path: ${{ runner.temp }}/replay-qualification
+          retention-days: 90
+          if-no-files-found: error
+
+  attest:
+    name: verify replay red-green evidence
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: replay-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline
+      - uses: actions/download-artifact@v4
+        with:
+          name: replay-final-${{ github.sha }}
+          path: ${{ runner.temp }}/final
+      - name: Verify paired evidence
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}
+        run: |
+          for test in replay_rejects_response_after_deadline replay_rejects_oversized_whitespace_after_unsat replay_rejects_invalid_timeout_configuration; do
+            python3 agent-scripts/e2e-evidence.py attest --test "$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
+              --output "$EVIDENCE_ROOT/attestations/$test"
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
+              --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-attestations-${{ github.sha }}
+          path: ${{ runner.temp }}/attestations
+          retention-days: 90
+          if-no-files-found: error
