@@ -10133,16 +10133,40 @@ impl TypeChecker {
                 let augmented =
                     crate::try_catch::augmented_fn_fails(self.current_fn_fails.as_ref(), handlers);
                 let saved = self.current_fn_fails.replace(augmented);
+                let mut body_return = None;
                 for stmt in body {
-                    self.check_node(stmt)?;
-                }
-                self.current_fn_fails = saved;
-                for (_, handler_body) in handlers {
-                    for stmt in handler_body {
-                        self.check_node(stmt)?;
+                    let checked = self.check_node(stmt)?;
+                    if body_return.is_none() && node_terminates(stmt) {
+                        body_return = Some(checked);
                     }
                 }
-                Ok(Type::Void)
+                self.current_fn_fails = saved;
+                let mut return_types = Vec::new();
+                let mut every_arm_returns = body_return.is_some();
+                if let Some(checked) = body_return {
+                    return_types.push(checked);
+                }
+                for (_, handler_body) in handlers {
+                    let mut handler_return = None;
+                    for stmt in handler_body {
+                        let checked = self.check_node(stmt)?;
+                        if handler_return.is_none() && node_terminates(stmt) {
+                            handler_return = Some(checked);
+                        }
+                    }
+                    every_arm_returns &= handler_return.is_some();
+                    if let Some(checked) = handler_return {
+                        return_types.push(checked);
+                    }
+                }
+                // Each return was checked against the declared function type.
+                // Propagate it only when neither the body nor a handler can
+                // fall through; otherwise the construct still yields void.
+                if every_arm_returns {
+                    Ok(infer_common_arm_type(&return_types))
+                } else {
+                    Ok(Type::Void)
+                }
             }
 
             // RES-330: quantifier expression. Body must be Bool with
