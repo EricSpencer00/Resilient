@@ -1,0 +1,53 @@
+{
+  "run": 40054083771,
+  "url": "https://github.com/EricSpencer00/Resilient/actions/runs/40054083771",
+  "source_revision": "94630f8f45a5b8cd070afa7437ff715a6b293e5e",
+  "execution": "33 named tests in seven suites passed",
+  "retained_artifact_status": "incomplete; not accepted as complete retained baseline",
+  "defect": "upload-artifact default omitted hidden .tests.lock referenced by SHA256SUMS",
+  "correction_pr": 4945,
+  "downloaded_inventory": [
+    {
+      "path": ".tests.lock",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": false,
+      "actual_sha256": null
+    },
+    {
+      "path": "binary-identity.json",
+      "expected_sha256": "4c93fa0845c3c5ae87725d6b2d485c9674f85d6d107de263da7efec0901f0e02",
+      "retained": true,
+      "actual_sha256": "4c93fa0845c3c5ae87725d6b2d485c9674f85d6d107de263da7efec0901f0e02"
+    },
+    {
+      "path": "rz",
+      "expected_sha256": "66a75b17e0489579a4335de3a486ac1c6d0ff4736034630b406097b9f3bf6afe",
+      "retained": true,
+      "actual_sha256": "66a75b17e0489579a4335de3a486ac1c6d0ff4736034630b406097b9f3bf6afe"
+    },
+    {
+      "path": "tests/checksums.sha256",
+      "expected_sha256": "948feae106db672aa9b11f57b83318c411edd849ca63624107c0e6188c97108e",
+      "retained": true,
+      "actual_sha256": "948feae106db672aa9b11f57b83318c411edd849ca63624107c0e6188c97108e"
+    },
+    {
+      "path": "tests/manifest.json",
+      "expected_sha256": "44dd146ee3b23f0a567f9c7b16c9bd09e5313ca632ca0febecb52c8262fe35b4",
+      "retained": true,
+      "actual_sha256": "44dd146ee3b23f0a567f9c7b16c9bd09e5313ca632ca0febecb52c8262fe35b4"
+    },
+    {
+      "path": "tests/run-metadata.json",
+      "expected_sha256": "b07a0241815d1524440e23296a42968d2ff0e31fdeb8e5779f2d4b900f2da18a",
+      "retained": true,
+      "actual_sha256": "b07a0241815d1524440e23296a42968d2ff0e31fdeb8e5779f2d4b900f2da18a"
+    },
+    {
+      "path": "tests/summary.md",
+      "expected_sha256": "966390550e4cc809ec650815e155d305558714be4e0fb36b8aea1120cde80079",
+      "retained": true,
+      "actual_sha256": "966390550e4cc809ec650815e155d305558714be4e0fb36b8aea1120cde80079"
+    }
+  ]
+}

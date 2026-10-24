@@ -142,25 +142,28 @@ jobs:
                   fingerprint = hashlib.sha256((json.dumps(state, sort_keys=True, indent=2) + '\n').encode()).hexdigest()
                   assert fingerprint == source['worktree_sha256']
           PYCODE
-      - name: Validate the populated host preparation dossier
+      - name: Validate the populated host preparation dossiers
         run: |
-          (cd qualification/host-cli-2026-10 && sha256sum -c SHA256SUMS)
+          for dossier in qualification/host-cli-2026-10 qualification/host-cli-source-binding-2026-10; do
+            (cd "$dossier" && sha256sum -c SHA256SUMS)
+          done
           python3 - <<'PYTHON'
           import json, re, subprocess
-          result = subprocess.run(
-              ['python3', 'scripts/check_qualification.py',
-               'qualification/host-cli-2026-10/package.json'],
-              text=True, capture_output=True)
-          print(result.stdout)
-          report = json.loads(result.stdout)
-          assert result.returncode == 1 and report['status'] == 'gaps'
-          assert report['certified'] is False
-          allowed = (': evidence not reviewed', ': missing reviewer', ': missing review_record',
-                     ': evidence_control must reference reviewed evidence')
-          unexpected = [gap for gap in report['gaps'] if not (
-              gap.endswith(allowed) or re.fullmatch(
-                  r'open_issues: [0-9]+ unresolved; resolve before intake completion', gap))]
-          assert not unexpected, unexpected
+          for dossier in ('qualification/host-cli-2026-10', 'qualification/host-cli-source-binding-2026-10'):
+              result = subprocess.run(
+                  ['python3', 'scripts/check_qualification.py',
+                   dossier + '/package.json'],
+                  text=True, capture_output=True)
+              print(result.stdout)
+              report = json.loads(result.stdout)
+              assert result.returncode == 1 and report['status'] == 'gaps'
+              assert report['certified'] is False
+              allowed = (': evidence not reviewed', ': missing reviewer', ': missing review_record',
+                         ': evidence_control must reference reviewed evidence')
+              unexpected = [gap for gap in report['gaps'] if not (
+                  gap.endswith(allowed) or re.fullmatch(
+                      r'open_issues: [0-9]+ unresolved; resolve before intake completion', gap))]
+              assert not unexpected, unexpected
           PYTHON
       - name: Verify any produced bundles after failure
         if: always()

@@ -1,0 +1,52 @@
+{
+  "available_tool_versions": {
+    "cc": "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "clang": "Ubuntu clang version 21.1.8 (6ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/lib/llvm-21/bin",
+    "ld": "GNU ld (GNU Binutils for Ubuntu) 2.46\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty."
+  },
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cargo_lock_sha256": "c0fd47234d3e20dcfab556170e0f9ece69e41f5c67de537d25b3aee938ec0626",
+  "compiler_dynamic_libraries": {
+    "ldd": "linux-vdso.so.1 (0x000076a8b44a5000)\n\tlibz3.so.4 => /usr/lib/x86_64-linux-gnu/libz3.so.4 (0x000076a8b1a00000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000076a8b4465000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000076a8b4383000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x000076a8b1600000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000076a8b44a7000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x000076a8b1200000)",
+    "sha256": {
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": "75c84c6a1522e227864db7d8b40f66b5d6edefcff92538e15a964f1de7855390",
+      "/usr/lib/x86_64-linux-gnu/libc.so.6": "305014d0b30755fc12cb419074f6acb4d43c4111e006f2981fd23ee21e25e508",
+      "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1": "54136d206555a71414389995ea4f284730c83edb8faad99f5a722ba6663b5470",
+      "/usr/lib/x86_64-linux-gnu/libm.so.6": "eb04310abef45a9fb2f1780a0aced861d0efedb8208a1382687c34d1199d1123",
+      "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.35": "51c87d96c1058a08dd8ad0f7cf2af7c8e7824977dd54fe60a0cad2e157382e2b",
+      "/usr/lib/x86_64-linux-gnu/libz3.so.4": "ca6bd765b3c1c3402781741acf4184eb91833ea0b80ac69cca504a3d57a62c48"
+    }
+  },
+  "compiler_sha256": "7bdca0c29ce7c3706bc0e89a6dc2bcc10e25308edb6b89b6ad029f71640691a9",
+  "compiler_version": "rz 1.2.0: stable release (see STABILITY.md)\n  commit: be7d1302d66b\n  built: 2026-10-24T03:54:14Z\n  target: x86_64-unknown-linux-gnu\n  profile: debug\n  rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\n  features: default,z3",
+  "default_features": true,
+  "embedded_features": "default,z3",
+  "features": [
+    "z3"
+  ],
+  "libz3_sha256": "ca6bd765b3c1c3402781741acf4184eb91833ea0b80ac69cca504a3d57a62c48",
+  "locked": true,
+  "machine": "x86_64",
+  "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.43",
+  "profile": "debug; host CLI; not a release or embedded-target qualification",
+  "run_url": "https://github.com/EricSpencer00/Resilient/actions/runs/40060158827",
+  "runner_image": {
+    "ImageOS": "ubuntu26",
+    "ImageVersion": "20261023.163.3"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "solver_dynamic_libraries": {
+    "ldd": "linux-vdso.so.1 (0x00007ce389fd0000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ce388800000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ce389edb000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ce389eae000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ce388400000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ce389fd2000)",
+    "sha256": {
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": "75c84c6a1522e227864db7d8b40f66b5d6edefcff92538e15a964f1de7855390",
+      "/usr/lib/x86_64-linux-gnu/libc.so.6": "305014d0b30755fc12cb419074f6acb4d43c4111e006f2981fd23ee21e25e508",
+      "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1": "54136d206555a71414389995ea4f284730c83edb8faad99f5a722ba6663b5470",
+      "/usr/lib/x86_64-linux-gnu/libm.so.6": "eb04310abef45a9fb2f1780a0aced861d0efedb8208a1382687c34d1199d1123",
+      "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.35": "51c87d96c1058a08dd8ad0f7cf2af7c8e7824977dd54fe60a0cad2e157382e2b"
+    }
+  },
+  "source_revision": "be7d1302d66bb9061e497ffc6df6d9b57660d298",
+  "source_tree": "dc5f656a4b3dd158424320785325f27b156da042",
+  "z3_sha256": "a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3",
+  "z3_version": "Z3 version 4.13.3 - 64 bit"
+}

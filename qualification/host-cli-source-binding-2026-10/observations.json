@@ -1,0 +1,75 @@
+{
+  "run": 40060158827,
+  "job": 120771707937,
+  "source_revision": "be7d1302d66bb9061e497ffc6df6d9b57660d298",
+  "compiler_sha256": "7bdca0c29ce7c3706bc0e89a6dc2bcc10e25308edb6b89b6ad029f71640691a9",
+  "suite_count": 9,
+  "test_count": 57,
+  "failed": 0,
+  "ignored": 0,
+  "requirements": [
+    {
+      "requirement": "QHOST-001",
+      "source": "resilient/tests/contract_replay_roundtrip.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "contract_replay_roundtrip::straight_return_replays; contract_replay_roundtrip::branch_returns_replay_separately; contract_replay_roundtrip::constant_return_replays; contract_replay_roundtrip::false_postcondition_is_rejected",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-002",
+      "source": "resilient/tests/manifest_authentication.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "manifest_authentication::strict_replay_accepts_the_complete_signed_manifest; manifest_authentication::strict_replay_rejects_removed_obligations; manifest_authentication::strict_replay_rejects_reordered_obligations; manifest_authentication::strict_replay_rejects_changed_program_identity; manifest_authentication::strict_replay_rejects_missing_manifest_signature; manifest_authentication::strict_replay_rejects_wrong_manifest_key; manifest_authentication::legacy_replay_does_not_require_a_manifest_signature; manifest_authentication::compiler_signs_the_manifest_for_strict_replay",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-003",
+      "source": "resilient/tests/loop_certificate_roundtrip.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "loop_certificate_roundtrip::while_invariant_certificates_replay_with_real_solver; loop_certificate_roundtrip::finite_loop_certificates_replay_with_real_solver; loop_certificate_roundtrip::false_loop_invariant_does_not_emit_a_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-004",
+      "source": "resilient/tests/finite_loop_certificate_guards.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "finite_loop_certificate_guards::shadowed_iteration_binding_is_not_certified; finite_loop_certificate_guards::changing_iteration_binding_is_not_certified; finite_loop_certificate_guards::valid_iteration_binding_retains_runtime_check; finite_loop_certificate_guards::empty_iteration_does_not_claim_an_executed_invariant_proof",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-005",
+      "source": "resilient/tests/solver_replay_bounds.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_bounds::replay_rejects_response_after_deadline; solver_replay_bounds::replay_rejects_oversized_whitespace_after_unsat; solver_replay_bounds::replay_rejects_invalid_timeout_configuration; solver_replay_bounds::replay_accepts_clean_response_within_budget",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-006",
+      "source": "resilient/tests/solver_replay_required.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_required::requested_replay_rejects_missing_absolute_solver; solver_replay_required::requested_replay_rejects_solver_absent_from_path; solver_replay_required::requested_replay_rejects_empty_obligation_set; solver_replay_required::hash_only_verification_does_not_require_solver",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-007",
+      "source": "resilient/tests/solver_replay_conformance.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "solver_replay_conformance::replay_accepts_one_clean_unsat_response; solver_replay_conformance::replay_rejects_unsat_from_failed_process; solver_replay_conformance::replay_rejects_conflicting_or_extra_responses; solver_replay_conformance::replay_rejects_stderr_even_after_unsat; solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat; solver_replay_conformance::replay_rejects_nonproof_responses",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-008",
+      "source": "resilient/tests/source_binding.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "source_binding::signed_inventory_binds_all_parsed_inputs; source_binding::identical_relocated_sources_verify; source_binding::changed_entry_is_rejected; source_binding::changed_import_is_rejected; source_binding::missing_inventory_is_rejected; source_binding::unsigned_inventory_is_rejected; source_binding::malformed_inventory_is_rejected; source_binding::duplicate_inventory_file_is_rejected; source_binding::missing_import_edge_is_rejected; source_binding::unreachable_inventory_file_is_rejected; source_binding::traversal_inventory_path_is_rejected; source_binding::symlink_import_outside_root_is_rejected_before_read; source_binding::cache_and_no_cache_emit_identical_binding; source_binding::legacy_replay_remains_compatible_without_binding",
+      "result": "pass",
+      "evidence_control": "validation"
+    },
+    {
+      "requirement": "QHOST-009",
+      "source": "resilient/tests/source_binding_graph.rs at be7d1302d66bb9061e497ffc6df6d9b57660d298",
+      "test": "source_binding_graph::coherently_omitted_import_is_rejected; source_binding_graph::duplicate_edge_is_rejected; source_binding_graph::extra_edge_is_rejected; source_binding_graph::unsupported_version_and_empty_inventory_are_rejected; source_binding_graph::absolute_target_is_rejected; source_binding_graph::missing_source_and_invalid_root_are_rejected; source_binding_graph::nested_diamond_graph_relocates_with_its_common_root; source_binding_graph::package_resolution_graph_does_not_invoke_git; source_binding_graph::outside_root_fifo_is_rejected_without_opening_it; source_binding_graph::cyclic_graph_and_excessive_inventory_are_bounded",
+      "result": "pass",
+      "evidence_control": "validation"
+    }
+  ]
+}

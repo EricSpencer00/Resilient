@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "scope": "Selected host certificate emission/integrity/replay operations; not all language requirements.",
+  "requirements": [
+    {
+      "id": "QHOST-001",
+      "requirement": "Signed implementation-grounded straight, constant and branching return certificates shall replay through both consumer commands; a false postcondition shall be rejected.",
+      "source": "resilient/tests/contract_replay_roundtrip.rs",
+      "tests": [
+        "contract_replay_roundtrip::straight_return_replays",
+        "contract_replay_roundtrip::branch_returns_replay_separately",
+        "contract_replay_roundtrip::constant_return_replays",
+        "contract_replay_roundtrip::false_postcondition_is_rejected"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-002",
+      "requirement": "Strict replay shall authenticate the exact signed manifest enumeration and program label, rejecting missing/wrong signatures and deleted/reordered entries; legacy mode remains explicitly distinct.",
+      "source": "resilient/tests/manifest_authentication.rs",
+      "tests": [
+        "manifest_authentication::strict_replay_accepts_the_complete_signed_manifest",
+        "manifest_authentication::strict_replay_rejects_removed_obligations",
+        "manifest_authentication::strict_replay_rejects_reordered_obligations",
+        "manifest_authentication::strict_replay_rejects_changed_program_identity",
+        "manifest_authentication::strict_replay_rejects_missing_manifest_signature",
+        "manifest_authentication::strict_replay_rejects_wrong_manifest_key",
+        "manifest_authentication::legacy_replay_does_not_require_a_manifest_signature",
+        "manifest_authentication::compiler_signs_the_manifest_for_strict_replay"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-003",
+      "requirement": "The listed supported loop examples shall replay with the actual solver, and the false invariant example shall not emit a proof; no general finite-loop semantic completeness is claimed.",
+      "source": "resilient/tests/loop_certificate_roundtrip.rs",
+      "tests": [
+        "loop_certificate_roundtrip::while_invariant_certificates_replay_with_real_solver",
+        "loop_certificate_roundtrip::finite_loop_certificates_replay_with_real_solver",
+        "loop_certificate_roundtrip::false_loop_invariant_does_not_emit_a_proof"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-004",
+      "requirement": "The listed unsupported iteration-binding and empty-iteration cases shall not receive an invariant proof, preserving the tested runtime behavior.",
+      "source": "resilient/tests/finite_loop_certificate_guards.rs",
+      "tests": [
+        "finite_loop_certificate_guards::shadowed_iteration_binding_is_not_certified",
+        "finite_loop_certificate_guards::changing_iteration_binding_is_not_certified",
+        "finite_loop_certificate_guards::valid_iteration_binding_retains_runtime_check",
+        "finite_loop_certificate_guards::empty_iteration_does_not_claim_an_executed_invariant_proof"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-005",
+      "requirement": "Explicit replay shall enforce configured time and output limits, reject invalid configuration and accept a response within budget.",
+      "source": "resilient/tests/solver_replay_bounds.rs",
+      "tests": [
+        "solver_replay_bounds::replay_rejects_response_after_deadline",
+        "solver_replay_bounds::replay_rejects_oversized_whitespace_after_unsat",
+        "solver_replay_bounds::replay_rejects_invalid_timeout_configuration",
+        "solver_replay_bounds::replay_accepts_clean_response_within_budget"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-006",
+      "requirement": "Requested replay shall reject missing solvers and empty obligation sets; hash-only verification shall remain available without a solver.",
+      "source": "resilient/tests/solver_replay_required.rs",
+      "tests": [
+        "solver_replay_required::requested_replay_rejects_missing_absolute_solver",
+        "solver_replay_required::requested_replay_rejects_solver_absent_from_path",
+        "solver_replay_required::requested_replay_rejects_empty_obligation_set",
+        "solver_replay_required::hash_only_verification_does_not_require_solver"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-007",
+      "requirement": "Replay shall accept exactly one clean UNSAT response from a successful process and reject conflicting, malformed, diagnostic and nonproof responses.",
+      "source": "resilient/tests/solver_replay_conformance.rs",
+      "tests": [
+        "solver_replay_conformance::replay_accepts_one_clean_unsat_response",
+        "solver_replay_conformance::replay_rejects_unsat_from_failed_process",
+        "solver_replay_conformance::replay_rejects_conflicting_or_extra_responses",
+        "solver_replay_conformance::replay_rejects_stderr_even_after_unsat",
+        "solver_replay_conformance::replay_rejects_invalid_utf8_after_unsat",
+        "solver_replay_conformance::replay_rejects_nonproof_responses"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-008",
+      "requirement": "Strict source-root verification shall authenticate the exact parsed entry/import inventory and frozen source edges, accept identical relocated snapshots and reject substituted/missing/unsigned/malformed/duplicate/unreachable/traversing inputs; cache modes preserve the binding and legacy mode remains explicitly distinct.",
+      "source": "resilient/tests/source_binding.rs",
+      "tests": [
+        "source_binding::signed_inventory_binds_all_parsed_inputs",
+        "source_binding::identical_relocated_sources_verify",
+        "source_binding::changed_entry_is_rejected",
+        "source_binding::changed_import_is_rejected",
+        "source_binding::missing_inventory_is_rejected",
+        "source_binding::unsigned_inventory_is_rejected",
+        "source_binding::malformed_inventory_is_rejected",
+        "source_binding::duplicate_inventory_file_is_rejected",
+        "source_binding::missing_import_edge_is_rejected",
+        "source_binding::unreachable_inventory_file_is_rejected",
+        "source_binding::traversal_inventory_path_is_rejected",
+        "source_binding::symlink_import_outside_root_is_rejected_before_read",
+        "source_binding::cache_and_no_cache_emit_identical_binding",
+        "source_binding::legacy_replay_remains_compatible_without_binding"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    },
+    {
+      "id": "QHOST-009",
+      "requirement": "Strict source-root verification shall check complete bounded transitive import selection/reachability, reject coherently omitted, duplicate/extra, absolute or missing graph inputs, support common-root relocation, avoid package/Git resolution and reject outside-root special files, cycles and excessive inventories.",
+      "source": "resilient/tests/source_binding_graph.rs",
+      "tests": [
+        "source_binding_graph::coherently_omitted_import_is_rejected",
+        "source_binding_graph::duplicate_edge_is_rejected",
+        "source_binding_graph::extra_edge_is_rejected",
+        "source_binding_graph::unsupported_version_and_empty_inventory_are_rejected",
+        "source_binding_graph::absolute_target_is_rejected",
+        "source_binding_graph::missing_source_and_invalid_root_are_rejected",
+        "source_binding_graph::nested_diamond_graph_relocates_with_its_common_root",
+        "source_binding_graph::package_resolution_graph_does_not_invoke_git",
+        "source_binding_graph::outside_root_fifo_is_rejected_without_opening_it",
+        "source_binding_graph::cyclic_graph_and_excessive_inventory_are_bounded"
+      ],
+      "evidence": "tests/manifest.json",
+      "result_binding": "Named outcome must be pass in the retained hosted baseline; independent adequacy review pending."
+    }
+  ]
+}
