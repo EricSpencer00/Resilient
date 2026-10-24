@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location('coverage_primitives', Path(__file
 core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 PROFILE = 'legacy-lia-identity-v1'
+DEPENDENCY_SHA256 = 'de839e6f5a2f108421aef147cf64830cfd179d65883b1ff79e1efe59588aab62'
 
 
 def fail(code, detail):
@@ -100,12 +101,14 @@ def descriptor(args):
     if not isinstance(paths, list) or not 1 <= len(paths) <= 128:
         core.reject('binding', 'invalid_descriptor', 'expected1..128 explicit paths')
     identities = set()
-    for path in paths:
+    for index, path in enumerate(paths):
         if not isinstance(path, dict) or not isinstance(path.get('id'), str) or not path['id']:
             core.reject('binding', 'invalid_descriptor', 'missing path identity')
         if path['id'] in identities:
             core.reject('binding', 'invalid_descriptor', 'duplicate path identity')
         identities.add(path['id'])
+        if path.get('obligation') != {'fn': 'identity:ensures:0', 'kind': 'ensures_implementation', 'idx': index}:
+            core.reject('binding', 'invalid_descriptor', 'expected contiguous source-order identity:ensures:0 implementation paths')
         commands = path.get('commands')
         if not isinstance(commands, list):
             core.reject('binding', 'invalid_descriptor', 'missing exact command checkpoint')
@@ -131,6 +134,10 @@ def audit(args, state):
         if remaining <= 0:
             core.reject('binding', 'audit_timeout', 'whole audit deadline exceeded')
         return remaining
+    dependency = Path(__file__).with_name('audit-proof-coverage.py')
+    dependency_hash = core.digest(core.read(dependency))
+    if dependency_hash != DEPENDENCY_SHA256:
+        core.reject('binding', 'dependency_hash_mismatch', 'reviewed authentication/parser dependency changed')
     expected = descriptor(args)
     source_root = Path(args.source_root).resolve(strict=True)
     certs = Path(args.cert_dir).resolve(strict=True)
@@ -204,9 +211,11 @@ def audit(args, state):
             fail('checkpoint_mismatch', {'path': path['id'], 'obligation': identity})
         matched.append({'path': path['id'], 'obligation': identity, 'query_sha256': core.digest(raw),
                         'expanded_commands_sha256': core.digest(core.canonical(actual_commands))})
-    extra = [identity for identity in actual if identity[1] == 'ensures_implementation' and identity not in requested]
+    extra = [identity for identity in actual if identity not in requested]
     if extra:
         fail('extra_obligation', extra)
+    if core.digest(core.read(dependency)) != dependency_hash:
+        fail('input_changed', 'reviewed dependency changed during audit')
     checker_hash = core.digest(core.read(Path(__file__).resolve()))
     budget()
     return {'stage': 'structure', 'code': 'matched', 'authenticated': True, 'profile': PROFILE,
@@ -214,7 +223,8 @@ def audit(args, state):
             'descriptor_sha256': args.descriptor_sha256, 'source_sha256': source['sha256'],
             'qualified_declaration': expected['qualified_declaration'], 'clause': expected['clause'],
             'compiler_sha256': compiler_hash, 'solver_sha256': solver_hash, 'paths': matched,
-            'checker_sha256': checker_hash}
+            'checker_sha256': checker_hash, 'dependency_sha256': dependency_hash,
+            'tool_graph_sha256': core.digest(core.canonical({'checker': checker_hash, 'dependency': dependency_hash}))}
 
 
 def main():
