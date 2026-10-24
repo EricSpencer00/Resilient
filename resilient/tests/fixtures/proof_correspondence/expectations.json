@@ -1,0 +1,127 @@
+{
+  "schema": "resilient-correspondence-fixture-expectations",
+  "version": 1,
+  "authorship": "Codex GPT-6.1 Sol low; authored from source ResultModel semantics before next-cycle query capture",
+  "profile": "vm-i64-wrap-v1",
+  "parameter_sorts": {
+    "x": "(_ BitVec 64)"
+  },
+  "claim": "Manually reviewed fixture-specific path and substitution expectations, not automatic source completeness. Exact guard structure must be checked separately: equivalence of UNSAT whole queries cannot detect missing guards. Try handlers are conservative modeled alternatives, not demonstrated runtime-feasible exception paths.",
+  "fixtures": [
+    {
+      "fixture": "straight.rz",
+      "source_sha256": "527159883e8af9699d7fdbef01e27fbf027b7e777a3ee31c106cbac573b370c2",
+      "declaration": "program::identity",
+      "clause": 0,
+      "entry": "true",
+      "paths": [
+        {
+          "id": "entry",
+          "domain": "true",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        }
+      ]
+    },
+    {
+      "fixture": "if_else.rz",
+      "source_sha256": "0072a18c8c00064d7cfb8981f9fe2d500ee25ed39fea4bf69f5967f794230bdc",
+      "declaration": "program::identity",
+      "clause": 0,
+      "entry": "true",
+      "paths": [
+        {
+          "id": "then",
+          "domain": "(bvsge x #x0000000000000000)",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        },
+        {
+          "id": "else",
+          "domain": "(not (bvsge x #x0000000000000000))",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        }
+      ]
+    },
+    {
+      "fixture": "early_fallthrough.rz",
+      "source_sha256": "cdf18fcffa19bdfa05a0a69ed9faa8c9c90356b33d184fa784f44cb2246bb797",
+      "declaration": "program::identity",
+      "clause": 0,
+      "entry": "true",
+      "paths": [
+        {
+          "id": "then",
+          "domain": "(bvsge x #x0000000000000000)",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        },
+        {
+          "id": "fallthrough",
+          "domain": "(not (bvsge x #x0000000000000000))",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        }
+      ]
+    },
+    {
+      "fixture": "first_match_guarded.rz",
+      "source_sha256": "8afe5b00e54f115428be459d0e9363c92077ea575b27183cc845fe899cf6a6e9",
+      "declaration": "program::identity",
+      "clause": 0,
+      "entry": "true",
+      "paths": [
+        {
+          "id": "arm0",
+          "domain": "(and (and (= x #x0000000000000000) (bvsge x #x0000000000000000)) (not false))",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        },
+        {
+          "id": "arm1",
+          "domain": "(and (= x #x0000000000000001) (not (or false (and (= x #x0000000000000000) (bvsge x #x0000000000000000)))))",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        },
+        {
+          "id": "wildcard",
+          "domain": "(and true (not (or (or false (and (= x #x0000000000000000) (bvsge x #x0000000000000000))) (= x #x0000000000000001))))",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "source-input-domain"
+        }
+      ]
+    },
+    {
+      "fixture": "try_overapprox.rz",
+      "source_sha256": "ae7b263b5f96ca15f90e0d4ebff10f5d3cd5535872dfffd6570f93658e082237",
+      "declaration": "program::identity",
+      "clause": 0,
+      "entry": "true",
+      "paths": [
+        {
+          "id": "body",
+          "domain": "true",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "conservative-model-domain-only"
+        },
+        {
+          "id": "handler-Failure",
+          "domain": "true",
+          "returned_value": "x",
+          "postcondition_after_substitution": "(= x x)",
+          "feasibility_claim": "conservative-model-domain-only"
+        }
+      ]
+    }
+  ]
+}
