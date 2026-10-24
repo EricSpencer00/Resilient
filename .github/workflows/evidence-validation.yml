@@ -52,6 +52,26 @@ jobs:
           for manifest in sorted(Path('qualification').rglob('manifest.json')):
               subprocess.run(['python3', 'agent-scripts/e2e-evidence.py', 'verify', str(manifest.parent)], check=True)
           PY
+      - name: Verify permanent hosted records
+        run: |
+          root=qualification/hosted-records/2026-10-contract-runtime
+          (cd "$root" && sha256sum -c SHA256SUMS)
+          cmp "$root/contract/baseline/solver.json" "$root/contract/final/solver.json"
+          for test in straight_return_replays branch_returns_replay_separately constant_return_replays; do
+            python3 agent-scripts/e2e-evidence.py verify-attestation "$root/contract/attestations/$test" \
+              --baseline "$root/contract/baseline/$test" --final "$root/contract/final/$test"
+          done
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess, tempfile
+          root = pathlib.Path('qualification/hosted-records/2026-10-contract-runtime')
+          for source in json.loads((root / 'sources.json').read_text()):
+              with tempfile.TemporaryDirectory() as temporary:
+                  env = dict(os.environ, GIT_INDEX_FILE=str(pathlib.Path(temporary) / 'index'))
+                  subprocess.run(['git', 'read-tree', source['base']], env=env, check=True)
+                  subprocess.run(['git', 'apply', '--cached', str(root / source['patch'])], env=env, check=True)
+                  tree = subprocess.check_output(['git', 'write-tree'], env=env, text=True).strip()
+                  assert tree == source['tree'], (source['label'], tree)
+          PYCODE
       - name: Verify any produced bundles after failure
         if: always()
         env:

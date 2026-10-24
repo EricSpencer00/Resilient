@@ -1,0 +1,160 @@
+{
+  "baseline": {
+    "manifest": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "resilient/Cargo.toml",
+        "--locked",
+        "--features",
+        "z3",
+        "--test",
+        "contract_replay_roundtrip",
+        "constant_return_replays",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "evidence_sha256": {
+        "summary.md": "57968908b9b8731087524617fc9788a0a9715c12d199cf0823b9bf62e4a770b4"
+      },
+      "inputs": [
+        {
+          "path": "resilient/tests/contract_replay_roundtrip.rs",
+          "sha256": "1a8c0fd584b41abc243ebde1b5a839beee754b2f0501bac9f5d0fc396f219601"
+        }
+      ],
+      "result": {
+        "exit_code": 101,
+        "outcomes": [
+          {
+            "name": "command",
+            "status": "failed"
+          },
+          {
+            "name": "constant_return_replays",
+            "status": "failed"
+          }
+        ],
+        "status": "failed"
+      },
+      "run_id": "6dedff81b5bc97a4f2ba6c634b5353a79b675c5bb8a18e2a6aea4fda96243833",
+      "schema": "resilient-e2e-evidence",
+      "schema_version": 1,
+      "source": {
+        "commit": "c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694",
+        "dirty": false,
+        "worktree_sha256": null
+      },
+      "toolchain": {
+        "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+        "python": "Python 3.14.4",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+      }
+    },
+    "manifest_sha256": "e0fb41697dd048441f52f866802906d4d7215999b0dd157107865011ed11f084",
+    "run_id": "6dedff81b5bc97a4f2ba6c634b5353a79b675c5bb8a18e2a6aea4fda96243833",
+    "source": {
+      "commit": "c9bf76695638eeccd0dd6cc3b0f8aac42e1d3694",
+      "dirty": false,
+      "worktree_sha256": null
+    },
+    "summary_sha256": "57968908b9b8731087524617fc9788a0a9715c12d199cf0823b9bf62e4a770b4"
+  },
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "contract_replay_roundtrip",
+    "constant_return_replays",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "88e961f5d81ca1805869dcb1b40c5b3863cb0f88f55540fb4ba6705462c8bbc4"
+  },
+  "final": {
+    "manifest": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "resilient/Cargo.toml",
+        "--locked",
+        "--features",
+        "z3",
+        "--test",
+        "contract_replay_roundtrip",
+        "constant_return_replays",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "evidence_sha256": {
+        "summary.md": "2ceb89c1efd03ba7416682778a4685929df0104f6df422eb73056bc26ff07aab"
+      },
+      "inputs": [
+        {
+          "path": "resilient/tests/contract_replay_roundtrip.rs",
+          "sha256": "1a8c0fd584b41abc243ebde1b5a839beee754b2f0501bac9f5d0fc396f219601"
+        }
+      ],
+      "result": {
+        "exit_code": 0,
+        "outcomes": [
+          {
+            "name": "command",
+            "status": "passed"
+          },
+          {
+            "name": "constant_return_replays",
+            "status": "passed"
+          }
+        ],
+        "status": "passed"
+      },
+      "run_id": "1444dade07fd5bfdabfbc0fc79c9cdd4fc34aa21d342b07355a606bac5f04df3",
+      "schema": "resilient-e2e-evidence",
+      "schema_version": 1,
+      "source": {
+        "commit": "dd68821162438478c65bbbdb4f1cff52f9e09afd",
+        "dirty": false,
+        "worktree_sha256": null
+      },
+      "toolchain": {
+        "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+        "python": "Python 3.14.4",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+      }
+    },
+    "manifest_sha256": "6d5c988cf75d1e268d7e7184fb0e9db1104f0c204b44699316f3fa1d85bd29ae",
+    "run_id": "1444dade07fd5bfdabfbc0fc79c9cdd4fc34aa21d342b07355a606bac5f04df3",
+    "source": {
+      "commit": "dd68821162438478c65bbbdb4f1cff52f9e09afd",
+      "dirty": false,
+      "worktree_sha256": null
+    },
+    "summary_sha256": "2ceb89c1efd03ba7416682778a4685929df0104f6df422eb73056bc26ff07aab"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/contract_replay_roundtrip.rs",
+      "sha256": "1a8c0fd584b41abc243ebde1b5a839beee754b2f0501bac9f5d0fc396f219601"
+    }
+  ],
+  "schema": "resilient-e2e-red-green-attestation",
+  "schema_version": 1,
+  "test": "constant_return_replays",
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}
