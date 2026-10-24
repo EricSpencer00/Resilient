@@ -25,7 +25,8 @@ try:
         sentinel.write_text('#!/bin/sh\nprintf used > "$RZ_TEST_UNEXPECTED_TOOL"\nexit 97\n')
         sentinel.chmod(0o755)
     marker=fixture.root/'unexpected-tool'
-    fixture.env.update(RZ_VERSION=record['tag'],RZ_TEST_UNEXPECTED_TOOL=str(marker))
+    fixture.env.pop('RZ_VERSION',None)
+    fixture.env.update(RZ_TEST_UNEXPECTED_TOOL=str(marker))
     command=f"curl -fsSL https://github.com/EricSpencer00/Resilient/releases/download/{record['tag']}/install.sh | bash"
     subprocess.run(['bash','-o','pipefail','-c',command],env=fixture.env,check=True,timeout=120)
     binary=fixture.prefix/'bin/rz'

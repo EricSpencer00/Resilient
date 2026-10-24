@@ -129,10 +129,16 @@ jobs:
           assert len({r['version'] for r in records})==1
           for record in records:
               assert record['archive_sha256']==hashlib.sha256((root/record['archive']).read_bytes()).hexdigest()
-          (root/'release-manifest.json').write_text(json.dumps({'source_commit':source,'platforms':records},sort_keys=True,indent=2)+'\n')
+          tag=records[0]['tag']
+          installer=pathlib.Path('scripts/install.sh').read_text()
+          assert installer.count('TAG="${RZ_VERSION:-}"')==1
+          installer=installer.replace('TAG="${RZ_VERSION:-}"','TAG="${RZ_VERSION:-'+tag+'}"')
+          (root/'install.sh').write_text(installer)
+          installer_identity={'file':'install.sh','default_tag':tag,'sha256':hashlib.sha256((root/'install.sh').read_bytes()).hexdigest()}
+          (root/'release-manifest.json').write_text(json.dumps({'source_commit':source,'platforms':records,'installer':installer_identity},sort_keys=True,indent=2)+'\n')
           (root/'SHA256SUMS').write_text(''.join((root/(r['archive']+'.sha256')).read_text() for r in sorted(records,key=lambda r:r['target'])))
           PY
-          cp scripts/install.sh LICENSE dist/
+          cp LICENSE dist/
           (cd dist && sha256sum --check SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:

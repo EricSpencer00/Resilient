@@ -13,6 +13,9 @@ tag=sys.argv[1]
 assert tag.startswith('v') and tag[1:].replace('.','').isdigit()
 base=f'https://github.com/EricSpencer00/Resilient/releases/download/{tag}'
 manifest=json.loads(subprocess.check_output(['curl','-fsSL',base+'/release-manifest.json'],timeout=60))
+installer=subprocess.check_output(['curl','-fsSL',base+'/install.sh'],timeout=60)
+assert hashlib.sha256(installer).hexdigest()==manifest['installer']['sha256']
+assert manifest['installer']['default_tag']==tag
 source=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()
 assert manifest['source_commit']==source
 arch=subprocess.check_output(['uname','-m'],text=True).strip()
@@ -26,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix='rz-public-install-') as temporary:
         sentinel.write_text('#!/bin/sh\nprintf used > "$RZ_TEST_UNEXPECTED_TOOL"\nexit 97\n')
         sentinel.chmod(0o755)
     prefix=root/'prefix'; profile=root/'profile'
-    environment=dict(os.environ,RZ_PREFIX=str(prefix),RZ_PROFILE=str(profile),RZ_VERSION=tag,RZ_TEST_UNEXPECTED_TOOL=str(marker),PATH=str(tools)+os.pathsep+os.environ['PATH'])
+    environment=dict(os.environ,RZ_PREFIX=str(prefix),RZ_PROFILE=str(profile),RZ_TEST_UNEXPECTED_TOOL=str(marker),PATH=str(tools)+os.pathsep+os.environ['PATH'])
+    environment.pop('RZ_VERSION',None)
     command=f'curl -fsSL {base}/install.sh | bash'
     subprocess.run(['bash','-o','pipefail','-c',command],env=environment,check=True,timeout=180)
     assert not marker.exists(), 'installer invoked an additional language or source-build tool'
