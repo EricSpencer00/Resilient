@@ -79,9 +79,16 @@ may silently become implementation proof coverage.
 
 The source-authored 16-case requirements, 20 boundary controls and 15 token-kind
 controls have separate frozen histories. The first 16-case candidate had named
-passing outcomes but suppressed raw `println!` reports. Output-only harness v3
-will retain direct stdout reports under a separately recorded source version;
-old runs must not be relabeled as having retained those reports. The quoted-token
-source-review defect remains a merge blocker until actual hosted baseline and
-corrected-control evidence are retained. No full-language completeness or human
-independent assessment is claimed.
+passing outcomes but suppressed raw `println!` reports. The quoted-token defect
+baseline retained 14 failing token-kind tests: the parser reported `inventoried`
+for all 14 quoted-syntax inputs instead of rejecting them. Its legitimate-string
+control passed.
+Output-only harness v3 preserves the assertions and fixture bytes under a
+separately recorded source version. The corrected hosted run
+[40078730080](https://github.com/EricSpencer00/Resilient/actions/runs/40078730080)
+retained all 51 JSON reports: 10 expected inventories, 6 requirement rejections,
+20 boundary rejections, 14 quoted-syntax rejections and one legitimate-string
+inventory. All expected codes matched. These are lexical inventory and boundary
+results, not compiler or proof coverage. Old runs are not relabeled as retaining
+suppressed reports. No full-language completeness or human independent
+assessment is claimed.
