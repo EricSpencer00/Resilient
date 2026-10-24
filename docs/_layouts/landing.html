@@ -147,9 +147,9 @@
   <div class="rl-manifesto__inner">
     <p class="rl-manifesto__index">§ 01 · The thesis</p>
     <p class="rl-manifesto__lead">
-      Most languages assume the happy path. Resilient assumes the
-      <em>worst</em> path — and refuses to ship until you have proven your
-      software survives it.
+      Put failure handling in the language.
+      State contracts, check supported obligations, and recover
+      inside <em>live</em> blocks.
     </p>
 
     <div class="rl-manifesto__cols">
@@ -261,38 +261,40 @@
       <div class="rl-contracts__codeside">
         <div class="rl-codeplate rl-codeplate--light">
           <div class="rl-codeplate__chrome">
-            <span class="rl-codeplate__name">infusion_pump.rz</span>
+            <span class="rl-codeplate__name">ident_round.rz</span>
             <span class="rl-codeplate__badge rl-codeplate__badge--proved">proved</span>
           </div>
-<pre class="rl-codeplate__code"><span class="t-k">fn</span> <span class="t-f">deliver_dose</span>(<span class="t-t">float</span> ml_per_hr, <span class="t-t">int</span> seconds)
-    <span class="t-k">requires</span> ml_per_hr &gt;= <span class="t-n">0.1</span> &amp;&amp; ml_per_hr &lt;= <span class="t-n">300.0</span>
-    <span class="t-k">requires</span> seconds  &gt; <span class="t-n">0</span>     &amp;&amp; seconds  &lt;= <span class="t-n">86_400</span>
-    <span class="t-k">ensures</span>  total_ml(result) &lt;= MAX_DAILY_ML
+<pre class="rl-codeplate__code"><span class="t-k">fn</span> <span class="t-f">ident_round</span>(<span class="t-t">int</span> x) -&gt; <span class="t-t">int</span>
+    <span class="t-k">requires</span> x + <span class="t-n">0</span> == x
 {
-    <span class="t-k">let</span> total = ml_per_hr * (seconds <span class="t-k">as</span> <span class="t-t">float</span>) / <span class="t-n">3600.0</span>;
-    pump::dispense(total);
-    <span class="t-k">return</span> Dose { ml: total };
-}</pre>
+    <span class="t-k">return</span> x;
+}
+
+<span class="t-k">fn</span> <span class="t-f">main</span>() {
+    println(ident_round(<span class="t-n">42</span>));
+}
+
+main();</pre>
         </div>
 
         <div class="rl-terminal-v2">
-          <div class="rl-terminal-v2__prompt">$ rz --audit infusion_pump.rz</div>
-<pre class="rl-terminal-v2__out"><span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  ml_per_hr ∈ [0.1, 300.0]    <span class="t-mu">proved</span>
-<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  seconds   ∈ (0, 86_400]   <span class="t-mu">proved</span>
-<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">ensures</span>   total_ml ≤ MAX_DAILY_ML <span class="t-mu">proved</span>
+          <div class="rl-terminal-v2__prompt">$ rz --emit-certificate ./certs ident_round.rz</div>
+<pre class="rl-terminal-v2__out"><span class="t-cert">→</span>  <span class="t-mu">Exported obligation</span>
+./certs/ident_round__decl__0.smt2
 
-<span class="t-cert">→</span>  <span class="t-mu">certificate emitted at</span> ./certs/infusion_pump.smtlib2
-<span class="t-cert">→</span>  <span class="t-mu">re-checkable under any SMT solver</span></pre>
+<span class="t-cert">→</span>  <span class="t-mu">Replay the query with Z3</span>
+z3 -smt2 ./certs/ident_round__decl__0.smt2
+<span class="t-ok">unsat</span></pre>
         </div>
       </div>
 
       <div class="rl-contracts__copy">
         <p class="rl-contracts__lede">
           <code>requires</code> states what must hold on entry.
-          <code>ensures</code> states what holds on exit. The Z3 backend
-          decides them statically when it can — and emits an SMT&#8209;LIB2
-          certificate so a downstream auditor can re&#8209;verify under
-          their own solver of record.
+          <code>ensures</code> states what must hold on exit. The Z3 backend
+          checks supported obligations. Request SMT&#8209;LIB2 export with
+          <code>--emit-certificate</code>, then replay the emitted query
+          independently with Z3.
         </p>
 
         <ul class="rl-contracts__list">
@@ -313,8 +315,8 @@
           <li>
             <span class="rl-contracts__bullet">C</span>
             <div>
-              <strong>Certified</strong>
-              <span>Every proof is exportable as SMT&#8209;LIB2 — auditable under your own solver of record.</span>
+              <strong>Exported</strong>
+              <span>Supported discharged obligations have independently replayable SMT&#8209;LIB2 queries.</span>
             </div>
           </li>
         </ul>

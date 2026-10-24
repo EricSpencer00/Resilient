@@ -285,29 +285,16 @@ curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/r
 rz --version
 ```
 
-**Z3 in the box (RES-3979/RES-3985):** three of the four release
-tarballs statically link Z3 — `rz --audit` gets real SMT proofs out of
-the box, no `brew install z3` / `apt-get install libz3-dev` required
-(verified: the shipped binaries have no `libz3` runtime dependency):
+**Z3 in the box:** all four Resilient 1.2.0 archives include statically linked Z3 and are built on native runners. No separate Z3 installation is needed for supported contract verification.
 
-| Target | Z3 static-linked? |
-|---|---|
-| `x86_64-unknown-linux-gnu` | Yes |
-| `aarch64-unknown-linux-gnu` | Yes (cross-compiled) |
-| `aarch64-apple-darwin` | Yes (built via Homebrew GCC 13) |
-| `x86_64-apple-darwin` | No — see below |
+| Target | Native build | Z3 static-linked |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | Linux x86_64 | Yes |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | Yes |
+| `aarch64-apple-darwin` | macOS arm64 | Yes |
+| `x86_64-apple-darwin` | macOS x86_64 | Yes |
 
-`x86_64-apple-darwin` doesn't yet: it's a cross-arch build from the
-arm64 `macos-latest` runner, and Homebrew's `gcc@13` bottle used for the
-`aarch64-apple-darwin` leg is arm64-native only (`g++-13 -arch x86_64`
-silently emits an arm64 object instead of cross-compiling — verified
-locally), so the same recipe doesn't carry over without bootstrapping a
-separate Rosetta-hosted Intel Homebrew prefix. Its binary still runs
-fine, it just reports `Unknown` for obligations the hand-rolled folder
-can't close, exactly like every release before this one. See
-`.github/workflows/release.yml` for the current per-target matrix and
-[#3985](https://github.com/EricSpencer00/Resilient/issues/3985) for the
-remaining platform.
+The release manifests record each executable's features, hashes and runtime dependencies. These archives still use the platform's system runtime libraries.
 
 **LSP in the box (RES-4002):** every pre-built release binary, on all
 four targets, ships with `--features lsp` — `rz --lsp` works
