@@ -1,0 +1,6 @@
+fn erased(int x) -> int
+    ensures result == 0
+{
+    return (x / 0) * 0;
+}
+erased(1);

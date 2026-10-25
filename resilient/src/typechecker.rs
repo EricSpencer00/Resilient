@@ -1028,7 +1028,7 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
         Node::Identifier { name, .. } => bindings.get(name).copied(),
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "-" => fold_const_i64(right, bindings).map(|v| -v),
+        } if *operator == "-" => fold_const_i64(right, bindings).and_then(i64::checked_neg),
         Node::InfixExpression {
             left,
             operator,
@@ -7306,9 +7306,20 @@ impl TypeChecker {
                             requires,
                             ensures,
                             body,
+                            parameters,
+                            return_type,
                             ..
                         } = &statement.node
                         {
+                            if !crate::contract_verify::machine_profile(
+                                parameters,
+                                return_type.as_deref(),
+                                requires,
+                                ensures,
+                                body,
+                            ) {
+                                continue;
+                            }
                             for (clause, ensures) in ensures.iter().enumerate() {
                                 if let Some(paths) =
                                     crate::contract_verify::replay_ensures(ensures, requires, body)
@@ -8684,13 +8695,19 @@ impl TypeChecker {
                             // ever answer Unknown for it.
                             if verdict.is_none()
                                 && self.warn_unverified
-                                && !crate::ensures_refutation::discharged_against_body(
+                                && !(crate::contract_verify::machine_profile(
+                                    parameters,
+                                    declared_rt.as_deref(),
+                                    requires,
+                                    ensures,
+                                    body,
+                                ) && crate::ensures_refutation::discharged_against_body(
                                     name,
                                     clause,
                                     requires,
                                     body,
                                     decl_idx >= requires.len(),
-                                )
+                                ))
                             {
                                 emit_partial_proof_warning(&self.source_path, clause);
                             }
@@ -11942,6 +11959,16 @@ impl TypeChecker {
                             }
                         }
                         for (clause_idx, clause) in info.requires.iter().enumerate() {
+                            if !crate::machine_arithmetic::runtime_elision_safe(
+                                &info.parameters,
+                                clause,
+                            ) {
+                                self.stats
+                                    .per_fn_runtime
+                                    .entry(callee_name.clone())
+                                    .or_insert(1);
+                            }
+
                             // Try the cheap hand-rolled folder first.
                             let mut verdict = fold_const_bool(clause, &bindings);
                             // RES-136: slot for Z3's counterexample; only

@@ -1898,6 +1898,88 @@ pub fn prove_overflow_safe(
     Z3_CTX.with(|ctx| prove_overflow_safe_in(ctx, goal, axioms, bindings, timeout_ms))
 }
 
+/// A validity query and its verdict use the same asserted BV64 formula.
+/// Failed/unknown diagnostic queries are never accepted proof certificates.
+#[derive(Clone)]
+pub(crate) struct MachineQuery {
+    pub verdict: Option<bool>,
+    pub query: String,
+    pub counterexample: Option<String>,
+}
+
+pub(crate) fn machine_query(
+    goal: &Node,
+    axioms: &[Node],
+    evaluated: &[&Node],
+    entry_count: usize,
+    timeout_ms: u32,
+) -> Option<MachineQuery> {
+    if !crate::machine_arithmetic::wrap_mode()
+        || entry_count > axioms.len()
+        || axioms.len() > 128
+        || evaluated.len() > 4
+        || !std::iter::once(goal)
+            .chain(axioms)
+            .chain(evaluated.iter().copied())
+            .all(crate::machine_arithmetic::supported)
+    {
+        return None;
+    }
+    Z3_CTX.with(|ctx| {
+        let bindings = HashMap::new();
+        let formula = translate_bool_bv_width(ctx, goal, &bindings, 64)?;
+        let assumptions: Vec<_> = axioms.iter().map(|a| translate_bool_bv_width(ctx, a, &bindings, 64)).collect::<Option<_>>()?;
+        // Require definedness before asking about a returned value. This is
+        // conservative for short-circuit expressions: an unreachable RHS may
+        // withhold credit, but an evaluated fault can never disappear by SMT simplification.
+        fn guards<'c>(ctx: &'c z3::Context, node: &Node, out: &mut Vec<Bool<'c>>, bindings: &HashMap<String, i64>) -> Option<()> {
+            match node {
+                Node::PrefixExpression { right, .. } => guards(ctx, right, out, bindings)?,
+                Node::InfixExpression { left, operator, right, .. } => {
+                    guards(ctx, left, out, bindings)?;
+                    guards(ctx, right, out, bindings)?;
+                    if matches!(*operator, "/" | "%") {
+                        out.push(translate_bv_width(ctx, right, bindings, 64)?._eq(&BV::from_i64(ctx, 0, 64)).not());
+                    }
+                }
+                _ => {}
+            }
+            Some(())
+        }
+        let mut entry_defined = Vec::new();
+        let mut path_defined = Vec::new();
+        let mut value_defined = Vec::new();
+        for node in &axioms[..entry_count] { guards(ctx, node, &mut entry_defined, &bindings)?; }
+        for node in &axioms[entry_count..] { guards(ctx, node, &mut path_defined, &bindings)?; }
+        for node in std::iter::once(goal).chain(evaluated.iter().copied()) { guards(ctx, node, &mut value_defined, &bindings)?; }
+        fn conjunction<'c>(ctx: &'c z3::Context, values: &[Bool<'c>]) -> Bool<'c> {
+            if values.is_empty() { Bool::from_bool(ctx, true) } else { Bool::and(ctx, &values.iter().collect::<Vec<_>>()) }
+        }
+        let entry = conjunction(ctx, &assumptions[..entry_count]);
+        let path = conjunction(ctx, &assumptions[entry_count..]);
+        let safety = Bool::and(ctx, &[&conjunction(ctx, &entry_defined), &entry.implies(&Bool::and(ctx, &[&conjunction(ctx, &path_defined), &path.implies(&conjunction(ctx, &value_defined))]))]);
+        let solver = z3::Solver::new(ctx);
+        let mut params = z3::Params::new(ctx);
+        params.set_u32("timeout", timeout_ms.clamp(1, 5000));
+        solver.set_params(&params);
+        solver.assert(&safety.not());
+        if solver.check() != z3::SatResult::Unsat { return None; }
+        solver.reset();
+        solver.set_params(&params);
+        let claim = Bool::and(ctx, &[&safety, &entry.implies(&path.implies(&formula))]);
+        solver.assert(&claim.not());
+        let asserted_session = solver.to_string();
+        let verdict = match solver.check() { z3::SatResult::Unsat => Some(true), z3::SatResult::Sat => Some(false), z3::SatResult::Unknown => None };
+        let counterexample = if verdict == Some(false) { extract_counterexample_bv_width(ctx, &solver, goal, axioms, &bindings, 64) } else { None };
+        let mut query = format!("; implementation-profile: {}\n; arithmetic-semantics: bytecode-vm; other-backends-unqualified\n(set-logic QF_BV)\n", crate::machine_arithmetic::PROFILE);
+        // Solver display retains exact declarations/assertions, including any
+        // let sharing, rather than rebuilding a second formula for replay.
+        query.push_str(&asserted_session);
+        query.push_str("\n(check-sat)\n");
+        Some(MachineQuery { verdict, query, counterexample })
+    })
+}
+
 const OVERFLOW_SAFE_WIDTH: u32 = 64;
 
 fn prove_overflow_safe_in(

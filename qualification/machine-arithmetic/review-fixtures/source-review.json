@@ -1,0 +1,29 @@
+{
+  "provenance": "Read-only technical source review by Sol6.1 low; not human assessment acceptance. No builds/tests/executions performed.",
+  "baseline_source": "9f1d870acc5d5ba963a7e27d522e60aa70f7213e",
+  "status": "Frozen code-derived fixture predictions for owner to validate on GitHub-hosted Actions; syntax/runtime outcomes NOT experimentally established.",
+  "source_basis": {
+    "global_nan": "const syntax from examples/const_eval.rz; Float alias typechecker; eval_const_expr Float division lib27649; float equality vm3507; enclosed function environment typechecker8508",
+    "erased_div_zero": "vm271 rejects zero, BV translator2264 totalizes division; original evaluated body must remain in definedness proof",
+    "neg_min_constant": "typechecker fold_const_i64 unary neg1028 unchecked; VM wrappingneg vm265; literal magnitude kept <=i64MAX",
+    "unbound_result_body": "result implicit postcondition binding is not a body parameter unless explicitly declared; helper must distinguish occurrence contexts",
+    "short_circuit_control": "compiler4721/4768 skips unreachable RHS; conservative withholding is safe but not positive coverage",
+    "signed_div_rem_control": "vm div/rem signed truncation vm271\u2013299; expected outputs -2 and-1, bvsdiv/bvsrem not mathematical Int div/mod",
+    "parameter_result_cases": "No reserved-name policy found. Requires/body parameter remains input symbol; only ensures pseudoresult substituted. Compiler3273/interpreter29300 bind result in postcheck. Positive predicted6; negative predicted implementation refutation with input result5. Hosted validation required."
+  },
+  "files": {
+    "erased_div_zero.rz": "5bb653639ee3e3409dfcdae3eddda6b7ff837adfee1754443bce296db463be5f",
+    "global_nan.rz": "ca05ab141227b9db7b9f74a0c0b2a97b70166ce870ba5b5251a9e015402bf697",
+    "neg_min_constant.rz": "80cbb36de9195361b1a5a73a6108e2a9362edfc88d33349b038e7aeffcfc7aed",
+    "parameter_result_negative.rz": "1b6719bb1a4eb61a921d8ecf841707ea7d5bdd407dd20140bef88d10fc7e1876",
+    "parameter_result_positive.rz": "8931217e013225b5bdcca4c3e01a2e8ff851fc36fb9940e421fd36dfa40b5a8d",
+    "short_circuit_control.rz": "58081aab6f037634376b2f669346eb705a77a5d9d95882d1781927a0e590a5d3",
+    "signed_div_rem_control.rz": "345b8dd450b3cfa1243d1e49dccf834a7886230d17bd340ac73baf5c997af50b",
+    "unbound_result_body.rz": "74c79418521b21b28987f7ef9cb5f4e676d2eaf81e0e98be00506fd03794d726"
+  },
+  "additional_findings": [
+    "Draft export typechecker7298 and warning suppression8669 signature-only gating must match full machine_profile used by audit/refutation; global type safety otherwise bypassable.",
+    "Main fold_const_i64 unary neg1028 unchecked on MIN; code-derived debug-panic fixture requires hosted validation.",
+    "Current final query safety conjunction retains nonzero checks; original popped-only export finding addressed in WIP observed during review."
+  ]
+}

@@ -1,0 +1,14 @@
+fn quotient(int x) -> int
+    requires x == -7
+    ensures result == -2
+{
+    return x / 3;
+}
+fn remainder(int x) -> int
+    requires x == -7
+    ensures result == -1
+{
+    return x % 3;
+}
+println(quotient(-7));
+println(remainder(-7));

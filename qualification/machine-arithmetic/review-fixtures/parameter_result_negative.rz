@@ -1,0 +1,7 @@
+fn wrong(int result) -> int
+    requires result == 5
+    ensures result == 5
+{
+    return 0;
+}
+wrong(5);

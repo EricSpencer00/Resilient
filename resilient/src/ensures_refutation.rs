@@ -113,6 +113,9 @@ fn body_aware_verdict(
     requires: &[Node],
     body: &Node,
 ) -> (Verdict, ProofBasis) {
+    if !crate::machine_arithmetic::wrap_mode() {
+        return (Verdict::Unknown, ProofBasis::ClauseOnly);
+    }
     #[cfg(feature = "z3")]
     {
         memo::verdict(fn_name, clause, requires, body)
@@ -191,13 +194,23 @@ fn check_function(node: &Node, source_path: &str, refuted: &mut Vec<String>) {
         requires,
         ensures,
         body,
+        parameters,
+        return_type,
         span: fn_span,
         ..
     } = node
     else {
         return;
     };
-    if ensures.is_empty() {
+    if ensures.is_empty()
+        || !crate::contract_verify::machine_profile(
+            parameters,
+            return_type.as_deref(),
+            requires,
+            ensures,
+            body,
+        )
+    {
         return;
     }
     for clause in ensures {
