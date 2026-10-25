@@ -1,0 +1,22 @@
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+[1m[92m     Running[0m tests/proof_coverage_audit.rs (resilient/target/debug/deps/proof_coverage_audit-fa2d16b76ba90e9d)
+
+running 1 test
+
+thread 'hardening_embedded_infeasible_entry_is_not_reachable_credit' (6812) panicked at resilient/tests/proof_coverage_audit.rs:114:9:
+assertion `left == right` failed: {"auxiliary_nonimplementation_obligations":0,"claim":"only the supplied independently reviewed policy; not automatic source completeness","code":"covered","compiler_sha256":"5331176124a023ad9eb0b1021955048af7045659e6893095ec64db4b62bddad4","policy_sha256":"86ee7fd011dd7a94cd471c8da32f1a70f34ab7194f60237b957945f22545d063","profile":"reviewed-integer-equality-v1","sites":[{"antecedent":"sat","obligation":["covered:ensures:0","ensures_implementation",0],"query_sha256":"59cff93e9032fbe89a1b3e629c60374a36d4af98e14cc054bb8da6f5c5da5308","site":{"clause":0,"declaration":"program::covered","path":"return","source":"program.rz"}}],"solver_sha256":"a586393b919d4199ec2b96a1aa04cbb1e9c14399614da4151eb20af167956de3","source_graph_sha256":"6607b98ab79309fe331a0ed9c5197e4a2651bf8b924569736a7896e6dad2e9a4","stage":"coverage","unselected":[]}
+  left: String("covered")
+ right: "infeasible_obligation"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hardening_embedded_infeasible_entry_is_not_reachable_credit ... FAILED
+
+failures:
+
+failures:
+    hardening_embedded_infeasible_entry_is_not_reachable_credit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.43s
+
+[1m[91merror[0m: test failed, to rerun pass `--test proof_coverage_audit`
+E2E evidence written to /home/runner/work/_temp/proof-coverage-qualification/hardening_embedded_infeasible_entry_is_not_reachable_credit
+E2E evidence verified: 7adfcbbd0814d94d1f34274a9f9e2081e3da8d9fdcb18983c9dae3d5dece1cd3

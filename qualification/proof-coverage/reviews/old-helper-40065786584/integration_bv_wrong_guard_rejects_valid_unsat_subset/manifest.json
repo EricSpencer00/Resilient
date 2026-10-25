@@ -1,0 +1,53 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "proof_coverage_audit",
+    "integration_bv_wrong_guard_rejects_valid_unsat_subset",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "454eb1e7132f82a19a2bcd84329ba3db7d3140f5ff9d095a9dafd2bdd79ace75"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/proof_coverage_audit.rs",
+      "sha256": "fb6784849f97b759565deec3ad726d3fb550dc180066891b205e0383c8a35a03"
+    }
+  ],
+  "result": {
+    "exit_code": 101,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "failed"
+      },
+      {
+        "name": "integration_bv_wrong_guard_rejects_valid_unsat_subset",
+        "status": "failed"
+      }
+    ],
+    "status": "failed"
+  },
+  "run_id": "e5abecac0d7b1d1b33f2a920627e18367dab0f4dc4e1efec3e5025f9b433b527",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "3efcbaf7ba1c61959dbd07e396d8599bbf6b4116",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}

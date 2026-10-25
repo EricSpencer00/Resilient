@@ -1,0 +1,53 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "resilient/Cargo.toml",
+    "--locked",
+    "--features",
+    "z3",
+    "--test",
+    "proof_coverage_audit",
+    "hardening_fifo_query_is_rejected_before_replay",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "evidence_sha256": {
+    "summary.md": "c02ed1ca1f3e487c9c1bc5a8f1005c8cc8908950071d45c7534c6929d6d606c0"
+  },
+  "inputs": [
+    {
+      "path": "resilient/tests/proof_coverage_audit.rs",
+      "sha256": "fb6784849f97b759565deec3ad726d3fb550dc180066891b205e0383c8a35a03"
+    }
+  ],
+  "result": {
+    "exit_code": 101,
+    "outcomes": [
+      {
+        "name": "command",
+        "status": "failed"
+      },
+      {
+        "name": "hardening_fifo_query_is_rejected_before_replay",
+        "status": "failed"
+      }
+    ],
+    "status": "failed"
+  },
+  "run_id": "f68b121275ff2fbf96c430393bc3cea632c8c81834f83cd8f3bbf34d5a8c724a",
+  "schema": "resilient-e2e-evidence",
+  "schema_version": 1,
+  "source": {
+    "commit": "3efcbaf7ba1c61959dbd07e396d8599bbf6b4116",
+    "dirty": false,
+    "worktree_sha256": null
+  },
+  "toolchain": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "Python 3.14.4",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  }
+}

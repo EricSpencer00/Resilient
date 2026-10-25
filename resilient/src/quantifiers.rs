@@ -347,6 +347,7 @@ fn require_int(ty: &Type, what: &str) -> Result<(), String> {
 /// otherwise (the caller falls back to runtime / leaves the verdict
 /// `Unknown`).
 #[cfg(feature = "z3")]
+#[allow(dead_code)] // Preserve the AST-only API beside certificate provenance.
 pub(crate) fn z3_encode<'c>(
     ctx: &'c z3::Context,
     kind: QuantifierKind,
@@ -355,13 +356,25 @@ pub(crate) fn z3_encode<'c>(
     body: &Node,
     bindings: &std::collections::HashMap<String, i64>,
 ) -> Option<z3::ast::Bool<'c>> {
+    z3_encode_with_fragment(ctx, kind, var, range, body, bindings).map(|value| value.ast)
+}
+
+#[cfg(feature = "z3")]
+pub(crate) fn z3_encode_with_fragment<'c>(
+    ctx: &'c z3::Context,
+    kind: QuantifierKind,
+    var: &str,
+    range: &QuantRange,
+    body: &Node,
+    bindings: &std::collections::HashMap<String, i64>,
+) -> Option<crate::verifier_z3::EncodedBool<'c>> {
     use z3::ast::{Ast, Bool, Int};
     let (lo, hi) = match range {
         QuantRange::Range { lo, hi } => (lo.as_ref(), hi.as_ref()),
         QuantRange::Iterable(_) => return None,
     };
-    let lo_z = crate::verifier_z3::translate_int_pub(ctx, lo, bindings)?;
-    let hi_z = crate::verifier_z3::translate_int_pub(ctx, hi, bindings)?;
+    let lo_z = crate::verifier_z3::translate_int_encoded(ctx, lo, bindings)?;
+    let hi_z = crate::verifier_z3::translate_int_encoded(ctx, hi, bindings)?;
 
     // Rebind `var` to a fresh symbolic Int before encoding the body.
     // The `bindings` map carries *known constants*. Remove a same-named
@@ -372,22 +385,24 @@ pub(crate) fn z3_encode<'c>(
     let mut body_bindings = bindings.clone();
     body_bindings.remove(var);
     let var_const = Int::new_const(ctx, var);
-    let body_z = crate::verifier_z3::translate_bool_pub(ctx, body, &body_bindings)?;
+    let body_z = crate::verifier_z3::translate_bool_encoded(ctx, body, &body_bindings)?;
 
     // `lo <= var < hi`
-    let in_range = Bool::and(ctx, &[&var_const.ge(&lo_z), &var_const.lt(&hi_z)]);
+    let in_range = Bool::and(ctx, &[&var_const.ge(&lo_z.ast), &var_const.lt(&hi_z.ast)]);
 
     let bound: Vec<&dyn Ast<'c>> = vec![&var_const];
-    Some(match kind {
+    let fragment = lo_z.fragment.join(hi_z.fragment).join(body_z.fragment);
+    let ast = match kind {
         QuantifierKind::Forall => {
-            let imp = in_range.implies(&body_z);
+            let imp = in_range.implies(&body_z.ast);
             z3::ast::forall_const(ctx, &bound, &[], &imp)
         }
         QuantifierKind::Exists => {
-            let conj = Bool::and(ctx, &[&in_range, &body_z]);
+            let conj = Bool::and(ctx, &[&in_range, &body_z.ast]);
             z3::ast::exists_const(ctx, &bound, &[], &conj)
         }
-    })
+    };
+    Some(crate::verifier_z3::EncodedBool { ast, fragment })
 }
 
 // -------------------------------------------------------------------

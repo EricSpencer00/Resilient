@@ -1,0 +1,1 @@
+fn f(int x) -> int ensures result == x { return missing(x); }

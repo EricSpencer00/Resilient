@@ -36,6 +36,10 @@ use std::fmt::Write as _;
 use z3::Sort;
 use z3::ast::{Array, Ast, BV, Bool, Int};
 
+#[cfg(test)]
+#[path = "certificate_logic_tests.rs"]
+mod certificate_logic_tests;
+
 // ============================================================
 // RES-1188: process-local Z3 context reuse
 // ============================================================
@@ -1226,6 +1230,53 @@ fn hash_enum_payload_spanless<H: std::hash::Hasher>(p: &crate::EnumPatternPayloa
 // feeds bytes directly into the `Hasher` via `Hash::hash` calls, with
 // no `format!` step that would have needed a streaming write target.
 
+/// Both integer certificate paths use this exact assertion inventory. Length
+/// axioms and concrete binding equalities are constructed linear; each emitted
+/// user axiom and the negated goal carry their actual constructor provenance.
+fn serialize_integer_certificate(
+    expr: &Node,
+    axioms: &[Node],
+    bindings: &HashMap<String, i64>,
+    user_axioms: &[EncodedBool<'_>],
+    negated: &EncodedBool<'_>,
+) -> ProofCertificate {
+    let (idents, arr_args, cert_len_args) = collect_certificate_symbols(expr, axioms);
+    let mut body = String::with_capacity(512);
+    let mut fragment = CertificateFragment::Linear;
+    for name in &idents {
+        writeln!(&mut body, "(declare-const {} Int)", name).unwrap();
+    }
+    for arg in &cert_len_args {
+        writeln!(&mut body, "(declare-const len_{} Int)", arg).unwrap();
+    }
+    for arg in &arr_args {
+        writeln!(&mut body, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
+    }
+    for arg in &cert_len_args {
+        writeln!(&mut body, "(assert (>= len_{} 0))", arg).unwrap();
+        fragment = fragment.join(CertificateFragment::Linear);
+    }
+    for axiom in user_axioms {
+        writeln!(&mut body, "(assert {})", axiom.ast).unwrap();
+        fragment = fragment.join(axiom.fragment);
+    }
+    for name in &idents {
+        if let Some(value) = bindings.get(name.as_str()) {
+            writeln!(&mut body, "(assert (= {} {}))", name, value).unwrap();
+            fragment = fragment.join(CertificateFragment::Linear);
+        }
+    }
+    writeln!(&mut body, "(assert {})", negated.ast).unwrap();
+    fragment = fragment.join(negated.fragment);
+    body.push_str("(check-sat)\n");
+    let mut smt2 = String::with_capacity(body.len() + 160);
+    smt2.push_str("; RES-071 verification certificate\n");
+    smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
+    writeln!(&mut smt2, "(set-logic {})", fragment.logic()).unwrap();
+    smt2.push_str(&body);
+    ProofCertificate { smt2 }
+}
+
 fn prove_with_axioms_and_timeout_in(
     ctx: &z3::Context,
     expr: &Node,
@@ -1234,7 +1285,7 @@ fn prove_with_axioms_and_timeout_in(
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
     // Translate the expression to a Z3 boolean.
-    let formula = match translate_bool(ctx, expr, bindings) {
+    let formula = match translate_bool_encoded(ctx, expr, bindings) {
         Some(f) => f,
         None => return (None, None, None, false),
     };
@@ -1296,9 +1347,9 @@ fn prove_with_axioms_and_timeout_in(
     // on both the tautology-check solver and the contradiction-check
     // solver — just like `len_axioms`. Axioms that translate to None
     // (unsupported nodes) are silently dropped.
-    let user_axioms: Vec<Bool<'_>> = axioms
+    let user_axioms: Vec<EncodedBool<'_>> = axioms
         .iter()
-        .filter_map(|ax| translate_bool(ctx, ax, bindings))
+        .filter_map(|ax| translate_bool_encoded(ctx, ax, bindings))
         .collect();
 
     // RES-1696: share one Solver across the tautology + contradiction
@@ -1313,16 +1364,19 @@ fn prove_with_axioms_and_timeout_in(
         solver.assert(axiom);
     }
     for axiom in &user_axioms {
-        solver.assert(axiom);
+        solver.assert(&axiom.ast);
     }
 
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables. Pushed onto a
     // scope so we can drop the negated assertion before re-using the
     // solver for the contradiction check.
-    let negated = formula.not();
+    let negated = EncodedBool {
+        ast: formula.ast.not(),
+        fragment: formula.fragment,
+    };
     solver.push();
-    solver.assert(&negated);
+    solver.assert(&negated.ast);
     let check = solver.check();
     let tautology = matches!(check, z3::SatResult::Unsat);
     // RES-137: Z3 returns Unknown when the timeout fires (or when
@@ -1344,65 +1398,9 @@ fn prove_with_axioms_and_timeout_in(
     solver.pop(1);
 
     if tautology {
-        // Build a self-contained re-verifiable SMT-LIB2 file.
-        // Strategy: declare every Int identifier that appears in the
-        // expression, then constrain the bound ones to their concrete
-        // value, then assert the NEGATED goal so a fresh Z3 returns
-        // `unsat` (which is the proof that the original was always
-        // true).
-        // RES-1893: single-pass collection of int idents + array args
-        // (len_args already collected above before the solver phase).
-        let (idents, arr_args, cert_len_args) = collect_certificate_symbols(expr, axioms);
-
-        // RES-1383: write the SMT-LIB cert via `writeln!` into `smt2`
-        // directly — `String` implements `fmt::Write`, so the format
-        // machinery copies straight into the buffer with no
-        // intermediate `String` allocations from `format!`. The
-        // emitted text is byte-identical to the previous shape.
-        // RES-1653: pre-size to 512 bytes — typical cert is 300-600
-        // bytes, so the growth path hit 4-6 doubling reallocations
-        // before. Capacity is per-Some(true)-tautology cost, so the
-        // pre-size pays for itself on the first cert built.
-        let mut smt2 = String::with_capacity(512);
-        smt2.push_str("; RES-071 verification certificate\n");
-        smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
-        smt2.push_str("(set-logic AUFLIA)\n");
-        for name in &idents {
-            writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
-        }
-        // RES-131: declare one Int const per `len(<arg>)` call
-        // seen in the formula + emit its `>= 0` axiom so a
-        // stock Z3 re-verifying the cert gets the same
-        // context the prover used.
-        for arg in &cert_len_args {
-            writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
-        }
-        // RES-408: declare arrays referenced via `a[i]` with the
-        // `(Array Int Int)` sort so the cert is self-contained for
-        // stock Z3 re-verification.
-        for arg in &arr_args {
-            writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
-        }
-        for arg in &cert_len_args {
-            writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
-        }
-        for axiom in &user_axioms {
-            writeln!(&mut smt2, "(assert {})", axiom).unwrap();
-        }
-        // Bound identifiers: pin them to their concrete value with an
-        // equality assertion. Free identifiers are left unconstrained
-        // so the proof is universal over them.
-        for name in &idents {
-            if let Some(v) = bindings.get(name.as_str()) {
-                writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
-            }
-        }
-        // The negated goal — Z3 ASTs Display as SMT-LIB2 syntax, so
-        // we get a faithful round-trip via `negated.to_string()`.
-        writeln!(&mut smt2, "(assert {})", negated).unwrap();
-        smt2.push_str("(check-sat)\n");
-
-        return (Some(true), Some(ProofCertificate { smt2 }), None, false);
+        let certificate =
+            serialize_integer_certificate(expr, axioms, bindings, &user_axioms, &negated);
+        return (Some(true), Some(certificate), None, false);
     }
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
@@ -1410,7 +1408,7 @@ fn prove_with_axioms_and_timeout_in(
     // axioms are still asserted from the pre-push setup above; we
     // only need to push the positive formula into a fresh scope.
     solver.push();
-    solver.assert(&formula);
+    solver.assert(&formula.ast);
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
     solver.pop(1);
 
@@ -1554,7 +1552,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (bool, Option<ProofCertificate>, bool) {
-    let formula = match translate_bool(ctx, expr, bindings) {
+    let formula = match translate_bool_encoded(ctx, expr, bindings) {
         Some(f) => f,
         None => return (false, None, false),
     };
@@ -1602,9 +1600,9 @@ fn prove_tautology_with_axioms_and_timeout_in(
         }
     }
 
-    let user_axioms: Vec<Bool<'_>> = axioms
+    let user_axioms: Vec<EncodedBool<'_>> = axioms
         .iter()
-        .filter_map(|ax| translate_bool(ctx, ax, bindings))
+        .filter_map(|ax| translate_bool_encoded(ctx, ax, bindings))
         .collect();
 
     let solver = z3::Solver::new(ctx);
@@ -1613,10 +1611,13 @@ fn prove_tautology_with_axioms_and_timeout_in(
         solver.assert(axiom);
     }
     for axiom in &user_axioms {
-        solver.assert(axiom);
+        solver.assert(&axiom.ast);
     }
-    let negated = formula.not();
-    solver.assert(&negated);
+    let negated = EncodedBool {
+        ast: formula.ast.not(),
+        fragment: formula.fragment,
+    };
+    solver.assert(&negated.ast);
     let check = solver.check();
     let tautology = matches!(check, z3::SatResult::Unsat);
     let timed_out = matches!(check, z3::SatResult::Unknown);
@@ -1625,42 +1626,8 @@ fn prove_tautology_with_axioms_and_timeout_in(
         return (false, None, timed_out);
     }
 
-    // RES-1893: single-pass collection of int idents + array args
-    // (len_args already collected above before the solver phase).
-    let (idents, arr_args, cert_len_args) = collect_certificate_symbols(expr, axioms);
-
-    // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
-    // cert builder above — eliminates the intermediate `format!`
-    // String allocations per declaration / axiom / assertion.
-    // RES-1653: pre-size to 512 bytes (same shape as the LIA path).
-    let mut smt2 = String::with_capacity(512);
-    smt2.push_str("; RES-071 verification certificate\n");
-    smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
-    smt2.push_str("(set-logic AUFLIA)\n");
-    for name in &idents {
-        writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
-    }
-    for arg in &cert_len_args {
-        writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
-    }
-    for arg in &arr_args {
-        writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
-    }
-    for arg in &cert_len_args {
-        writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
-    }
-    for axiom in &user_axioms {
-        writeln!(&mut smt2, "(assert {})", axiom).unwrap();
-    }
-    for name in &idents {
-        if let Some(v) = bindings.get(name.as_str()) {
-            writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
-        }
-    }
-    writeln!(&mut smt2, "(assert {})", negated).unwrap();
-    smt2.push_str("(check-sat)\n");
-
-    (true, Some(ProofCertificate { smt2 }), false)
+    let certificate = serialize_integer_certificate(expr, axioms, bindings, &user_axioms, &negated);
+    (true, Some(certificate), false)
 }
 
 // ============================================================
@@ -2537,9 +2504,47 @@ fn collect_array_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     }
 }
 
-/// RES-330: thin pub(crate) wrapper around `translate_int` so the
-/// `quantifiers` module (which lives outside this file) can encode
-/// the bounds of a `lo..hi` range into the Z3 LIA fragment.
+/// Logic provenance travels with the actual translated AST. Both fragments
+/// support our closed Int/Bool/(Array Int Int) constructor set; this is not a
+/// source-to-query completeness or machine-arithmetic claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CertificateFragment {
+    Linear,
+    Nonlinear,
+}
+impl CertificateFragment {
+    pub(crate) fn join(self, other: Self) -> Self {
+        if self == Self::Nonlinear || other == Self::Nonlinear {
+            Self::Nonlinear
+        } else {
+            Self::Linear
+        }
+    }
+    fn logic(self) -> &'static str {
+        match self {
+            Self::Linear => "AUFLIA",
+            Self::Nonlinear => "AUFNIRA",
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum IntTop {
+    Coefficient,
+    NonArithmetic,
+    Arithmetic,
+}
+pub(crate) struct EncodedInt<'c> {
+    pub(crate) ast: Int<'c>,
+    pub(crate) fragment: CertificateFragment,
+    top: IntTop,
+}
+pub(crate) struct EncodedBool<'c> {
+    pub(crate) ast: Bool<'c>,
+    pub(crate) fragment: CertificateFragment,
+}
+
+/// Existing wrappers preserve every caller's AST and translation failure.
+#[allow(dead_code)] // Retained crate API; quantifiers now use the tracked variant.
 pub(crate) fn translate_int_pub<'c>(
     ctx: &'c z3::Context,
     node: &Node,
@@ -2547,9 +2552,7 @@ pub(crate) fn translate_int_pub<'c>(
 ) -> Option<Int<'c>> {
     translate_int(ctx, node, bindings)
 }
-
-/// RES-330: thin pub(crate) wrapper around `translate_bool` so the
-/// `quantifiers` module can encode quantifier bodies.
+#[allow(dead_code)] // Retained crate API; quantifiers now use the tracked variant.
 pub(crate) fn translate_bool_pub<'c>(
     ctx: &'c z3::Context,
     node: &Node,
@@ -2557,88 +2560,115 @@ pub(crate) fn translate_bool_pub<'c>(
 ) -> Option<Bool<'c>> {
     translate_bool(ctx, node, bindings)
 }
-
-/// Encode the conservative scalar-match subset used by the
-/// non-interference self-composition pass. Building the expression from the
-/// last arm backwards preserves first-match semantics while requiring a
-/// wildcard arm to cover every other integer value.
-fn translate_scalar_match_int<'c>(
+fn translate_int<'c>(
     ctx: &'c z3::Context,
-    scrutinee: &Node,
-    arms: &[(Pattern, Option<Node>, Node)],
+    node: &Node,
     bindings: &HashMap<String, i64>,
 ) -> Option<Int<'c>> {
-    let scrutinee = translate_int(ctx, scrutinee, bindings)?;
-    let mut result = None;
-
-    for (pattern, guard, body) in arms.iter().rev() {
-        if guard.is_some() {
-            return None;
-        }
-        let value = translate_int(ctx, body, bindings)?;
-        match pattern {
-            Pattern::Wildcard => result = Some(value),
-            Pattern::Literal(Node::IntegerLiteral { value: literal, .. }) => {
-                let fallback = result?;
-                let condition = scrutinee._eq(&Int::from_i64(ctx, *literal));
-                result = Some(condition.ite(&value, &fallback));
-            }
-            _ => return None,
-        }
-    }
-
-    result
+    translate_int_encoded(ctx, node, bindings).map(|value| value.ast)
 }
-
 fn translate_bool<'c>(
     ctx: &'c z3::Context,
     node: &Node,
     bindings: &HashMap<String, i64>,
 ) -> Option<Bool<'c>> {
+    translate_bool_encoded(ctx, node, bindings).map(|value| value.ast)
+}
+
+fn translate_scalar_match_int<'c>(
+    ctx: &'c z3::Context,
+    scrutinee: &Node,
+    arms: &[(Pattern, Option<Node>, Node)],
+    bindings: &HashMap<String, i64>,
+) -> Option<EncodedInt<'c>> {
+    let scrutinee = translate_int_encoded(ctx, scrutinee, bindings)?;
+    let mut result: Option<EncodedInt<'c>> = None;
+    for (pattern, guard, body) in arms.iter().rev() {
+        if guard.is_some() {
+            return None;
+        }
+        let value = translate_int_encoded(ctx, body, bindings)?;
+        match pattern {
+            Pattern::Wildcard => result = Some(value),
+            Pattern::Literal(Node::IntegerLiteral { value: literal, .. }) => {
+                let fallback = result?;
+                let condition = scrutinee.ast._eq(&Int::from_i64(ctx, *literal));
+                result = Some(EncodedInt {
+                    ast: condition.ite(&value.ast, &fallback.ast),
+                    fragment: scrutinee
+                        .fragment
+                        .join(value.fragment)
+                        .join(fallback.fragment),
+                    top: IntTop::NonArithmetic,
+                });
+            }
+            _ => return None,
+        }
+    }
+    result
+}
+
+pub(crate) fn translate_bool_encoded<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<EncodedBool<'c>> {
     match node {
-        Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
-        // RES-330: dispatch quantifier nodes into the dedicated encoder.
-        // Iterable quantifiers return None and the caller falls back to
-        // the runtime check.
+        Node::BooleanLiteral { value, .. } => Some(EncodedBool {
+            ast: Bool::from_bool(ctx, *value),
+            fragment: CertificateFragment::Linear,
+        }),
         Node::Quantifier {
             kind,
             var,
             range,
             body,
             ..
-        } => crate::quantifiers::z3_encode(ctx, *kind, var, range, body, bindings),
+        } => crate::quantifiers::z3_encode_with_fragment(ctx, *kind, var, range, body, bindings),
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "!" => translate_bool(ctx, right, bindings).map(|b| b.not()),
+        } if *operator == "!" => {
+            let right = translate_bool_encoded(ctx, right, bindings)?;
+            Some(EncodedBool {
+                ast: right.ast.not(),
+                fragment: right.fragment,
+            })
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => match *operator {
-            "&&" => {
-                let l = translate_bool(ctx, left, bindings)?;
-                let r = translate_bool(ctx, right, bindings)?;
-                Some(Bool::and(ctx, &[&l, &r]))
-            }
-            "||" => {
-                let l = translate_bool(ctx, left, bindings)?;
-                let r = translate_bool(ctx, right, bindings)?;
-                Some(Bool::or(ctx, &[&l, &r]))
+            "&&" | "||" => {
+                let left = translate_bool_encoded(ctx, left, bindings)?;
+                let right = translate_bool_encoded(ctx, right, bindings)?;
+                let ast = if *operator == "&&" {
+                    Bool::and(ctx, &[&left.ast, &right.ast])
+                } else {
+                    Bool::or(ctx, &[&left.ast, &right.ast])
+                };
+                Some(EncodedBool {
+                    ast,
+                    fragment: left.fragment.join(right.fragment),
+                })
             }
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                let l = translate_int(ctx, left, bindings)?;
-                let r = translate_int(ctx, right, bindings)?;
-                let cmp = match *operator {
-                    "==" => l._eq(&r),
-                    "!=" => l._eq(&r).not(),
-                    "<" => l.lt(&r),
-                    ">" => l.gt(&r),
-                    "<=" => l.le(&r),
-                    ">=" => l.ge(&r),
+                let left = translate_int_encoded(ctx, left, bindings)?;
+                let right = translate_int_encoded(ctx, right, bindings)?;
+                let ast = match *operator {
+                    "==" => left.ast._eq(&right.ast),
+                    "!=" => left.ast._eq(&right.ast).not(),
+                    "<" => left.ast.lt(&right.ast),
+                    ">" => left.ast.gt(&right.ast),
+                    "<=" => left.ast.le(&right.ast),
+                    ">=" => left.ast.ge(&right.ast),
                     _ => unreachable!(),
                 };
-                Some(cmp)
+                Some(EncodedBool {
+                    ast,
+                    fragment: left.fragment.join(right.fragment),
+                })
             }
             _ => None,
         },
@@ -2646,79 +2676,115 @@ fn translate_bool<'c>(
     }
 }
 
-fn translate_int<'c>(
+pub(crate) fn translate_int_encoded<'c>(
     ctx: &'c z3::Context,
     node: &Node,
     bindings: &HashMap<String, i64>,
-) -> Option<Int<'c>> {
+) -> Option<EncodedInt<'c>> {
     match node {
-        Node::IntegerLiteral { value: v, .. } => Some(Int::from_i64(ctx, *v)),
-        Node::Identifier { name, .. } => match bindings.get(name) {
-            // If the name is bound to a known constant, model it as a
-            // constant. Otherwise model it as a fresh free integer
-            // variable so Z3 can reason about it universally.
-            Some(v) => Some(Int::from_i64(ctx, *v)),
-            None => Some(Int::new_const(ctx, name.as_str())),
-        },
+        Node::IntegerLiteral { value, .. } => Some(EncodedInt {
+            ast: Int::from_i64(ctx, *value),
+            fragment: CertificateFragment::Linear,
+            top: IntTop::Coefficient,
+        }),
+        Node::Identifier { name, .. } => Some(match bindings.get(name) {
+            Some(value) => EncodedInt {
+                ast: Int::from_i64(ctx, *value),
+                fragment: CertificateFragment::Linear,
+                top: IntTop::Coefficient,
+            },
+            None => EncodedInt {
+                ast: Int::new_const(ctx, name.as_str()),
+                fragment: CertificateFragment::Linear,
+                top: IntTop::NonArithmetic,
+            },
+        }),
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "-" => translate_int(ctx, right, bindings).map(|v| v.unary_minus()),
+        } if *operator == "-" => {
+            let right = translate_int_encoded(ctx, right, bindings)?;
+            // SMT-LIB concrete coefficients are n or (- n), not arbitrary
+            // arithmetic terms that merely happen to evaluate to a constant.
+            let top = if matches!(right.top, IntTop::Coefficient)
+                && right.ast.as_i64().is_some_and(|n| n >= 0)
+            {
+                IntTop::Coefficient
+            } else {
+                IntTop::Arithmetic
+            };
+            Some(EncodedInt {
+                ast: right.ast.unary_minus(),
+                fragment: right.fragment,
+                top,
+            })
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => {
-            let l = translate_int(ctx, left, bindings)?;
-            let r = translate_int(ctx, right, bindings)?;
-            Some(match *operator {
-                "+" => Int::add(ctx, &[&l, &r]),
-                "-" => Int::sub(ctx, &[&l, &r]),
-                "*" => Int::mul(ctx, &[&l, &r]),
-                "/" => l.div(&r),
-                "%" => l.rem(&r),
+            let left = translate_int_encoded(ctx, left, bindings)?;
+            let right = translate_int_encoded(ctx, right, bindings)?;
+            let mut fragment = left.fragment.join(right.fragment);
+            let ast = match *operator {
+                "+" => Int::add(ctx, &[&left.ast, &right.ast]),
+                "-" => Int::sub(ctx, &[&left.ast, &right.ast]),
+                "*" => {
+                    if !matches!(
+                        (left.top, right.top),
+                        (IntTop::Coefficient, IntTop::NonArithmetic)
+                            | (IntTop::NonArithmetic, IntTop::Coefficient)
+                    ) {
+                        fragment = CertificateFragment::Nonlinear;
+                    }
+                    Int::mul(ctx, &[&left.ast, &right.ast])
+                }
+                "/" => {
+                    fragment = CertificateFragment::Nonlinear;
+                    left.ast.div(&right.ast)
+                }
+                "%" => {
+                    fragment = CertificateFragment::Nonlinear;
+                    left.ast.rem(&right.ast)
+                }
                 _ => return None,
+            };
+            Some(EncodedInt {
+                ast,
+                fragment,
+                top: IntTop::Arithmetic,
             })
         }
-        // RES-131 (RES-131a): `len(<ident>)` as an uninterpreted
-        // Int constant, named `len_<ident>`. Every reference to
-        // `len` on the same array identifier maps to the same Int
-        // constant (same name → same Z3 const by convention),
-        // giving the solver enough structure to prove
-        // `len(xs) > 0 → len(xs) >= 1`. The `>= 0` axiom is
-        // injected by `collect_len_args` + the `prove_with_timeout`
-        // caller, not here; this fn stays side-effect-free on the
-        // solver.
         Node::CallExpression {
             function,
             arguments,
             ..
         } if is_len_call(function, arguments) => {
             if let Node::Identifier { name, .. } = &arguments[0] {
-                Some(Int::new_const(ctx, format!("len_{}", name)))
+                Some(EncodedInt {
+                    ast: Int::new_const(ctx, format!("len_{}", name)),
+                    fragment: CertificateFragment::Linear,
+                    top: IntTop::NonArithmetic,
+                })
             } else {
-                // `len(<non-identifier>)` isn't supported —
-                // bail to None so the caller's existing
-                // fallback logic fires.
                 None
             }
         }
-        // RES-408: `a[i]` lowers to Z3 array theory. The array is
-        // modelled as `(Array Int Int)` named `arr_<name>`; the
-        // index translates through the existing Int path and
-        // `select` returns an Int. This is what unblocks
-        // `forall i in 0..len(a): P(a[i])` proofs — without it the
-        // body translates to None and Z3 falls back to runtime.
         Node::IndexExpression { target, index, .. } => {
             if let Node::Identifier { name, .. } = target.as_ref() {
-                let idx = translate_int(ctx, index, bindings)?;
-                let arr = Array::new_const(
+                let index = translate_int_encoded(ctx, index, bindings)?;
+                let array = Array::new_const(
                     ctx,
                     format!("arr_{}", name),
                     &Sort::int(ctx),
                     &Sort::int(ctx),
                 );
-                arr.select(&idx).as_int()
+                Some(EncodedInt {
+                    ast: array.select(&index.ast).as_int()?,
+                    fragment: index.fragment,
+                    top: IntTop::NonArithmetic,
+                })
             } else {
                 None
             }

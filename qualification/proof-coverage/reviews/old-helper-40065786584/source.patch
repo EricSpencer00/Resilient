@@ -1,0 +1,1460 @@
+diff --git a/.github/workflows/proof-coverage-qualification.yml b/.github/workflows/proof-coverage-qualification.yml
+new file mode 100644
+index 00000000..0997e1f7
+--- /dev/null
++++ b/.github/workflows/proof-coverage-qualification.yml
+@@ -0,0 +1,138 @@
++name: Expected proof coverage qualification
++
++on:
++  pull_request:
++    paths:
++      - 'agent-scripts/audit-proof-coverage.py'
++      - 'resilient/tests/proof_coverage_audit.rs'
++      - '.github/workflows/proof-coverage-qualification.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: proof-coverage-qualification-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  evidence:
++    name: requested implementation coverage (${{ matrix.phase }})
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    strategy:
++      fail-fast: false
++      matrix:
++        phase: [baseline, final]
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          ref: ${{ matrix.phase == 'baseline' && '9f1d870acc5d5ba963a7e27d522e60aa70f7213e' || github.sha }}
++          fetch-depth: 0
++      - name: Install the same regression input on the production baseline
++        if: matrix.phase == 'baseline'
++        env:
++          CANDIDATE: ${{ github.sha }}
++        run: |
++          git fetch --no-tags origin "$CANDIDATE"
++          git show "$CANDIDATE:resilient/tests/proof_coverage_audit.rs" > resilient/tests/proof_coverage_audit.rs
++      - uses: dtolnay/rust-toolchain@stable
++        with:
++          toolchain: 1.99.1
++      - name: Install solver dependencies
++        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
++      - uses: Swatinem/rust-cache@v2
++        with:
++          workspaces: resilient
++          key: proof-coverage-qualification
++      - name: Record solver identity
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}/proof-coverage-qualification
++        run: |
++          mkdir -p "$EVIDENCE_ROOT"
++          python3 - <<'PY'
++          import hashlib, json, os, pathlib, shutil, subprocess
++          binary = pathlib.Path(shutil.which('z3'))
++          record = {'z3_version': subprocess.check_output([str(binary), '-version'], text=True).strip(),
++                    'z3_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
++                    'libz3_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted({p.resolve() for p in pathlib.Path('/usr/lib/x86_64-linux-gnu').glob('libz3.so*')})}}
++          (pathlib.Path(os.environ['EVIDENCE_ROOT']) / 'solver.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
++          PY
++      - name: Record each regression and its control
++        env:
++          PHASE: ${{ matrix.phase }}
++          EVIDENCE_ROOT: ${{ runner.temp }}/proof-coverage-qualification
++          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
++          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
++          COVERAGE_RECORD_DIR: ${{ runner.temp }}/proof-coverage-qualification/fixtures
++        run: |
++          unexpected=0
++          for suite in proof_coverage_audit; do
++            for test in $(awk '/^#\[test\]/{is_test=1;next} is_test && /^fn /{sub(/^fn /,"");sub(/\(.*/,"");print;is_test=0}' "resilient/tests/$suite.rs"); do
++              set +e
++              python3 agent-scripts/e2e-evidence.py run --output "$EVIDENCE_ROOT/$test" \
++                --input "resilient/tests/$suite.rs" -- \
++                cargo test --manifest-path resilient/Cargo.toml --locked --features z3 \
++                  --test "$suite" "$test" -- --exact --nocapture 2>&1 | tee "$EVIDENCE_ROOT/$test.stdout"
++              result=${PIPESTATUS[0]}
++              set -e
++              python3 agent-scripts/e2e-evidence.py verify "$EVIDENCE_ROOT/$test"
++              expected=passed
++              if [[ "$PHASE" == baseline && "$test" != legacy_replay_accepts_the_mixed_subset_control ]]; then
++                expected=failed
++              fi
++              printf '%s %s %s expected-%s\n' "$suite" "$test" "$result" "$expected" >> "$EVIDENCE_ROOT/outcomes.txt"
++              if [[ "$expected" == failed && "$result" -eq 0 ]] || [[ "$expected" == passed && "$result" -ne 0 ]]; then
++                unexpected=$((unexpected + 1))
++              fi
++            done
++          done
++          cat "$EVIDENCE_ROOT/outcomes.txt" >> "$GITHUB_STEP_SUMMARY"
++          test "$unexpected" -eq 0
++      - name: Retain source-bound records
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: proof-coverage-${{ matrix.phase }}-${{ github.sha }}
++          path: ${{ runner.temp }}/proof-coverage-qualification
++          include-hidden-files: true
++          retention-days: 90
++          if-no-files-found: error
++
++  attest:
++    name: verify replay red-green evidence
++    needs: evidence
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/download-artifact@v4
++        with:
++          name: proof-coverage-baseline-${{ github.sha }}
++          path: ${{ runner.temp }}/baseline
++      - uses: actions/download-artifact@v4
++        with:
++          name: proof-coverage-final-${{ github.sha }}
++          path: ${{ runner.temp }}/final
++      - name: Verify paired evidence
++        env:
++          EVIDENCE_ROOT: ${{ runner.temp }}
++        run: |
++          cmp "$EVIDENCE_ROOT/baseline/solver.json" "$EVIDENCE_ROOT/final/solver.json"
++          for suite in proof_coverage_audit; do
++            for test in $(awk '/^#\[test\]/{is_test=1;next} is_test && /^fn /{sub(/^fn /,"");sub(/\(.*/,"");print;is_test=0}' "resilient/tests/$suite.rs"); do
++              if [[ "$test" == legacy_replay_accepts_the_mixed_subset_control ]]; then continue; fi
++              python3 agent-scripts/e2e-evidence.py attest --test "$test" \
++                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test" \
++                --output "$EVIDENCE_ROOT/attestations/$test"
++              python3 agent-scripts/e2e-evidence.py verify-attestation "$EVIDENCE_ROOT/attestations/$test" \
++                --baseline "$EVIDENCE_ROOT/baseline/$test" --final "$EVIDENCE_ROOT/final/$test"
++            done
++          done
++      - uses: actions/upload-artifact@v4
++        with:
++          name: proof-coverage-attestations-${{ github.sha }}
++          path: ${{ runner.temp }}/attestations
++          include-hidden-files: true
++          retention-days: 90
++          if-no-files-found: error
+diff --git a/agent-scripts/audit-proof-coverage.py b/agent-scripts/audit-proof-coverage.py
+new file mode 100644
+index 00000000..a3bad2b2
+--- /dev/null
++++ b/agent-scripts/audit-proof-coverage.py
+@@ -0,0 +1,332 @@
++#!/usr/bin/env python3
++"""Audit explicitly requested implementation sites after authenticated source replay."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path, PurePosixPath
++import selectors
++import shutil
++import signal
++import subprocess
++import sys
++import time
++
++MAX_DOCUMENT = 2 * 1024 * 1024
++MAX_QUERY = 1024 * 1024
++MAX_OUTPUT = 512 * 1024
++MAX_SITES = 512
++
++
++class Rejected(Exception):
++    def __init__(self, stage, code, detail):
++        self.stage, self.code, self.detail = stage, code, detail
++
++
++def reject(stage, code, detail):
++    raise Rejected(stage, code, detail)
++
++
++def digest(raw):
++    return hashlib.sha256(raw).hexdigest()
++
++
++def read(path, limit=MAX_DOCUMENT):
++    with Path(path).open('rb') as stream:
++        raw = stream.read(limit + 1)
++    if len(raw) > limit:
++        reject('binding', 'resource_limit', path)
++    return raw
++
++
++def unique_object(pairs):
++    result = {}
++    for key, value in pairs:
++        if key in result:
++            reject('binding', 'duplicate_json_key', key)
++        result[key] = value
++    return result
++
++
++def decode(raw):
++    return json.loads(raw, object_pairs_hook=unique_object)
++
++
++def canonical(value):
++    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
++
++
++def bounded(argv, timeout, stage, input_bytes=None):
++    """Bound both output streams and kill the inherited solver process group."""
++    process = subprocess.Popen(argv, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
++                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
++    captured = {process.stdout: bytearray(), process.stderr: bytearray()}
++    selector = selectors.DefaultSelector()
++    for stream in captured:
++        selector.register(stream, selectors.EVENT_READ)
++    deadline = time.monotonic() + timeout
++    pending = memoryview(input_bytes or b'')
++    if input_bytes is not None:
++        os.set_blocking(process.stdin.fileno(), False)
++        selector.register(process.stdin, selectors.EVENT_WRITE)
++    try:
++        while selector.get_map():
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                reject(stage, stage + '_timeout', 'subprocess deadline exceeded')
++            for key, _ in selector.select(min(remaining, 0.1)):
++                if key.fileobj is process.stdin:
++                    try:
++                        written = os.write(process.stdin.fileno(), pending[:16384]) if pending else 0
++                        pending = pending[written:]
++                    except BlockingIOError:
++                        continue
++                    except BrokenPipeError:
++                        pending = pending[:0]
++                    if not pending:
++                        selector.unregister(process.stdin)
++                        process.stdin.close()
++                    continue
++                chunk = os.read(key.fileobj.fileno(), 16384)
++                if not chunk:
++                    selector.unregister(key.fileobj)
++                    continue
++                captured[key.fileobj].extend(chunk)
++                if sum(len(value) for value in captured.values()) > MAX_OUTPUT:
++                    reject(stage, 'subprocess_output_limit', 'bounded subprocess output exceeded')
++        code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
++        return code, bytes(captured[process.stdout]), bytes(captured[process.stderr])
++    finally:
++        selector.close()
++        try:
++            os.killpg(process.pid, signal.SIGKILL)
++        except ProcessLookupError:
++            pass
++        process.wait(timeout=2)
++        for stream in (process.stdin, process.stdout, process.stderr):
++            if stream is not None:
++                stream.close()
++
++
++def sexpressions(raw):
++    """Preserve command order/multiplicity; normalize only whitespace/comments."""
++    text = raw.decode('utf-8')
++    roots, stack, tokens = [], [], 0
++    index = 0
++    while index < len(text):
++        char = text[index]
++        if char.isspace():
++            index += 1
++            continue
++        if char == ';':
++            end = text.find('\n', index)
++            index = len(text) if end < 0 else end + 1
++            continue
++        tokens += 1
++        if tokens > 100000:
++            reject('coverage', 'query_resource_limit', 'too many SMT tokens')
++        if char == '(':
++            node = []
++            (stack[-1] if stack else roots).append(node)
++            stack.append(node)
++            if len(stack) > 64:
++                reject('coverage', 'query_resource_limit', 'SMT nesting exceeds64')
++            index += 1
++        elif char == ')':
++            if not stack:
++                reject('coverage', 'invalid_query', 'unmatched SMT closing delimiter')
++            stack.pop()
++            index += 1
++        else:
++            start = index
++            if char in ('"', '|'):
++                delimiter = char
++                index += 1
++                while index < len(text):
++                    if text[index] == delimiter:
++                        index += 1
++                        if delimiter == '"' and index < len(text) and text[index] == '"':
++                            index += 1
++                            continue
++                        break
++                    index += 1
++                else:
++                    reject('coverage', 'invalid_query', 'unterminated SMT quoted atom')
++            else:
++                while index < len(text) and not text[index].isspace() and text[index] not in '();':
++                    index += 1
++            if not stack or start == index:
++                reject('coverage', 'invalid_query', 'atom outside a command')
++            stack[-1].append(text[start:index])
++    if stack:
++        reject('coverage', 'invalid_query', 'unclosed SMT command')
++    if not roots or any(not isinstance(command, list) or not command for command in roots):
++        reject('coverage', 'invalid_query', 'empty SMT session')
++    allowed = {'set-logic', 'declare-const', 'assert', 'check-sat'}
++    if any(command[0] not in allowed for command in roots):
++        reject('coverage', 'unsupported_session', 'only reviewed single-session commands are supported')
++    if roots[-1] != ['check-sat'] or sum(command[0] == 'check-sat' for command in roots) != 1:
++        reject('coverage', 'unsupported_session', 'exactly one final check-sat is required')
++    return roots
++
++
++def render(node):
++    return '(' + ' '.join(render(value) if isinstance(value, list) else value for value in node) + ')'
++
++
++def reference(value):
++    if (not isinstance(value, dict) or not isinstance(value.get('fn'), str)
++            or not isinstance(value.get('kind'), str) or type(value.get('idx')) is not int or value['idx'] < 0):
++        reject('coverage', 'invalid_policy', 'invalid obligation reference')
++    return value['fn'], value['kind'], value['idx']
++
++
++def audit(args):
++    if os.name != 'posix' or not 0.1 <= args.timeout_seconds <= 60:
++        reject('binding', 'unsupported_environment', 'POSIX and timeout0.1..60seconds required')
++    deadline = time.monotonic() + args.timeout_seconds
++    def budget(stage):
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            reject(stage, stage + '_timeout', 'total audit deadline exceeded')
++        return remaining
++    policy_raw = read(args.policy)
++    if digest(policy_raw) != args.policy_sha256:
++        reject('binding', 'policy_hash_mismatch', 'trusted expected-policy digest does not match')
++    policy = decode(policy_raw)
++    if not isinstance(policy, dict):
++        reject('binding', 'invalid_policy', 'policy must be an object')
++    if (policy.get('schema') != 'resilient-expected-implementation-coverage'
++            or type(policy.get('version')) is not int or policy.get('version') != 1):
++        reject('binding', 'invalid_policy', 'unsupported policy schema/version')
++    if not args.profile or policy.get('profile') != args.profile:
++        reject('binding', 'profile_mismatch', 'requested reviewed model profile differs')
++    compiler = Path(args.rz).resolve(strict=True)
++    compiler_hash = digest(read(compiler, 256 * 1024 * 1024))
++    if compiler_hash != policy.get('compiler', {}).get('sha256'):
++        reject('binding', 'compiler_hash_mismatch', 'actual executable differs from reviewed policy')
++    code, output, _ = bounded([str(compiler), '--version', '--verbose'], budget('binding'), 'binding')
++    build_profile = policy['compiler'].get('build_profile')
++    if code or not build_profile or ('  profile: ' + build_profile) not in output.decode().splitlines():
++        reject('binding', 'build_profile_mismatch', 'actual build profile differs from policy')
++    certs = Path(args.cert_dir).resolve(strict=True)
++    manifest_raw = read(certs / 'manifest.json')
++    manifest = decode(manifest_raw)
++    binding = manifest.get('source_binding')
++    if not isinstance(binding, dict) or digest(canonical(binding)) != policy.get('source_graph_sha256'):
++        reject('binding', 'source_graph_mismatch', 'signed input graph differs from reviewed policy')
++    code, output, errors = bounded([str(compiler), 'verify-all', str(certs), '--source-root', str(Path(args.source_root).resolve(strict=True)),
++                                    '--pubkey', str(Path(args.pubkey).resolve(strict=True)), '--z3'], budget('authentication'), 'authentication')
++    if code:
++        reject('authentication', 'authentication_failed', (output + errors).decode(errors='replace')[-4096:])
++    if read(certs / 'manifest.json') != manifest_raw or digest(read(compiler, 256 * 1024 * 1024)) != compiler_hash:
++        reject('authentication', 'input_changed', 'manifest/compiler changed during verification')
++    sites = policy.get('sites')
++    if not isinstance(sites, list) or not 1 <= len(sites) <= MAX_SITES:
++        reject('coverage', 'invalid_policy', 'expected1..512explicit sites')
++    source_paths = {entry['path'] for entry in binding['files']}
++    identities, requested, unselected = set(), [], []
++    for site in sites:
++        if not isinstance(site, dict):
++            reject('coverage', 'invalid_policy', 'site must be an object')
++        source = site.get('source')
++        path = PurePosixPath(source) if isinstance(source, str) else PurePosixPath('/')
++        if source not in source_paths or path.is_absolute() or '..' in path.parts or str(path) != source:
++            reject('coverage', 'invalid_policy', 'site source must name an authenticated input')
++        identity = (source, site.get('declaration'), site.get('clause'), site.get('path'))
++        if (not isinstance(identity[1], str) or not identity[1] or type(identity[2]) is not int
++                or identity[2] < 0 or not isinstance(identity[3], str) or not identity[3]):
++            reject('coverage', 'invalid_policy', 'site needs qualified declaration/clause/path identity')
++        if len(identity[1].split('::')) < 2 or not all(identity[1].split('::')):
++            reject('coverage', 'invalid_policy', 'declaration identity must be qualified')
++        if identity in identities:
++            reject('coverage', 'duplicate_site', identity)
++        identities.add(identity)
++        if site.get('status') == 'unselected':
++            unselected.append(dict(zip(('source', 'declaration', 'clause', 'path'), identity)))
++        elif site.get('status') != 'required':
++            reject('coverage', 'unresolved_site', {'site': identity, 'status': site.get('status')})
++        else:
++            requested.append((identity, site))
++    if not requested:
++        reject('coverage', 'unresolved_site', 'no requested implementation sites')
++    obligations = manifest['obligations']
++    if not isinstance(obligations, list) or len(obligations) > MAX_SITES:
++        reject('coverage', 'resource_limit', 'too many manifest obligations')
++    actual = {}
++    for obligation in obligations:
++        key = reference(obligation)
++        if key in actual:
++            reject('coverage', 'duplicate_obligation', key)
++        actual[key] = obligation
++    expected, matched = set(), []
++    solver = shutil.which(os.environ.get('Z3_BINARY', 'z3'))
++    if not solver:
++        reject('authentication', 'solver_unavailable', 'configured solver is unavailable')
++    query_bytes = 0
++    for identity, site in requested:
++        key = reference(site.get('obligation'))
++        if key[1] != 'ensures_implementation':
++            reject('coverage', 'wrong_basis', identity)
++        if key in expected:
++            reject('coverage', 'duplicate_site', 'multiple sites claim the same emitted obligation')
++        expected.add(key)
++        if key not in actual:
++            if any(other[0] == key[0] and other[2] == key[2] for other in actual):
++                reject('coverage', 'wrong_basis', identity)
++            reject('coverage', 'missing_obligation', identity)
++        obligation = actual[key]
++        filename = obligation['cert']
++        if not isinstance(filename, str) or Path(filename).name != filename:
++            reject('coverage', 'invalid_query', 'query must have a single relative filename')
++        query_path = certs / filename
++        if query_path.is_symlink() or not query_path.resolve(strict=True).is_relative_to(certs):
++            reject('coverage', 'invalid_query', 'query must be a confined regular file')
++        raw = read(query_path, MAX_QUERY)
++        query_bytes += len(raw)
++        if query_bytes > 16 * MAX_QUERY:
++            reject('coverage', 'resource_limit', 'total query bytes exceed16MiB')
++        if digest(raw) != obligation['sha256']:
++            reject('coverage', 'input_changed', 'query changed after authenticated replay')
++        commands = sexpressions(raw)
++        if commands != site.get('commands'):
++            reject('coverage', 'checkpoint_mismatch', identity)
++        assertions = [index for index, command in enumerate(commands) if command[0] == 'assert']
++        if not assertions or commands[assertions[-1]][1][:1] != ['not']:
++            reject('coverage', 'invalid_checkpoint', 'last assertion must be reviewed negated goal')
++        antecedent = [command for index, command in enumerate(commands) if index != assertions[-1]]
++        code, result, errors = bounded([solver, '-in', '-smt2'], budget('coverage'), 'coverage',
++                                       ('\n'.join(render(command) for command in antecedent) + '\n').encode())
++        if code or errors or result.strip() != b'sat':
++            reject('coverage', 'infeasible_obligation' if not code and not errors and result.strip() == b'unsat' else 'unresolved_feasibility', identity)
++        matched.append({'site': dict(zip(('source', 'declaration', 'clause', 'path'), identity)), 'obligation': key, 'query_sha256': digest(raw), 'antecedent': 'sat'})
++    extras = [key for key in actual if key[1] == 'ensures_implementation' and key not in expected]
++    if extras:
++        reject('coverage', 'extra_obligation', extras)
++    return {'stage': 'coverage', 'code': 'covered', 'claim': 'only the supplied independently reviewed policy; not automatic source completeness',
++            'policy_sha256': args.policy_sha256, 'compiler_sha256': compiler_hash, 'profile': args.profile,
++            'source_graph_sha256': policy['source_graph_sha256'], 'solver_sha256': digest(read(solver, 256 * 1024 * 1024)),
++            'sites': matched, 'unselected': unselected,
++            'auxiliary_nonimplementation_obligations': sum(key[1] != 'ensures_implementation' for key in actual)}
++
++
++def main():
++    class Parser(argparse.ArgumentParser):
++        def error(self, message):
++            reject('binding', 'invalid_arguments', message)
++    parser = Parser(description=__doc__)
++    for flag in ('rz', 'cert-dir', 'source-root', 'pubkey', 'policy', 'policy-sha256', 'profile'):
++        parser.add_argument('--' + flag, required=True)
++    parser.add_argument('--timeout-seconds', type=float, default=30)
++    try:
++        report = audit(parser.parse_args())
++    except Rejected as error:
++        report = {'stage': error.stage, 'code': error.code, 'detail': error.detail}
++    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError, subprocess.SubprocessError) as error:
++        report = {'stage': 'binding', 'code': 'invalid_input', 'detail': str(error)}
++    print(json.dumps(report, sort_keys=True))
++    return 0 if report['code'] == 'covered' else 1
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/qualification/proof-coverage/README.md b/qualification/proof-coverage/README.md
+new file mode 100644
+index 00000000..cf2b619c
+--- /dev/null
++++ b/qualification/proof-coverage/README.md
+@@ -0,0 +1,159 @@
++# Requested implementation-coverage audit
++
++`agent-scripts/audit-proof-coverage.py` enforces an independently supplied expected
++policy after it invokes authenticated source-bound replay itself. Its success
++means **only that this supplied policy is covered**. It does not discover all
++source obligations or prove compiler translation correct. A policy that omits a
++function, selects the wrong source meaning, or incorrectly marks a site
++`unselected` can omit the very property the consuming project needs. Independent
++source/requirements review of the policy is therefore a required trust boundary.
++
++The caller explicitly supplies its trusted public key and trusted policy digest.
++Do not compute the expected digest from an untrusted policy and treat that as
++approval. Pin the accepted policy and reviewer record through the consuming
++project's configuration process. Nothing here assigns a safety classification,
++regulatory independence or external acceptance.
++
++## Public command and binding
++
++```sh
++python3 agent-scripts/audit-proof-coverage.py \
++  --rz /controlled/rz --cert-dir /controlled/certs \
++  --source-root /controlled/snapshot --pubkey /controlled/accepted-public.pem \
++  --policy /controlled/accepted-policy.json --policy-sha256 TRUSTED_POLICY_SHA256 \
++  --profile REVIEWED_MODEL_PROFILE --timeout-seconds 30
++```
++
++All seven identity/input options are mandatory. The auditor hashes the actual
++compiler executable, checks its verbose build profile, compares the exact signed
++source graph and checks the trusted policy bytes/profile. It then invokes that
++same executable with `verify-all --source-root ... --pubkey ... --z3`. A prior
++caller replay is never assumed. Source graph canonicalization is UTF-8 JSON with
++sorted object keys, compact separators and unescaped Unicode. The public key is
++a caller trust decision, not a key discovered from an untrusted bundle.
++
++The policy's model profile is an independently reviewed claim pinned to exact
++compiler bytes and source/formula checkpoints. It is **not** compiler
++self-attestation that every construct has those semantics. Build profile and
++model profile are distinct. Changing arithmetic metadata or query theory needs
++a newly reviewed policy and baseline; this audit does not manufacture arithmetic
++correspondence credit.
++
++One JSON report is written to stdout; success exits0, rejection exits1. Stages
++are `binding`, `authentication` and `coverage`. Successful reports retain the
++policy/compiler/source-graph/solver digests, explicit site descriptors, raw-query
++digests, antecedent feasibility and excluded sites. Error codes distinguish
++missing/duplicate/extra obligations, wrong proof basis, source/query drift,
++checkpoint mismatch and unresolved/infeasible sites.
++
++## Policy structure
++
++Version1 uses schema `resilient-expected-implementation-coverage`, and contains:
++
++- `compiler`: exact `sha256` and actual verbose `build_profile`.
++- `profile`: accepted model identifier, matched against the explicit CLI option.
++- `source_graph_sha256`: canonical signed `source_binding` graph digest.
++- `sites`: independently enumerated source-relative `source`, qualified
++  `declaration`, zero-based `clause` and stable `path` descriptors. All four form
++  site identity; names alone do not distinguish imports/methods/overloads.
++- Each `required` site has an exact emitted `obligation` reference (`fn`, `kind`,
++  `idx`) and `commands`: the independently reviewed complete SMT command tree.
++  Implementation sites require `kind: ensures_implementation`. One emitted
++  obligation cannot satisfy multiple expected paths.
++
++`unsupported`, `unresolved`, `infeasible` and other non-required statuses reject
++requested coverage with their original status retained in the report. Infeasible
++is not a claim that a legitimate empty-precondition contract is false. Explicit
++`unselected` sites are reported separately and grant no credit; they do not prove
++that omitted declarations are actually unselected by import resolution. Imports,
++method qualification and selection must be reviewed against the resolved program.
++At least one required site is necessary.
++
++All requested implementation references must occur exactly once. Unexpected
++implementation references fail; auxiliary nonimplementation certificates are
++counted separately and cannot fill implementation sites. A clause-only proof at
++the expected function/index cannot substitute for implementation evidence.
++
++## Independently authored semantic checkpoints
++
++The new CLI fixtures in `resilient/tests/proof_coverage_audit.rs` explicitly review:
++
++```rz
++fn covered(int x) -> int ensures result == x {
++    if x >= 0 { return x; } else { return x; }
++}
++```
++
++The then path assumes `x >= 0`; the else path assumes `not(x >= 0)`. Both substitute
++returned `x` into `result == x`, yielding the negated goal `not(x == x)`. The
++independent command checkpoints declare `x: Int`, preserve one exact path guard,
++assert the negated goal and end in one `check-sat`. These equality-only checkpoints
++avoid overflow dependence; they do not establish general mathematical/machine
++integer equivalence. They are authored from source meaning rather than extracted
++as the expected answer from the query under test.
++
++Fixture processes sign these reviewed queries/manifests with generated ephemeral
++test keys. Missing logical paths, duplicate logical identities, extra paths,
++clause-only substitution, wrong guards and duplicate guard assertions retain valid
++cryptography and valid UNSAT replay. Tests independently invoke strict replay
++before the relevant coverage mutations are audited. Thus a generic bad-signature
++or solver failure cannot satisfy their coverage-stage assertions. Distinct valid
++query filenames in the duplicate/wrong-guard controls prevent a generic
++filename-duplicate check from standing in for logical coverage enforcement.
++
++A separate actual-compiler control uses an identity function beside:
++
++```rz
++fn uncovered(int x) -> int ensures result == x {
++    let y = x + 1;
++    return y;
++}
++```
++
++At x=0, the return is1 rather than0. Current body modeling does not cover this
++leading-let shape. The observed legacy signed/source-bound replay accepts its
++neighbor's nonempty proof subset and emits no implementation obligation for this
++function. That is consistent with replay's existing limited purpose; it does not
++make the neighbor's formula invalid. The requested coverage policy must expose
++this unsupported site instead of representing the subset as full requested credit.
++
++The SMT reader preserves command order, declaration/assertion multiplicity,
++quoted atoms and complete session shape. Only whitespace/comments are ignored;
++it does not simplify equivalent formulas or erase duplicate guards. Accepted
++sessions contain only `set-logic`, `declare-const`, `assert` and one final
++`check-sat`. After checkpoint comparison, the auditor separately checks SAT of
++the antecedent with the final negated goal removed. UNSAT antecedents are
++infeasible and UNKNOWN/error outcomes unresolved; neither grants reachable-site
++credit. This is formula-domain feasibility, not independently established source
++reachability.
++
++## Execution limits and evidence
++
++The supported auditor environment is a POSIX host with Python3 and the configured
++Z3 executable; the qualification scope remains the separately identified host
++baseline. It bounds the entire audit to0.1..60seconds plus bounded process cleanup,
++subprocess output to512KiB, policy/manifest documents to2MiB, required sites and
++manifest obligations to512, each query to1MiB/100,000tokens/64nesting levels and
++all reviewed query bytes to16MiB. Subprocesses use argument vectors, bounded
++nonblocking input/output and a new process group; timeouts/output overflow kill
++that group including ordinary solver descendants. This is not containment of a
++malicious trusted executable that deliberately escapes its process group.
++
++Use a controlled stable filesystem snapshot. Compiler/manifest/query drift checks
++are performed, but ordinary filesystem check/open operations are not atomic
++against adversarial concurrent mutation. This is not a filesystem isolation claim.
++
++The paired GitHub-hosted workflow is
++`.github/workflows/proof-coverage-qualification.yml`. It pins baseline
++`9f1d870acc5d5ba963a7e27d522e60aa70f7213e`, overlays the frozen NEW test file,
++retains public source/policy/raw signed SMT and raw stdout, and verifies paired
++per-test evidence. Ephemeral private signing keys are never retained. Historical
++run40063652331 retains the original fixture version and an explicitly invalid
++zero-test helper record; the corrected version has distinct filenames and only
++attributed tests. These versions must not be represented as identical overlays.
++
++Issue #4953 remains open: this small policy/checkpoint subset does not discharge
++all branch/nested-return/shadowing/import/loop/call semantics, complete source
++obligation enumeration, machine arithmetic, compiler lowering or external
++assessment. The accepted57-case dossier remains at its exact earlier binary;
++this audit adds no results to that record and qualifies no optimized release.
+diff --git a/resilient/tests/proof_coverage_audit.rs b/resilient/tests/proof_coverage_audit.rs
+new file mode 100644
+index 00000000..2592e414
+--- /dev/null
++++ b/resilient/tests/proof_coverage_audit.rs
+@@ -0,0 +1,807 @@
++//! Requested implementation coverage is separate from signed replay of a subset.
++#![cfg(all(feature = "z3", unix))]
++
++use ed25519_dalek::{Signer, SigningKey};
++use serde_json::{Value, json};
++use sha2::{Digest, Sha256};
++use std::path::{Path, PathBuf};
++use std::process::{Command, Output};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++fn hex(bytes: &[u8]) -> String {
++    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
++}
++fn hash(bytes: &[u8]) -> String {
++    hex(&Sha256::digest(bytes))
++}
++fn canonical(value: &Value) -> Vec<u8> {
++    serde_json::to_vec(value).unwrap()
++}
++
++struct Fixture {
++    root: PathBuf,
++    key: SigningKey,
++}
++impl Fixture {
++    fn new(source: &str) -> Self {
++        static NEXT: AtomicUsize = AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "proof_coverage_{}_{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir(&root).unwrap();
++        std::fs::create_dir(root.join("inputs")).unwrap();
++        std::fs::write(root.join("inputs/program.rz"), source).unwrap();
++        let key = SigningKey::generate(&mut rand_core::OsRng);
++        for (name, label, bytes) in [
++            ("private.pem", "PRIVATE", key.to_bytes()),
++            ("public.pem", "PUBLIC", key.verifying_key().to_bytes()),
++        ] {
++            std::fs::write(
++                root.join(name),
++                format!(
++                    "-----BEGIN ED25519 {label} KEY-----\n{}\n-----END ED25519 {label} KEY-----\n",
++                    hex(&bytes)
++                ),
++            )
++            .unwrap();
++        }
++        let result = Command::new(env!("CARGO_BIN_EXE_rz"))
++            .args(["--no-cache", "-t", "--emit-certificate"])
++            .arg(root.join("certs"))
++            .arg("--sign-cert")
++            .arg(root.join("private.pem"))
++            .arg(root.join("inputs/program.rz"))
++            .output()
++            .unwrap();
++        assert!(result.status.success(), "{result:?}");
++        Self { root, key }
++    }
++    fn manifest(&self) -> Value {
++        serde_json::from_slice(&std::fs::read(self.root.join("certs/manifest.json")).unwrap())
++            .unwrap()
++    }
++    fn save_manifest(&self, manifest: &Value) {
++        let bytes = canonical(manifest);
++        std::fs::write(
++            self.root.join("certs/manifest.sig"),
++            hex(&self.key.sign(&bytes).to_bytes()),
++        )
++        .unwrap();
++        std::fs::write(self.root.join("certs/manifest.json"), bytes).unwrap();
++    }
++    fn replay(&self) {
++        let result = Command::new(env!("CARGO_BIN_EXE_rz"))
++            .arg("verify-all")
++            .arg(self.root.join("certs"))
++            .arg("--source-root")
++            .arg(self.root.join("inputs"))
++            .arg("--pubkey")
++            .arg(self.root.join("public.pem"))
++            .arg("--z3")
++            .env("Z3_BINARY", "z3")
++            .output()
++            .unwrap();
++        assert!(
++            result.status.success(),
++            "mutation must remain authenticated and replayable: {result:?}"
++        );
++    }
++    fn install_queries(&self, count: usize) {
++        let mut manifest = self.manifest();
++        let mut entries = Vec::new();
++        for idx in 0..count {
++            let query = query(idx);
++            let name = format!("reviewed_{idx}.smt2");
++            std::fs::write(self.root.join("certs").join(&name), query).unwrap();
++            entries.push(json!({"fn":"covered:ensures:0","kind":"ensures_implementation","idx":idx,"cert":name,"sha256":hash(query.as_bytes()),"sig":hex(&self.key.sign(query.as_bytes()).to_bytes())}));
++        }
++        manifest["obligations"] = json!(entries);
++        self.save_manifest(&manifest);
++    }
++    fn policy(&self, count: usize) -> Value {
++        let manifest = self.manifest();
++        let sites: Vec<_> = (0..count).map(|idx| json!({"source":"program.rz","declaration":"program::covered","clause":0,"path":if idx==0 {"then"}else{"else"},"status":"required","obligation":{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":idx},"commands":commands(idx),"feasibility_commands":feasibility_commands(idx)})).collect();
++        json!({"schema":"resilient-expected-implementation-coverage","version":1,"profile":"reviewed-integer-equality-v1","compiler":{"sha256":hash(&std::fs::read(env!("CARGO_BIN_EXE_rz")).unwrap()),"build_profile":"debug"},"solver":{"sha256":hash(&std::fs::read(solver()).unwrap())},"source_graph_sha256":hash(&canonical(&manifest["source_binding"])),"sites":sites})
++    }
++    fn audit(&self, policy: &Value, expected: &str) {
++        let bytes = canonical(policy);
++        std::fs::write(self.root.join("policy.json"), &bytes).unwrap();
++        let result = self.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
++        let report: Value = serde_json::from_slice(&result.stdout)
++            .unwrap_or_else(|_| panic!("auditor must produce structured result: {result:?}"));
++        assert_eq!(report["code"], expected, "{report}");
++        assert_eq!(result.status.success(), expected == "covered", "{report}");
++        if expected != "covered" {
++            assert_eq!(
++                report["stage"], "coverage",
++                "authenticated mutation must reach coverage gate: {report}"
++            );
++        }
++    }
++    fn invoke(&self, policy_hash: &str, profile: &str) -> Output {
++        Command::new("python3")
++            .arg(
++                Path::new(env!("CARGO_MANIFEST_DIR"))
++                    .join("../agent-scripts/audit-proof-coverage.py"),
++            )
++            .arg("--rz")
++            .arg(env!("CARGO_BIN_EXE_rz"))
++            .arg("--cert-dir")
++            .arg(self.root.join("certs"))
++            .arg("--source-root")
++            .arg(self.root.join("inputs"))
++            .arg("--pubkey")
++            .arg(self.root.join("public.pem"))
++            .arg("--policy")
++            .arg(self.root.join("policy.json"))
++            .arg("--policy-sha256")
++            .arg(policy_hash)
++            .arg("--profile")
++            .arg(profile)
++            .arg("--timeout-seconds")
++            .arg("20")
++            .env("Z3_BINARY", "z3")
++            .output()
++            .unwrap()
++    }
++}
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        if let Ok(root) = std::env::var("COVERAGE_RECORD_DIR") {
++            let destination = PathBuf::from(root).join(self.root.file_name().unwrap());
++            std::fs::create_dir_all(&destination).unwrap();
++            for directory in ["inputs", "certs"] {
++                std::fs::create_dir(destination.join(directory)).unwrap();
++                for entry in std::fs::read_dir(self.root.join(directory)).unwrap() {
++                    let entry = entry.unwrap();
++                    std::fs::copy(
++                        entry.path(),
++                        destination.join(directory).join(entry.file_name()),
++                    )
++                    .unwrap();
++                }
++            }
++            for name in ["public.pem", "policy.json"] {
++                if self.root.join(name).exists() {
++                    std::fs::copy(self.root.join(name), destination.join(name)).unwrap();
++                }
++            }
++        }
++        let _ = std::fs::remove_dir_all(&self.root);
++    }
++}
++
++// Independent equality-only source checkpoints. Each path returns the original x;
++// antecedents partition x at zero and the negated postcondition is x != x.
++fn commands(idx: usize) -> Value {
++    let guard = if idx == 0 {
++        json!([">=", "x", "0"])
++    } else {
++        json!(["not", [">=", "x", "0"]])
++    };
++    json!([
++        ["set-logic", "AUFLIA"],
++        ["declare-const", "x", "Int"],
++        ["assert", guard],
++        ["assert", ["not", ["=", "x", "x"]]],
++        ["check-sat"]
++    ])
++}
++fn query(idx: usize) -> &'static str {
++    if idx == 0 {
++        "(set-logic AUFLIA)\n(declare-const x Int)\n(assert (>= x 0))\n(assert (not (= x x)))\n(check-sat)\n"
++    } else {
++        "(set-logic AUFLIA)\n(declare-const x Int)\n(assert (not (>= x 0)))\n(assert (not (= x x)))\n(check-sat)\n"
++    }
++}
++fn branch() -> Fixture {
++    let f = Fixture::new(
++        "fn covered(int x) -> int ensures result == x { if x >= 0 { return x; } else { return x; } }",
++    );
++    f.install_queries(2);
++    f
++}
++
++#[test]
++fn legacy_replay_accepts_the_mixed_subset_control() {
++    let f = Fixture::new(
++        "fn covered(int x) -> int ensures result == x { return x; } fn uncovered(int x) -> int ensures result == x { let y = x + 1; return y; }",
++    );
++    f.replay();
++    assert!(
++        !f.manifest()["obligations"]
++            .as_array()
++            .unwrap()
++            .iter()
++            .any(|o| o["fn"].as_str().unwrap().starts_with("uncovered:"))
++    );
++}
++#[test]
++fn covered_independent_branch_checkpoints_pass() {
++    let f = branch();
++    f.replay();
++    f.audit(&f.policy(2), "covered");
++}
++#[test]
++fn unsupported_wrong_let_remains_explicitly_unresolved() {
++    let f = Fixture::new(
++        "fn covered(int x) -> int ensures result == x { return x; } fn uncovered(int x) -> int ensures result == x { let y = x + 1; return y; }",
++    );
++    f.replay();
++    let mut p = f.policy(1);
++    p["sites"][0]["status"] = json!("unsupported");
++    p["sites"][0]["declaration"] = json!("program::uncovered");
++    p["sites"][0]["path"] = json!("return");
++    f.audit(&p, "unresolved_site");
++}
++#[test]
++fn missing_path_is_rejected_after_valid_authentication() {
++    let f = branch();
++    let p = f.policy(2);
++    let mut m = f.manifest();
++    m["obligations"].as_array_mut().unwrap().pop();
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "missing_obligation");
++}
++#[test]
++fn duplicate_path_is_rejected_after_valid_authentication() {
++    let f = branch();
++    let p = f.policy(2);
++    let mut m = f.manifest();
++    let mut entry = m["obligations"][0].clone();
++    std::fs::copy(
++        f.root.join("certs").join(entry["cert"].as_str().unwrap()),
++        f.root.join("certs/duplicate_valid.smt2"),
++    )
++    .unwrap();
++    entry["cert"] = json!("duplicate_valid.smt2");
++    m["obligations"].as_array_mut().unwrap().push(entry);
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "duplicate_obligation");
++}
++#[test]
++fn extra_path_is_rejected_after_valid_authentication() {
++    let f = branch();
++    let p = f.policy(1);
++    f.replay();
++    f.audit(&p, "extra_obligation");
++}
++#[test]
++fn clause_only_does_not_satisfy_implementation_site() {
++    let f = branch();
++    let p = f.policy(2);
++    let mut m = f.manifest();
++    m["obligations"][0]["kind"] = json!("ensures");
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "wrong_basis");
++}
++#[test]
++fn valid_unsat_query_with_wrong_path_guard_is_rejected() {
++    let f = branch();
++    let p = f.policy(2);
++    let mut m = f.manifest();
++    let mut first = m["obligations"][0].clone();
++    first["idx"] = json!(1);
++    std::fs::copy(
++        f.root.join("certs").join(first["cert"].as_str().unwrap()),
++        f.root.join("certs/wrong_guard_valid.smt2"),
++    )
++    .unwrap();
++    first["cert"] = json!("wrong_guard_valid.smt2");
++    m["obligations"][1] = first;
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "checkpoint_mismatch");
++}
++#[test]
++fn duplicate_policy_site_is_rejected() {
++    let f = branch();
++    let mut p = f.policy(2);
++    let site = p["sites"][0].clone();
++    p["sites"].as_array_mut().unwrap().push(site);
++    f.audit(&p, "duplicate_site");
++}
++#[test]
++fn infeasible_site_is_not_misreported_as_covered() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["sites"][0]["status"] = json!("infeasible");
++    f.audit(&p, "unresolved_site");
++}
++#[test]
++fn explicit_unselected_site_is_distinct_from_unresolved() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["sites"].as_array_mut().unwrap().push(json!({"source":"program.rz","declaration":"program::not_requested","clause":0,"path":"return","status":"unselected"}));
++    f.audit(&p, "covered");
++}
++#[test]
++fn policy_hash_binding_is_required() {
++    let f = branch();
++    let p = f.policy(2);
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), bytes).unwrap();
++    let result = f.invoke(&"0".repeat(64), "reviewed-integer-equality-v1");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["code"], "policy_hash_mismatch");
++    assert!(!result.status.success());
++}
++#[test]
++fn compiler_binding_is_required() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["compiler"]["sha256"] = json!("0".repeat(64));
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["code"], "compiler_hash_mismatch");
++    assert!(!result.status.success());
++}
++#[test]
++fn source_graph_binding_is_required() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["source_graph_sha256"] = json!("0".repeat(64));
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["code"], "source_graph_mismatch");
++    assert!(!result.status.success());
++}
++#[test]
++fn profile_binding_is_required() {
++    let f = branch();
++    let p = f.policy(2);
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), "different-profile");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["code"], "profile_mismatch");
++    assert!(!result.status.success());
++}
++#[test]
++fn auditor_performs_source_authentication_itself() {
++    let f = branch();
++    let p = f.policy(2);
++    std::fs::write(
++        f.root.join("inputs/program.rz"),
++        "fn changed() -> int { return 0; }",
++    )
++    .unwrap();
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["stage"], "authentication");
++    assert_eq!(report["code"], "authentication_failed");
++    assert!(!result.status.success());
++}
++#[test]
++fn non_result_clause_is_not_silently_implementation_covered() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["sites"][0]["status"] = json!("unresolved");
++    p["sites"][0]["reason"] =
++        json!("declared ensures without result requires independent final-state model");
++    f.audit(&p, "unresolved_site");
++}
++#[test]
++fn duplicate_guard_assertion_is_not_normalized_away() {
++    let f = branch();
++    let p = f.policy(2);
++    let mut m = f.manifest();
++    let query = "(set-logic AUFLIA)\n(declare-const x Int)\n(assert (>= x 0))\n(assert (>= x 0))\n(assert (not (= x x)))\n(check-sat)\n";
++    let name = m["obligations"][0]["cert"].as_str().unwrap();
++    std::fs::write(f.root.join("certs").join(name), query).unwrap();
++    m["obligations"][0]["sha256"] = json!(hash(query.as_bytes()));
++    m["obligations"][0]["sig"] = json!(hex(&f.key.sign(query.as_bytes()).to_bytes()));
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "checkpoint_mismatch");
++}
++
++fn solver() -> PathBuf {
++    let name = std::env::var("Z3_BINARY").unwrap_or_else(|_| "z3".into());
++    if name.contains('/') {
++        return PathBuf::from(name);
++    }
++    std::env::split_paths(&std::env::var_os("PATH").unwrap())
++        .map(|directory| directory.join(&name))
++        .find(|path| path.is_file())
++        .unwrap()
++}
++fn feasibility_commands(idx: usize) -> Value {
++    let guard = if idx == 0 {
++        json!([">=", "x", "0"])
++    } else {
++        json!(["not", [">=", "x", "0"]])
++    };
++    json!([
++        ["set-logic", "AUFLIA"],
++        ["declare-const", "x", "Int"],
++        ["assert", guard],
++        ["check-sat"]
++    ])
++}
++#[test]
++fn hardening_matching_trusted_solver_is_accepted() {
++    let f = branch();
++    f.replay();
++    f.audit(&f.policy(2), "covered");
++}
++#[test]
++fn hardening_changed_trusted_solver_is_rejected() {
++    let f = branch();
++    let mut p = f.policy(2);
++    p["solver"]["sha256"] = json!("0".repeat(64));
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), "reviewed-integer-equality-v1");
++    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
++    assert_eq!(report["stage"], "binding", "{report}");
++    assert_eq!(report["code"], "solver_hash_mismatch", "{report}");
++    assert!(!result.status.success());
++}
++#[test]
++fn hardening_embedded_infeasible_entry_is_not_reachable_credit() {
++    let f = Fixture::new(
++        "fn covered(int x) -> int requires x > 0 requires x < 0 ensures result == x { return x; }",
++    );
++    let query = "(set-logic AUFLIA)\n(declare-const x Int)\n(assert (not (=> (and (> x 0) (< x 0)) (= x x))))\n(check-sat)\n";
++    let mut m = f.manifest();
++    std::fs::write(f.root.join("certs/embedded_entry.smt2"), query).unwrap();
++    m["obligations"] = json!([{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":0,"cert":"embedded_entry.smt2","sha256":hash(query.as_bytes()),"sig":hex(&f.key.sign(query.as_bytes()).to_bytes())}]);
++    f.save_manifest(&m);
++    f.replay();
++    let mut p = f.policy(1);
++    p["sites"][0]["path"] = json!("return");
++    p["sites"][0]["commands"] = json!([
++        ["set-logic", "AUFLIA"],
++        ["declare-const", "x", "Int"],
++        [
++            "assert",
++            [
++                "not",
++                [
++                    "=>",
++                    ["and", [">", "x", "0"], ["<", "x", "0"]],
++                    ["=", "x", "x"]
++                ]
++            ]
++        ],
++        ["check-sat"]
++    ]);
++    // Independently authored from both source requires; it is not the full
++    // query with its only assertion blindly removed.
++    p["sites"][0]["feasibility_commands"] = json!([
++        ["set-logic", "AUFLIA"],
++        ["declare-const", "x", "Int"],
++        ["assert", [">", "x", "0"]],
++        ["assert", ["<", "x", "0"]],
++        ["check-sat"]
++    ]);
++    f.audit(&p, "infeasible_obligation");
++}
++
++fn invoke_with_watchdog(f: &Fixture, policy_hash: &str) -> Output {
++    Command::new("python3")
++        .arg("-c")
++        .arg("import os,signal,subprocess,sys\np=subprocess.Popen(sys.argv[1:],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)\ntry:\n o,e=p.communicate(timeout=4); code=p.returncode\nexcept subprocess.TimeoutExpired:\n os.killpg(p.pid,signal.SIGKILL);o,e=p.communicate();code=124\nsys.stdout.buffer.write(o);sys.stderr.buffer.write(e);sys.exit(code)")
++        .arg("python3")
++        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../agent-scripts/audit-proof-coverage.py"))
++        .arg("--rz")
++        .arg(env!("CARGO_BIN_EXE_rz"))
++        .arg("--cert-dir")
++        .arg(f.root.join("certs"))
++        .arg("--source-root")
++        .arg(f.root.join("inputs"))
++        .arg("--pubkey")
++        .arg(f.root.join("public.pem"))
++        .arg("--policy")
++        .arg(f.root.join("policy.json"))
++        .arg("--policy-sha256")
++        .arg(policy_hash)
++        .args([
++            "--profile",
++            "reviewed-integer-equality-v1",
++            "--timeout-seconds",
++            "1",
++        ])
++        .env("Z3_BINARY", "z3")
++        .output()
++        .unwrap()
++}
++#[test]
++fn hardening_fifo_policy_is_rejected_without_opening_it() {
++    let f = branch();
++    let bytes = canonical(&f.policy(2));
++    let path = f.root.join("policy.json");
++    assert!(
++        Command::new("mkfifo")
++            .arg(&path)
++            .status()
++            .unwrap()
++            .success()
++    );
++    let result = invoke_with_watchdog(&f, &hash(&bytes));
++    std::fs::remove_file(&path).unwrap();
++    std::fs::write(path, bytes).unwrap();
++    assert_ne!(
++        result.status.code(),
++        Some(124),
++        "auditor hung on policy FIFO: {result:?}"
++    );
++    let report: Value = serde_json::from_slice(&result.stdout)
++        .unwrap_or_else(|_| panic!("structured FIFO rejection required: {result:?}"));
++    assert_eq!(report["code"], "non_regular_input", "{report}");
++    assert!(!result.status.success());
++}
++#[test]
++fn hardening_fifo_query_is_rejected_before_replay() {
++    let f = branch();
++    let bytes = canonical(&f.policy(2));
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let manifest = f.manifest();
++    let path = f
++        .root
++        .join("certs")
++        .join(manifest["obligations"][0]["cert"].as_str().unwrap());
++    let query = std::fs::read(&path).unwrap();
++    std::fs::remove_file(&path).unwrap();
++    assert!(
++        Command::new("mkfifo")
++            .arg(&path)
++            .status()
++            .unwrap()
++            .success()
++    );
++    let result = invoke_with_watchdog(&f, &hash(&bytes));
++    std::fs::remove_file(&path).unwrap();
++    std::fs::write(path, query).unwrap();
++    assert_ne!(
++        result.status.code(),
++        Some(124),
++        "auditor hung on query FIFO: {result:?}"
++    );
++    let report: Value = serde_json::from_slice(&result.stdout)
++        .unwrap_or_else(|_| panic!("structured FIFO rejection required: {result:?}"));
++    assert_eq!(report["stage"], "binding", "{report}");
++    assert_eq!(report["code"], "non_regular_input", "{report}");
++    assert!(!result.status.success());
++}
++#[test]
++fn hardening_oversized_manifest_has_structured_resource_rejection() {
++    let f = branch();
++    let bytes = canonical(&f.policy(2));
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let path = f.root.join("certs/manifest.json");
++    let mut manifest = std::fs::read(&path).unwrap();
++    manifest.resize(2 * 1024 * 1024 + 1, b' ');
++    std::fs::write(path, manifest).unwrap();
++    let result = invoke_with_watchdog(&f, &hash(&bytes));
++    let report: Value = serde_json::from_slice(&result.stdout)
++        .unwrap_or_else(|_| panic!("structured resource rejection required: {result:?}"));
++    assert_eq!(report["code"], "resource_limit", "{report}");
++    assert!(!result.status.success());
++}
++
++fn bv_commands(idx: usize) -> Value {
++    let guard = if idx == 0 {
++        json!(["bvsge", "x", "#x0000000000000000"])
++    } else {
++        json!(["not", ["bvsge", "x", "#x0000000000000000"]])
++    };
++    json!([
++        ["set-logic", "QF_BV"],
++        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
++        ["assert", guard],
++        ["assert", ["not", ["=", "x", "x"]]],
++        ["check-sat"]
++    ])
++}
++fn bv_feasibility(idx: usize) -> Value {
++    let guard = if idx == 0 {
++        json!(["bvsge", "x", "#x0000000000000000"])
++    } else {
++        json!(["not", ["bvsge", "x", "#x0000000000000000"]])
++    };
++    json!([
++        ["set-logic", "QF_BV"],
++        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
++        ["assert", guard],
++        ["check-sat"]
++    ])
++}
++fn bv_branch() -> Fixture {
++    let f = branch();
++    let mut m = f.manifest();
++    for idx in 0..2 {
++        let query = if idx == 0 {
++            "(set-logic QF_BV)\n(declare-fun x () (_ BitVec 64))\n(assert (bvsge x #x0000000000000000))\n(assert (not (= x x)))\n(check-sat)\n"
++        } else {
++            "(set-logic QF_BV)\n(declare-fun x () (_ BitVec 64))\n(assert (not (bvsge x #x0000000000000000)))\n(assert (not (= x x)))\n(check-sat)\n"
++        };
++        let name = format!("reviewed_bv_{idx}.smt2");
++        std::fs::write(f.root.join("certs").join(&name), query).unwrap();
++        m["obligations"][idx]["cert"] = json!(name);
++        m["obligations"][idx]["sha256"] = json!(hash(query.as_bytes()));
++        m["obligations"][idx]["sig"] = json!(hex(&f.key.sign(query.as_bytes()).to_bytes()));
++    }
++    f.save_manifest(&m);
++    f
++}
++fn bv_policy(f: &Fixture) -> Value {
++    let mut p = f.policy(2);
++    for idx in 0..2 {
++        p["sites"][idx]["commands"] = bv_commands(idx);
++        p["sites"][idx]["feasibility_commands"] = bv_feasibility(idx);
++    }
++    p
++}
++#[test]
++fn integration_zeroarity_bv_branch_checkpoints_are_supported() {
++    let f = bv_branch();
++    f.replay();
++    f.audit(&bv_policy(&f), "covered");
++}
++#[test]
++fn integration_bv_wrong_guard_rejects_valid_unsat_subset() {
++    let f = bv_branch();
++    let p = bv_policy(&f);
++    let mut m = f.manifest();
++    let mut entry = m["obligations"][0].clone();
++    entry["idx"] = json!(1);
++    std::fs::copy(
++        f.root.join("certs").join(entry["cert"].as_str().unwrap()),
++        f.root.join("certs/bv_wrong_guard.smt2"),
++    )
++    .unwrap();
++    entry["cert"] = json!("bv_wrong_guard.smt2");
++    m["obligations"][1] = entry;
++    f.save_manifest(&m);
++    f.replay();
++    f.audit(&p, "checkpoint_mismatch");
++}
++#[test]
++fn integration_nonzeroarity_function_is_not_a_scalar_checkpoint() {
++    let f = branch();
++    let query = "(set-logic QF_UFBV)\n(declare-fun x ((_ BitVec 64)) (_ BitVec 64))\n(assert (not (= (x #x0000000000000000) (x #x0000000000000000))))\n(check-sat)\n";
++    let mut m = f.manifest();
++    std::fs::write(f.root.join("certs/nonzeroarity.smt2"), query).unwrap();
++    m["obligations"] = json!([{"fn":"covered:ensures:0","kind":"ensures_implementation","idx":0,"cert":"nonzeroarity.smt2","sha256":hash(query.as_bytes()),"sig":hex(&f.key.sign(query.as_bytes()).to_bytes())}]);
++    f.save_manifest(&m);
++    f.replay();
++    let mut p = f.policy(1);
++    p["sites"][0]["commands"] = json!([
++        ["set-logic", "QF_UFBV"],
++        [
++            "declare-fun",
++            "x",
++            [["_", "BitVec", "64"]],
++            ["_", "BitVec", "64"]
++        ],
++        [
++            "assert",
++            [
++                "not",
++                [
++                    "=",
++                    ["x", "#x0000000000000000"],
++                    ["x", "#x0000000000000000"]
++                ]
++            ]
++        ],
++        ["check-sat"]
++    ]);
++    p["sites"][0]["feasibility_commands"] = json!([
++        ["set-logic", "QF_UFBV"],
++        [
++            "declare-fun",
++            "x",
++            [["_", "BitVec", "64"]],
++            ["_", "BitVec", "64"]
++        ],
++        ["check-sat"]
++    ]);
++    f.audit(&p, "unsupported_session");
++}
++
++// Reviewed from source: safety factors are true (no faulting arithmetic),
++// entry is true, each path guard implies returned x == x. Preserve the exact
++// emitted let tree; feasibility is the independently written source guard.
++fn actual_bv_commands(idx: usize) -> Value {
++    let guard = json!(["bvsge", "x", "#x0000000000000000"]);
++    let assertion = if idx == 0 {
++        json!([
++            "let",
++            [
++                [
++                    "a!1",
++                    ["and", "true", ["=>", ["and", guard.clone()], "true"]]
++                ],
++                [
++                    "a!2",
++                    ["=>", "true", ["=>", ["and", guard], ["=", "x", "x"]]]
++                ]
++            ],
++            ["not", ["and", "true", ["=>", "true", "a!1"], "a!2"]]
++        ])
++    } else {
++        json!([
++            "let",
++            [
++                ["a!1", ["=>", ["and", ["not", guard.clone()]], "true"]],
++                ["a!2", ["=>", ["and", ["not", guard]], ["=", "x", "x"]]]
++            ],
++            [
++                "not",
++                [
++                    "and",
++                    "true",
++                    ["=>", "true", ["and", "true", "a!1"]],
++                    ["=>", "true", "a!2"]
++                ]
++            ]
++        ])
++    };
++    json!([
++        ["set-logic", "QF_BV"],
++        ["declare-fun", "x", [], ["_", "BitVec", "64"]],
++        ["assert", assertion],
++        ["check-sat"]
++    ])
++}
++#[test]
++fn integration_actual_compiler_branch_matches_reviewed_checkpoints() {
++    let f = Fixture::new(
++        "fn identity(int x) -> int ensures result == x { if x >= 0 { return x; } else { return x; } }",
++    );
++    f.replay();
++    let manifest = f.manifest();
++    let obligations: Vec<_> = manifest["obligations"]
++        .as_array()
++        .unwrap()
++        .iter()
++        .filter(|entry| entry["kind"] == "ensures_implementation")
++        .collect();
++    assert_eq!(obligations.len(), 2, "both actual compiler paths required");
++    let first = std::fs::read_to_string(
++        f.root
++            .join("certs")
++            .join(obligations[0]["cert"].as_str().unwrap()),
++    )
++    .unwrap();
++    let machine = first.starts_with("; implementation-profile: vm-i64-wrap-v1\n");
++    let profile = if machine {
++        "vm-i64-wrap-v1"
++    } else {
++        "reviewed-integer-equality-v1"
++    };
++    let mut p = f.policy(2);
++    p["profile"] = json!(profile);
++    for idx in 0..2 {
++        p["sites"][idx]["declaration"] = json!("program::identity");
++        p["sites"][idx]["obligation"]["fn"] = json!("identity:ensures:0");
++        if machine {
++            p["sites"][idx]["commands"] = actual_bv_commands(idx);
++            p["sites"][idx]["feasibility_commands"] = bv_feasibility(idx);
++        }
++    }
++    let bytes = canonical(&p);
++    std::fs::write(f.root.join("policy.json"), &bytes).unwrap();
++    let result = f.invoke(&hash(&bytes), profile);
++    let report: Value =
++        serde_json::from_slice(&result.stdout).unwrap_or_else(|_| panic!("{result:?}"));
++    assert_eq!(
++        report["code"], "covered",
++        "actual compiler must match independently reviewed checkpoints: {report}"
++    );
++    assert!(result.status.success());
++}
