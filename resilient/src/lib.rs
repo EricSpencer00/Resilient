@@ -25572,19 +25572,13 @@ impl Interpreter {
                 type_params,
                 ..
             } => {
-                // RES-068: if every observed call site for this fn was
-                // statically proven, the runtime requires check is
-                // provably redundant. Strip it.
-                let runtime_requires = if self.proven_fns.contains(name) {
-                    Vec::new()
-                } else {
-                    requires.clone()
-                };
+                // Direct call-site proofs do not cover future calls through
+                // aliases. Preserve entry guards on the function value.
                 let func = Value::Function(Box::new(FunctionValue {
                     parameters: Rc::new(parameters.clone()),
                     body: Rc::new(body.as_ref().clone()),
                     env: self.env.clone(),
-                    requires: runtime_requires,
+                    requires: requires.clone(),
                     ensures: ensures.clone(),
                     recovers_to: recovers_to.clone(),
                     name: name.clone(),
@@ -45126,10 +45120,9 @@ struct Counter { int value; }"#,
     // ---------- Elide proven runtime checks (RES-068) ----------
 
     #[test]
-    fn elide_runtime_check_when_all_callsites_proven() {
-        // Both call sites have constant args that satisfy `requires`.
-        // The typechecker discharges them; with_proven_fns then
-        // strips the runtime check from the bound Function value.
+    fn keep_entry_guard_when_observed_callsites_proven() {
+        // Both observed direct calls are discharged, but a later alias
+        // can supply different arguments. The function keeps its guard.
         let src = r#"
             fn pos(int x) requires x > 0 { return x; }
             let a = pos(5);
@@ -45141,17 +45134,15 @@ struct Counter { int value; }"#,
         let proven = tc.stats.fully_provable_fns();
         assert!(proven.contains("pos"), "pos should be fully proven");
 
-        // Run with the proven set: pos's Value::Function has empty
-        // requires, so apply_function never enters the runtime-check
-        // branch even if we deliberately try to violate the contract.
-        // Sanity check by inspecting the bound Function value.
+        // The call-site statistics remain useful for the audit, but do
+        // not authorize removing the guard from a first-class function.
         let mut interp = Interpreter::new().with_proven_fns(proven);
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
             Value::Function(fv) => {
                 assert!(
-                    fv.requires.is_empty(),
-                    "expected requires to be elided after proof"
+                    !fv.requires.is_empty(),
+                    "call-site proof must preserve the function entry guard"
                 );
             }
             other => panic!("expected Function, got {:?}", other),
