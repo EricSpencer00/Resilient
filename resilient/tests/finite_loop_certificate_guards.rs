@@ -1,10 +1,10 @@
-//! Iteration-binding invariants remain runtime checked until fully modeled.
+//! Finite iteration proofs follow actual element bindings and check points.
 #![cfg(feature = "z3")]
 
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn no_certificate(source: &str, succeeds: bool) {
+fn certificate_count(source: &str, succeeds: bool) -> usize {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
         "res_finite_guard_{}_{}",
@@ -29,10 +29,11 @@ fn no_certificate(source: &str, succeeds: bool) {
     };
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(output.status.success(), succeeds, "{output:?}");
-    assert_eq!(
-        obligations, 0,
-        "unsupported iteration semantics must not receive a proof"
-    );
+    obligations
+}
+
+fn no_certificate(source: &str, succeeds: bool) {
+    assert_eq!(certificate_count(source, succeeds), 0);
 }
 
 #[test]
@@ -46,8 +47,11 @@ fn changing_iteration_binding_is_not_certified() {
 }
 
 #[test]
-fn valid_iteration_binding_retains_runtime_check() {
-    no_certificate("let x = 1; for x in [1, 2] invariant x >= 0 { }", true);
+fn valid_iteration_binding_is_certified() {
+    assert_eq!(
+        certificate_count("let x = 1; for x in [1, 2] invariant x >= 0 { }", true),
+        3
+    );
 }
 
 #[test]
