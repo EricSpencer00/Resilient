@@ -1,0 +1,3 @@
+use "library.rz" as first;
+use "library.rz" as second;
+println(first::f(1)); println(second::f(2));

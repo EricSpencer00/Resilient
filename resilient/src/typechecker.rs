@@ -18,6 +18,8 @@
 //! This module is the typechecker phase; `actor_runtime.rs` handles
 //! scheduler/crash machinery, and `supervisor.rs` handles parsing.
 
+mod module_bindings;
+
 use crate::span::{Pos, Span};
 use crate::{Node, Pattern};
 use std::cell::RefCell;
@@ -1941,6 +1943,9 @@ pub struct TypeChecker {
     /// parameter. Used to resolve an associated-type projection only when
     /// the function's declared bounds provide a sound trait context.
     fn_type_param_bounds: HashMap<String, Vec<Vec<String>>>,
+    /// Original declaration name for an explicitly qualified module check.
+    /// Attribute policy still uses the parser's original item identity.
+    module_function_origin: Option<(String, String)>,
     /// RES-4067: concrete associated-type implementations keyed by
     /// (trait, implementing struct, associated type). Values remain raw
     /// annotations until a call site has enough context to parse them.
@@ -5895,6 +5900,7 @@ impl TypeChecker {
 
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
+            module_function_origin: None,
             assoc_type_bindings: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
@@ -6948,6 +6954,7 @@ impl TypeChecker {
                 // RES-128: also hoist type aliases in the same pass so
                 // `fn foo(Meters x) ...` typechecks when the
                 // `type Meters = Int;` declaration textually follows.
+                let mut module_names = HashSet::new();
                 for stmt in statements {
                     match &stmt.node {
                         Node::Function {
@@ -7029,6 +7036,15 @@ impl TypeChecker {
                                     return_type: Box::new(ret_type),
                                 },
                             );
+                        }
+                        Node::ModuleDecl { name, body, .. } => {
+                            if !module_names.insert(name) {
+                                return Err(format!(
+                                    "{}: error: duplicate module declaration `{}`; each module name must be declared at most once",
+                                    source_path, name
+                                ));
+                            }
+                            self.hoist_module_functions(name, body)?;
                         }
                         // RES-4246: hoist extern fn names alongside
                         // regular ones so a call that textually precedes
@@ -8531,9 +8547,19 @@ impl TypeChecker {
                 // regress compile time / false-timeout rate before the
                 // false-positive rate has been measured (see #4112).
                 #[cfg(feature = "z3")]
-                let overflow_checked = crate::feature_attrs::find_kind("overflow_checked")
-                    .iter()
-                    .any(|(item_name, _)| item_name == name);
+                let overflow_checked = {
+                    // Preserve the attribute policy of this exact declaration;
+                    // never infer an origin from a generic qualified basename.
+                    let attribute_name = self
+                        .module_function_origin
+                        .as_ref()
+                        .filter(|(qualified, _)| qualified == name)
+                        .map(|(_, original)| original)
+                        .unwrap_or(name);
+                    crate::feature_attrs::find_kind("overflow_checked")
+                        .iter()
+                        .any(|(item_name, _)| item_name == attribute_name)
+                };
                 for (decl_idx, clause) in requires.iter().chain(ensures.iter()).enumerate() {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.
@@ -12474,13 +12500,8 @@ impl TypeChecker {
             // a parser/internal bug; surface a clean error rather
             // than crashing the typechecker.
             Node::NamedArg { value, .. } => self.check_node(value),
-            // RES-324: module declaration — type-check each body node.
-            Node::ModuleDecl { body, .. } => {
-                for node in body {
-                    self.check_node(node)?;
-                }
-                Ok(Type::Void)
-            }
+            // Module members have qualified external names and isolated local bindings.
+            Node::ModuleDecl { name, body, .. } => self.check_module_bindings(name, body),
             // RES-290: trait declarations carry only signatures and are
             // validated by `crate::traits::check`; nothing to do here.
             Node::TraitDecl { .. } => Ok(Type::Void),

@@ -1,0 +1,2 @@
+use "not-resolved.rz" as external;
+fn local(int x) -> int ensures result == x { return x; }
