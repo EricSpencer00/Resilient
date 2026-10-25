@@ -881,6 +881,7 @@ fn run_postcheck(
         defers: Vec::new(),
     }];
     let mut try_stack: Vec<TryFrame> = Vec::new();
+    let mut pending_checked_failures: Vec<Option<String>> = Vec::new();
     // RES-4046: `statics`/`statics_init` persist a fn's `static let`
     // bindings across separate calls *within the same run*. A
     // postcheck's own body never declares one (see
@@ -900,6 +901,7 @@ fn run_postcheck(
         &mut locals,
         &mut frames,
         &mut try_stack,
+        &mut pending_checked_failures,
         &mut statics,
         &mut statics_init,
         overflow_mode,
@@ -953,12 +955,14 @@ fn run_inner(
         defers: Vec::new(),
     });
     let mut try_stack: Vec<TryFrame> = Vec::new();
+    let mut pending_checked_failures: Vec<Option<String>> = Vec::new();
     match run_dispatch_loop(
         program,
         &mut stack,
         &mut locals,
         &mut frames,
         &mut try_stack,
+        &mut pending_checked_failures,
         &mut statics,
         &mut statics_init,
         overflow_mode,
@@ -1017,6 +1021,35 @@ fn live_handler_for(chunk: &Chunk, index: u16) -> Result<&LiveHandlerEntry, VmEr
         })
 }
 
+/// Existing checked-failure handler search, shared by legacy immediate calls
+/// and compiler-marked direct calls whose entry guards have now completed.
+fn dispatch_checked_failure(
+    program: &Program,
+    variant: &str,
+    stack: &mut Vec<Value>,
+    locals: &mut Vec<Value>,
+    frames: &mut Vec<CallFrame>,
+    try_stack: &mut Vec<TryFrame>,
+    pending_checked_failures: &mut Vec<Option<String>>,
+) -> Result<(), VmError> {
+    while let Some(try_frame) = try_stack.pop() {
+        let handler_chunk = chunk_for_frame(program, try_frame.chunk_idx)?;
+        let entry = try_handler_for(handler_chunk, try_frame.handler_table_idx)?;
+        if let Some(arm) = entry.arms.iter().find(|arm| arm.variant == variant) {
+            while frames.len() > try_frame.call_depth {
+                let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                pending_checked_failures.truncate(frames.len());
+                locals.truncate(popped.locals_base);
+            }
+            stack.truncate(try_frame.stack_depth);
+            let frame_idx = frames.len() - 1;
+            frames[frame_idx].pc = arm.handler_pc;
+            return Ok(());
+        }
+    }
+    Err(VmError::CheckedFailure(variant.to_owned()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_dispatch_loop(
     program: &Program,
@@ -1024,6 +1057,7 @@ fn run_dispatch_loop(
     locals: &mut Vec<Value>,
     frames: &mut Vec<CallFrame>,
     try_stack: &mut Vec<TryFrame>,
+    pending_checked_failures: &mut Vec<Option<String>>,
     statics: &mut Vec<Vec<Value>>,
     statics_init: &mut Vec<Vec<bool>>,
     overflow_mode: OverflowMode,
@@ -1038,6 +1072,7 @@ fn run_dispatch_loop(
     let live_retry_count = tracked.as_ref().map(|t| t.retry_count);
 
     loop {
+        pending_checked_failures.truncate(frames.len());
         // SAFETY: frames is non-empty for the duration of the main
         // loop — we only pop a frame on `ReturnFromCall` (which has
         // a pre-check) and exit the loop on main's `Op::Return`.
@@ -1060,6 +1095,7 @@ fn run_dispatch_loop(
             }
             // In a fn body: implicit ReturnFromCall with Void.
             let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            pending_checked_failures.truncate(frames.len());
             drain_deferred_calls(program, &popped, locals, overflow_mode)?;
             locals.truncate(popped.locals_base);
             stack.push(Value::Void);
@@ -1292,46 +1328,29 @@ fn run_dispatch_loop(
                     .get(idx as usize)
                     .ok_or(VmError::FunctionOutOfBounds(idx))?;
                 validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
-                if !try_stack.is_empty() && !func.fails.is_empty() {
+                let defer_injection = !try_stack.is_empty()
+                    && !func.fails.is_empty()
+                    && func.chunk.code.contains(&Op::EntryGuardsStart);
+                if !try_stack.is_empty() && !func.fails.is_empty() && !defer_injection {
                     let variant = &func.fails[0];
-                    let arity = func.arity as usize;
-                    for _ in 0..arity {
+                    for _ in 0..func.arity {
                         stack.pop();
                     }
-                    let mut dispatched = false;
-                    while let Some(try_frame) = try_stack.pop() {
-                        let handler_chunk = chunk_for_frame(program, try_frame.chunk_idx)?;
-                        let entry = try_handler_for(handler_chunk, try_frame.handler_table_idx)?;
-                        if let Some(arm) = entry.arms.iter().find(|a| a.variant == *variant) {
-                            while frames.len() > try_frame.call_depth {
-                                let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
-                                locals.truncate(popped.locals_base);
-                            }
-                            stack.truncate(try_frame.stack_depth);
-                            let fi = frames.len() - 1;
-                            frames[fi].pc = arm.handler_pc;
-                            dispatched = true;
-                            break;
-                        }
+                    dispatch_checked_failure(
+                        program,
+                        variant,
+                        stack,
+                        locals,
+                        frames,
+                        try_stack,
+                        pending_checked_failures,
+                    )?;
+                    if let Some(target_len) = target_frames_len
+                        && frames.len() < target_len
+                    {
+                        return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
                     }
-                    if dispatched {
-                        // RES-3995: rare edge case — a `fails` catch
-                        // dispatch unwound *past* a tracked live
-                        // block's own frame (the handler lives in an
-                        // ancestor of the live block, not inside it).
-                        // The VM state already correctly resumes at
-                        // the handler PC; this invocation just has
-                        // nothing left to track, so stop immediately
-                        // rather than let a stale `target_frames_len`
-                        // misfire on later, unrelated ops.
-                        if let Some(target_len) = target_frames_len
-                            && frames.len() < target_len
-                        {
-                            return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
-                        }
-                        continue;
-                    }
-                    return Err(VmError::CheckedFailure(variant.clone()));
+                    continue;
                 }
                 let arity = func.arity as usize;
                 if stack.len() < arity {
@@ -1359,6 +1378,10 @@ fn run_dispatch_loop(
                     source_slots: Box::default(),
                     defers: Vec::new(),
                 });
+                if defer_injection {
+                    pending_checked_failures.resize(frames.len(), None);
+                    pending_checked_failures[frames.len() - 1] = Some(func.fails[0].clone());
+                }
             }
             // RES-4119: register a `defer <expr>;` call on the *current*
             // frame's defer stack. `idx` names the synthesized
@@ -1376,6 +1399,7 @@ fn run_dispatch_loop(
                 // semantics.
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                pending_checked_failures.truncate(frames.len());
                 // RES-4119: drain `popped`'s deferred calls in LIFO
                 // order — mirrors the tree-walking interpreter's
                 // `defer_stack` drain (`lib.rs`), which always runs
@@ -1458,6 +1482,9 @@ fn run_dispatch_loop(
             // We do NOT push a new CallFrame — the existing frame is
             // reused with its locals slab base unchanged.
             Op::TailCall(idx) => {
+                if let Some(pending) = pending_checked_failures.get_mut(frame_idx) {
+                    *pending = None;
+                }
                 let func = program
                     .functions
                     .get(idx as usize)
@@ -2013,6 +2040,7 @@ fn run_dispatch_loop(
                     Value::Result { ok: false, payload } => {
                         let ret = Value::Result { ok: false, payload };
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        pending_checked_failures.truncate(frames.len());
                         if frames.is_empty() {
                             return Ok(LoopOutcome::Halted(ret));
                         }
@@ -2026,6 +2054,7 @@ fn run_dispatch_loop(
                     }
                     Value::Option(None) => {
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        pending_checked_failures.truncate(frames.len());
                         if frames.is_empty() {
                             return Ok(LoopOutcome::Halted(Value::Option(None)));
                         }
@@ -2210,6 +2239,7 @@ fn run_dispatch_loop(
                         locals,
                         frames,
                         try_stack,
+                        pending_checked_failures,
                         statics,
                         statics_init,
                         overflow_mode,
@@ -2262,6 +2292,7 @@ fn run_dispatch_loop(
                             // failed attempt made, mirroring the
                             // tree-walker's env-snapshot restore.
                             frames.truncate(frame_idx + 1);
+                            pending_checked_failures.truncate(frames.len());
                             locals.truncate(locals_base);
                             locals.extend(locals_snapshot.iter().cloned());
                             stack.truncate(stack_depth);
@@ -2567,6 +2598,28 @@ fn run_dispatch_loop(
                     other => format!("assumption failed: {}", other),
                 };
                 return Err(VmError::AssumeViolated(msg));
+            }
+            Op::EntryGuardsStart => {}
+            Op::EntryGuardsComplete => {
+                if let Some(variant) = pending_checked_failures
+                    .get_mut(frame_idx)
+                    .and_then(Option::take)
+                {
+                    dispatch_checked_failure(
+                        program,
+                        &variant,
+                        stack,
+                        locals,
+                        frames,
+                        try_stack,
+                        pending_checked_failures,
+                    )?;
+                    if let Some(target_len) = target_frames_len
+                        && frames.len() < target_len
+                    {
+                        return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
+                    }
+                }
             }
             Op::RequiresViolation {
                 name_const,
@@ -2885,6 +2938,7 @@ fn vm_call_closure_value(
         defers: Vec::new(),
     }];
     let mut try_stack: Vec<TryFrame> = Vec::new();
+    let mut pending_checked_failures: Vec<Option<String>> = Vec::new();
     let mut statics: Vec<Vec<Value>> = Vec::new();
     let mut statics_init: Vec<Vec<bool>> = Vec::new();
     let mut last_pc: (usize, usize) = (fn_idx as usize, 0);
@@ -2894,6 +2948,7 @@ fn vm_call_closure_value(
         &mut locals,
         &mut frames,
         &mut try_stack,
+        &mut pending_checked_failures,
         &mut statics,
         &mut statics_init,
         overflow_mode,
@@ -3715,6 +3770,7 @@ struct VmState<'p> {
     statics_init: Vec<Vec<bool>>,
     overflow_mode: OverflowMode,
     try_stack: Vec<TryFrame>,
+    pending_checked_failures: Vec<Option<String>>,
     /// RES-4131: threaded through to `stacktrace()`'s frame
     /// formatting — see `run_with_source`.
     source_path: &'p str,
@@ -3740,11 +3796,9 @@ impl<'p> VmState<'p> {
 /// mutating state, and reports whether to continue or halt.
 type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 
-/// Number of `Op` discriminants. Keep in sync with the `Op` enum in
-/// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
-/// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
-/// grow together.
-const OP_KIND_COUNT: usize = 40;
+/// Number of dispatch slots, including appended opcode groups. The explicit
+/// mapping below preserves all existing indexes when a handler is appended.
+const OP_KIND_COUNT: usize = 66;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -3822,6 +3876,8 @@ fn op_to_index(op: Op) -> usize {
         Op::LoadStatic(_) => OP_KIND_LOAD_STATIC,
         Op::ContractViolation { .. } => OP_KIND_CONTRACT_VIOLATION,
         Op::RequiresViolation { .. } => OP_KIND_REQUIRES_VIOLATION,
+        Op::EntryGuardsComplete => OP_KIND_ENTRY_GUARDS_COMPLETE,
+        Op::EntryGuardsStart => OP_KIND_ENTRY_GUARDS_START,
     }
 }
 
@@ -3880,7 +3936,9 @@ const OP_KIND_OPT_CHAIN_UNWRAP: usize = 61;
 /// same live-local and LIFO semantics.
 const OP_KIND_DEFER_PUSH: usize = 62;
 const OP_KIND_REQUIRES_VIOLATION: usize = 63;
-const HANDLER_TABLE_LEN: usize = 64;
+const OP_KIND_ENTRY_GUARDS_COMPLETE: usize = 64;
+const OP_KIND_ENTRY_GUARDS_START: usize = 65;
+const HANDLER_TABLE_LEN: usize = OP_KIND_COUNT;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -3950,6 +4008,8 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
     table[OP_KIND_DEFER_PUSH] = h_defer_push;
     table[OP_KIND_REQUIRES_VIOLATION] = h_requires_violation;
+    table[OP_KIND_ENTRY_GUARDS_COMPLETE] = h_entry_guards_complete;
+    table[OP_KIND_ENTRY_GUARDS_START] = h_entry_guards_start;
     table
 };
 
@@ -4102,6 +4162,7 @@ fn run_direct(
         statics_init: Vec::new(),
         overflow_mode,
         try_stack: Vec::new(),
+        pending_checked_failures: Vec::new(),
         source_path,
     };
     state.frames.push(CallFrame {
@@ -4115,6 +4176,7 @@ fn run_direct(
     });
 
     loop {
+        state.pending_checked_failures.truncate(state.frames.len());
         let frame_idx = state.frame_idx();
         let chunk = state.current_chunk()?;
         let pc = state.frames[frame_idx].pc;
@@ -4125,6 +4187,7 @@ fn run_direct(
                 return Ok(state.stack.pop().unwrap_or(Value::Void));
             }
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            state.pending_checked_failures.truncate(state.frames.len());
             drain_deferred_calls(state.program, &popped, &state.locals, state.overflow_mode)?;
             let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
             write_back_upvalues(&popped, caller_base, &mut state.locals);
@@ -4148,6 +4211,7 @@ fn run_direct(
                     if let Some(arm) = entry.arms.iter().find(|a| a.variant == variant) {
                         while state.frames.len() > try_frame.call_depth {
                             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                            state.pending_checked_failures.truncate(state.frames.len());
                             state.locals.truncate(popped.locals_base);
                         }
                         state.stack.truncate(try_frame.stack_depth);
@@ -4442,7 +4506,10 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .get(idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(idx))?;
     validate_function_layout(idx as usize, func.local_count, func.arity as usize)?;
-    if !state.try_stack.is_empty() && !func.fails.is_empty() {
+    let defer_injection = !state.try_stack.is_empty()
+        && !func.fails.is_empty()
+        && func.chunk.code.contains(&Op::EntryGuardsStart);
+    if !state.try_stack.is_empty() && !func.fails.is_empty() && !defer_injection {
         let variant = func.fails[0].clone();
         let arity = func.arity as usize;
         for _ in 0..arity {
@@ -4474,6 +4541,12 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         source_slots: Box::default(),
         defers: Vec::new(),
     });
+    if defer_injection {
+        state
+            .pending_checked_failures
+            .resize(state.frames.len(), None);
+        state.pending_checked_failures[state.frames.len() - 1] = Some(func.fails[0].clone());
+    }
     Ok(Step::Continue)
 }
 
@@ -4481,6 +4554,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let ret = state.stack.pop().unwrap_or(Value::Void);
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+    state.pending_checked_failures.truncate(state.frames.len());
     drain_deferred_calls(state.program, &popped, &state.locals, state.overflow_mode)?;
     // RES-4041: the Direct (table-dispatch) engine doesn't implement
     // the postcheck's isolated nested-call recursion yet (same scope
@@ -4820,6 +4894,10 @@ fn h_tail_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::TailCall(idx) = op else {
         unreachable!()
     };
+    let frame_idx = state.frame_idx();
+    if let Some(pending) = state.pending_checked_failures.get_mut(frame_idx) {
+        *pending = None;
+    }
     let func = state
         .program
         .functions
@@ -5258,6 +5336,26 @@ fn h_shl(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 }
 
 #[inline(never)]
+fn h_entry_guards_start(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_entry_guards_complete(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let frame_idx = state.frame_idx();
+    Ok(
+        match state
+            .pending_checked_failures
+            .get_mut(frame_idx)
+            .and_then(Option::take)
+        {
+            Some(variant) => Step::CatchDispatch(variant),
+            None => Step::Continue,
+        },
+    )
+}
+
+#[inline(never)]
 fn h_shr(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let (a, b) = pop_two_ints(&mut state.stack, "Shr")?;
     if !(0..64).contains(&b) {
@@ -5369,6 +5467,7 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         Value::Result { ok: false, payload } => {
             let ret = Value::Result { ok: false, payload };
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            state.pending_checked_failures.truncate(state.frames.len());
             if state.frames.is_empty() {
                 return Ok(Step::Halt(ret));
             }
@@ -5378,6 +5477,7 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         }
         Value::Option(None) => {
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            state.pending_checked_failures.truncate(state.frames.len());
             if state.frames.is_empty() {
                 return Ok(Step::Halt(Value::Option(None)));
             }

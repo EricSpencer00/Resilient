@@ -1,0 +1,728 @@
+{
+  "status": "PRIVATE-CANDIDATE-v2-NOT-FROZEN-NOT-EXECUTED",
+  "previous": "v1 retained unchanged and UNEXECUTED; selective source corrected from source-derived parser review, not observed parser red",
+  "encoding": "SHA256 UTF8 compact sorted-key JSON identity; DRAFT schema",
+  "range_convention": "half-open UTF8 byte offsets; declaration includes immediate pub modifier when present and runs through matching body closing brace; header starts at declaration start and excludes body opening brace (includes preceding space); full clause starts ensures keyword and ends at expression end; expression excludes keyword and separator",
+  "files": [
+    {
+      "path": "aliases.rz",
+      "sha256": "d9a9d3bbc93d0d1e0faf9c8e652766b2b84aabd063e254d716031c197b20c6c4",
+      "bytes": 100,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "collision.rz",
+      "sha256": "2959f059c9bb94d1ea9cc77e9aea48a692ba4dbba6847a4309e660e4a3d2d2ed",
+      "bytes": 127,
+      "role": "inventory-declaration-candidate",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "dedup.rz",
+      "sha256": "3f7b1f5f6dcf29ddf1f57110445e38fc1a69c9833fecb5f3efa88a7ae8450680",
+      "bytes": 51,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "glob.rz",
+      "sha256": "af1f39cff2456f631bcf53fa23d3c59b6d98ff206a1417adde82457112cf7a47",
+      "bytes": 110,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "library.rz",
+      "sha256": "ed82b281dfc96b1f8e50213ab170bb602006afc92570095f2aab4a8760f44381",
+      "bytes": 123,
+      "role": "pub-declaration-inventory-grammar-review-required",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "method.rz",
+      "sha256": "0673fc5bc99255a807da0604dea1d93c75394851bb1a80937ab85db62183eaec",
+      "bytes": 163,
+      "role": "method-inventory-grammar-review-required",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "modules-library.rz",
+      "sha256": "3ae3c95d89dec941d1a7a0dbce01f186ab53e32d5ed5260c23567ee134ce1f9f",
+      "bytes": 141,
+      "role": "inventory-declaration-candidate",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "modules.rz",
+      "sha256": "19c1e9583812b11651bc518d1bcfd353de579de3f7c639c5808b92b32882fd8c",
+      "bytes": 184,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "nested.rz",
+      "sha256": "9255897b1995289a9ca6312deb5ac3b8c1b77a29554c414f8f3ce5aa36b31712",
+      "bytes": 110,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "paths.rz",
+      "sha256": "8c97a86140578ddbfd3b2951a321df43a5e09b693d9cb072eea00b4b48102a17",
+      "bytes": 81,
+      "role": "inventory-declaration-candidate",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "selective.rz",
+      "sha256": "16af0c08ebbab4a7c8c37bd144cfe5f5bf472bb083c7e6c0b37fd4b2d8344039",
+      "bytes": 39,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved",
+      "syntax_basis": "lib.rs parse_use_statement_with_visibility: peek LeftBrace selectors after string path, no DoubleColon; source-derived only"
+    },
+    {
+      "path": "shadow.rz",
+      "sha256": "38253adf186b18a8f87bfd7e5a91e8023cb7f8a31f3c139fd65f1e3042d4ee8d",
+      "bytes": 152,
+      "role": "frontend-runtime-candidate-outside-initial-inventory-grammar",
+      "frontend": "unobserved"
+    },
+    {
+      "path": "utf8.rz",
+      "sha256": "de10bb1199afbc05ca5a55750e527d8a3687c919a6c25352587b0fffb3229d36",
+      "bytes": 179,
+      "role": "inventory-declaration-candidate",
+      "frontend": "unobserved"
+    }
+  ],
+  "sites": [
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "modules.rz",
+        "file_sha256": "19c1e9583812b11651bc518d1bcfd353de579de3f7c639c5808b92b32882fd8c",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 11,
+        "lexical_scope": [
+          "left"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          11,
+          63
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          11,
+          50
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          30,
+          49
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          38,
+          49
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "bdc5336fbbd3d3a00356d56ea6f09e9dfc0b7242a532c82403e7746c9e3d2e31",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "modules.rz",
+        "file_sha256": "19c1e9583812b11651bc518d1bcfd353de579de3f7c639c5808b92b32882fd8c",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 78,
+        "lexical_scope": [
+          "right"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          78,
+          138
+        ],
+        "declaration_sha256": "1f53051567bbc84c2cb3aeeca6f95c464b758cf50098080412acb0d58996927f",
+        "header_byte_range": [
+          78,
+          121
+        ],
+        "header_sha256": "5172dcc470b5f2f423387b44b32f853ce0bc3e76f5f0a8471759146a7ca4a928",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          97,
+          120
+        ],
+        "full_clause_sha256": "8c501bef29f671accd24b6be9f98fba65c1500ccd4eb775a69dea2b6f214ba16",
+        "expression_byte_range": [
+          105,
+          120
+        ],
+        "expression_sha256": "4e7959db4588d06109c982005e4a4b52289d4cf50c3d09c5d4366d89a274f3e1"
+      },
+      "candidate_site_id": "37bc9d51510340ac461bfe76d31c8712f1a5a3511f0662151002079cf10cfe26",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "modules-library.rz",
+        "file_sha256": "3ae3c95d89dec941d1a7a0dbce01f186ab53e32d5ed5260c23567ee134ce1f9f",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 11,
+        "lexical_scope": [
+          "left"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          11,
+          63
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          11,
+          50
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          30,
+          49
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          38,
+          49
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "11cedf9f8f7096d21fac9e260582448a4777ec38a0a350efd5e3dd508a9da1c5",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "modules-library.rz",
+        "file_sha256": "3ae3c95d89dec941d1a7a0dbce01f186ab53e32d5ed5260c23567ee134ce1f9f",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 78,
+        "lexical_scope": [
+          "right"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          78,
+          138
+        ],
+        "declaration_sha256": "1f53051567bbc84c2cb3aeeca6f95c464b758cf50098080412acb0d58996927f",
+        "header_byte_range": [
+          78,
+          121
+        ],
+        "header_sha256": "5172dcc470b5f2f423387b44b32f853ce0bc3e76f5f0a8471759146a7ca4a928",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          97,
+          120
+        ],
+        "full_clause_sha256": "8c501bef29f671accd24b6be9f98fba65c1500ccd4eb775a69dea2b6f214ba16",
+        "expression_byte_range": [
+          105,
+          120
+        ],
+        "expression_sha256": "4e7959db4588d06109c982005e4a4b52289d4cf50c3d09c5d4366d89a274f3e1"
+      },
+      "candidate_site_id": "c47021f6a5f0e1d4c54c3efd7b948eba8efa251e2ea6b943ec355dd1c1588a2e",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "utf8.rz",
+        "file_sha256": "de10bb1199afbc05ca5a55750e527d8a3687c919a6c25352587b0fffb3229d36",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 64,
+        "lexical_scope": [],
+        "name": "first",
+        "declaration_byte_range": [
+          64,
+          120
+        ],
+        "declaration_sha256": "2121d7c7e50dfbf17afbd041d3ba97913884c2caf2debab39df5e2d5f4e85db0",
+        "header_byte_range": [
+          64,
+          107
+        ],
+        "header_sha256": "8556327d9852c1864627997be1f655717f4c180c4892d636349701e34bc80cc9",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          87,
+          106
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          95,
+          106
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "4efbe5ef749e3f6ec3ac6b54c32a9df926f96bb35e41920e7d33a6bdb00c091e",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "utf8.rz",
+        "file_sha256": "de10bb1199afbc05ca5a55750e527d8a3687c919a6c25352587b0fffb3229d36",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 121,
+        "lexical_scope": [],
+        "name": "second",
+        "declaration_byte_range": [
+          121,
+          178
+        ],
+        "declaration_sha256": "30483a58ed31d44508959c41edd0ed0d56d840e94e310448cd1f6549b8acb348",
+        "header_byte_range": [
+          121,
+          165
+        ],
+        "header_sha256": "2de1967d5eab1c05bc6d64cb7f984fdf66c66e81b28742e961e04430d8caa039",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          145,
+          164
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          153,
+          164
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "980da8268159528840382f0e78d2763776558b47ed537d55b5ecc1e9174097f4",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "collision.rz",
+        "file_sha256": "2959f059c9bb94d1ea9cc77e9aea48a692ba4dbba6847a4309e660e4a3d2d2ed",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 8,
+        "lexical_scope": [
+          "m"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          8,
+          60
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          8,
+          47
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          27,
+          46
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          35,
+          46
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "ca49917749b0bca19c478916aeec8d2661a25c548b45d8aa3cb128f5741bb36a",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "collision.rz",
+        "file_sha256": "2959f059c9bb94d1ea9cc77e9aea48a692ba4dbba6847a4309e660e4a3d2d2ed",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 63,
+        "lexical_scope": [],
+        "name": "m__f",
+        "declaration_byte_range": [
+          63,
+          126
+        ],
+        "declaration_sha256": "8930b2186feaa69dad338fc019842ea8cfe9ddad9d55e294b5e335e01de02924",
+        "header_byte_range": [
+          63,
+          109
+        ],
+        "header_sha256": "b899a0cea818bed90baeb7b55a14cceb02f1a102dd1ecfe5576723908c4c7c5f",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          85,
+          108
+        ],
+        "full_clause_sha256": "8c501bef29f671accd24b6be9f98fba65c1500ccd4eb775a69dea2b6f214ba16",
+        "expression_byte_range": [
+          93,
+          108
+        ],
+        "expression_sha256": "4e7959db4588d06109c982005e4a4b52289d4cf50c3d09c5d4366d89a274f3e1"
+      },
+      "candidate_site_id": "736498bac88bfaa1c637f20a6d6cec6469cb806f6277885f294f4a331a71d4f6",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "paths.rz",
+        "file_sha256": "8c97a86140578ddbfd3b2951a321df43a5e09b693d9cb072eea00b4b48102a17",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 0,
+        "lexical_scope": [],
+        "name": "choose",
+        "declaration_byte_range": [
+          0,
+          80
+        ],
+        "declaration_sha256": "ece2ab32557b4dbeff74c730bd959fbeb89008d209e0b7c1a58e94223e7fe188",
+        "header_byte_range": [
+          0,
+          44
+        ],
+        "header_sha256": "34c29c182eb02a760c46a69fb36cd8f16117f40c560b5e32b986e8b5b56e7f8c",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          24,
+          43
+        ],
+        "full_clause_sha256": "d8bfc1969817cf60e07580841dfd65a60c4a73a2c5c47db4a5bdffa74cdaa823",
+        "expression_byte_range": [
+          32,
+          43
+        ],
+        "expression_sha256": "2fe2294d1b290f16a0f2a93474a2bdbd2d6528682ffc7032fe5fef58734fb807"
+      },
+      "candidate_site_id": "c825bc073f2b79bfba0d7637d07e929d74bbf2533e885ac55bc40d2e0fa7de5e",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "method.rz",
+        "file_sha256": "0673fc5bc99255a807da0604dea1d93c75394851bb1a80937ab85db62183eaec",
+        "declaration_kind": "method",
+        "fn_keyword_byte": 38,
+        "lexical_scope": [
+          "impl:Cell"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          38,
+          107
+        ],
+        "declaration_sha256": "b1d8877acaa9ab3c05251053fc9a1afaf99acc1b96adc1761d078decd73fc355",
+        "header_byte_range": [
+          38,
+          85
+        ],
+        "header_sha256": "f172a0892ba0fb461ad2b5f9d7784ae1b3ecd1e058c0eeafdd81b216d0e82586",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          56,
+          84
+        ],
+        "full_clause_sha256": "fa0a46c61607e3aa3c37da7c46b2396fed9481ea2ef2ba96c6bc045ce8befc8f",
+        "expression_byte_range": [
+          64,
+          84
+        ],
+        "expression_sha256": "a2be469ea877942290fd2f3faa14b29c3ce55ae7363f7998423b7ed17379002b"
+      },
+      "candidate_site_id": "21ae9865fb44fffce1c6dd8583970c7bee17f4bcc291805fed6f0e41801dea5e",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "method.rz",
+        "file_sha256": "0673fc5bc99255a807da0604dea1d93c75394851bb1a80937ab85db62183eaec",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 110,
+        "lexical_scope": [],
+        "name": "f",
+        "declaration_byte_range": [
+          110,
+          162
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          110,
+          149
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          129,
+          148
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          137,
+          148
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "6a66cd02f631c032ba3742086f2c0326949ead4155fd1e077d9b729186437934",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "library.rz",
+        "file_sha256": "ed82b281dfc96b1f8e50213ab170bb602006afc92570095f2aab4a8760f44381",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 4,
+        "lexical_scope": [],
+        "name": "f",
+        "declaration_byte_range": [
+          0,
+          56
+        ],
+        "declaration_sha256": "6a720e386e9415c053c1c865d10c0283cdb4d1568d02d17ef007962d06892dce",
+        "header_byte_range": [
+          0,
+          43
+        ],
+        "header_sha256": "a938af91a7cfdc2877d8e277ea5f7dd4b177cd2dd74f06dee1785345a1eea4b4",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          23,
+          42
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          31,
+          42
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "c9fafbf3580b632a440ee67c14b50286da35a543ed3e5f49e1a84a17e2b84eef",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "library.rz",
+        "file_sha256": "ed82b281dfc96b1f8e50213ab170bb602006afc92570095f2aab4a8760f44381",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 57,
+        "lexical_scope": [],
+        "name": "hidden",
+        "declaration_byte_range": [
+          57,
+          122
+        ],
+        "declaration_sha256": "6190d0fef3f8d2867d32853e6d063aabcaba4b10b99587566b28fd1e3cd997a1",
+        "header_byte_range": [
+          57,
+          105
+        ],
+        "header_sha256": "e8dc53e82d33138f286e8979349145a363af34a332301a8471463e3b05a0e86a",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          81,
+          104
+        ],
+        "full_clause_sha256": "8c501bef29f671accd24b6be9f98fba65c1500ccd4eb775a69dea2b6f214ba16",
+        "expression_byte_range": [
+          89,
+          104
+        ],
+        "expression_sha256": "4e7959db4588d06109c982005e4a4b52289d4cf50c3d09c5d4366d89a274f3e1"
+      },
+      "candidate_site_id": "1a581a608371f5657a92cf7502c22bd5a2a6c64793745c5b381748b128fdbbe7",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "glob.rz",
+        "file_sha256": "af1f39cff2456f631bcf53fa23d3c59b6d98ff206a1417adde82457112cf7a47",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 12,
+        "lexical_scope": [
+          "m"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          8,
+          64
+        ],
+        "declaration_sha256": "6a720e386e9415c053c1c865d10c0283cdb4d1568d02d17ef007962d06892dce",
+        "header_byte_range": [
+          8,
+          51
+        ],
+        "header_sha256": "a938af91a7cfdc2877d8e277ea5f7dd4b177cd2dd74f06dee1785345a1eea4b4",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          31,
+          50
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          39,
+          50
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "f74e8761fb4e6b96e069dadbe06fe844ec45fa0c9e9d68ebf0d8a2e9a36af0f7",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "nested.rz",
+        "file_sha256": "9255897b1995289a9ca6312deb5ac3b8c1b77a29554c414f8f3ce5aa36b31712",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 24,
+        "lexical_scope": [
+          "outer",
+          "inner"
+        ],
+        "name": "f",
+        "declaration_byte_range": [
+          24,
+          76
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          24,
+          63
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          43,
+          62
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          51,
+          62
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "818d0940adb640624b08b4bf849764c239046d5098eb3bd9427e6b2521ca3644",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    },
+    {
+      "identity": {
+        "schema": "candidate-physical-site/v1",
+        "path": "shadow.rz",
+        "file_sha256": "38253adf186b18a8f87bfd7e5a91e8023cb7f8a31f3c139fd65f1e3042d4ee8d",
+        "declaration_kind": "function",
+        "fn_keyword_byte": 0,
+        "lexical_scope": [],
+        "name": "f",
+        "declaration_byte_range": [
+          0,
+          52
+        ],
+        "declaration_sha256": "bde7f2b748ad8326593cae10e7bf6b36202cb13ebb22244f69d6eb765e9703c7",
+        "header_byte_range": [
+          0,
+          39
+        ],
+        "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+        "clause_kind": "ensures",
+        "clause_ordinal": 0,
+        "full_clause_byte_range": [
+          19,
+          38
+        ],
+        "full_clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+        "expression_byte_range": [
+          27,
+          38
+        ],
+        "expression_sha256": "fff072d281a66570317b3d61da7f94f54edcd0bcfe1319af71e0c418ce34c775"
+      },
+      "candidate_site_id": "c4ff93e54deb7a17812f68c2428395f63309f0d8f0d1e3b03904d67ad7421b07",
+      "frontend": "unobserved",
+      "binding": "unresolved-until-producer-origin-record",
+      "evidence_group": "unsupported-until-reviewed-origin-and-path-mapping"
+    }
+  ],
+  "path_group": {
+    "site": "paths.rz::choose::ensures:0",
+    "expected_paths": [
+      {
+        "id": "negative-return",
+        "guard": "x < 0",
+        "returned_value": "0"
+      },
+      {
+        "id": "fallthrough-return",
+        "guard": "not(x < 0)",
+        "returned_value": "x"
+      }
+    ],
+    "multiplicity": 2,
+    "disposition": "Unknown until independently reviewed mapping; no query count completeness credit"
+  }
+}

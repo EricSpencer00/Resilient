@@ -412,6 +412,12 @@ pub enum Op {
     /// A false precondition at actual function entry. No stack operands:
     /// the preceding JumpIfTrue already consumed the predicate.
     RequiresViolation { name_const: u16, clause_const: u16 },
+    /// Compiler boundary after a guarded fallible function entry prologue.
+    /// Only direct calls with deferred injection act on this marker.
+    EntryGuardsComplete,
+    /// Reachable identity for compiler-produced guarded fallible entries.
+    /// Unlike the completion boundary, it survives a proven-false guard.
+    EntryGuardsStart,
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.

@@ -1,0 +1,2 @@
+use "helper.rz" as first;
+use "helper.rz" as second;

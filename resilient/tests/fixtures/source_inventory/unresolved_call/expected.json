@@ -1,0 +1,51 @@
+{
+  "schema": "resilient-independent-source-inventory-expectation",
+  "version": 1,
+  "grammar": "restricted-declarations-v1",
+  "entry": "program.rz",
+  "files": [
+    {
+      "path": "program.rz",
+      "bytes": 62,
+      "sha256": "46e24446497ed61127db6f378d807a7369cc62ab17c2d30d8b4a5c6eb10edacd"
+    }
+  ],
+  "import_edges": [],
+  "declarations": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "header_span": [
+        0,
+        39
+      ],
+      "header_sha256": "2d4c642279b6a02aad2bfca00accda0f526d7abf88bd376c6f67a5a48aaa2ff7",
+      "body_features_for_review": [
+        "call",
+        "unresolved_reference_review_required"
+      ]
+    }
+  ],
+  "contract_sites": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        19,
+        38
+      ],
+      "clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+      "clause_text": "result == x",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    }
+  ],
+  "compiler_observation": "not captured; syntax/type/mapping/proof dispositions remain unobserved",
+  "claim": "hand-authored lexical declaration and clause inventory, not compiler result or qualification acceptance"
+}

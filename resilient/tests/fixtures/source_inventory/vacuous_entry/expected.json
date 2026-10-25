@@ -1,0 +1,66 @@
+{
+  "schema": "resilient-independent-source-inventory-expectation",
+  "version": 1,
+  "grammar": "restricted-declarations-v1",
+  "entry": "program.rz",
+  "files": [
+    {
+      "path": "program.rz",
+      "bytes": 77,
+      "sha256": "2b50eb41d300fb917f0e52b529db22bb4ba1471ace68fce1d0050e3b68dbab2f"
+    }
+  ],
+  "import_edges": [],
+  "declarations": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "header_span": [
+        0,
+        63
+      ],
+      "header_sha256": "a6b9261ca6a0457359d412ad28611f1a17cf1701b0386c7fe3159e991f8254d4",
+      "body_features_for_review": [
+        "infeasible_entry_review_required"
+      ]
+    }
+  ],
+  "contract_sites": [
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "clause_kind": "requires",
+      "clause_ordinal": 0,
+      "clause_span": [
+        19,
+        42
+      ],
+      "clause_sha256": "b2981175626c3f90070f06adbdaf562cb1a89b5ef0125359d7a122f17e72cfe5",
+      "clause_text": "x > 0 && x < 0",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    },
+    {
+      "path": "program.rz",
+      "declaration_kind": "function",
+      "lexical_scope": [],
+      "name": "f",
+      "clause_kind": "ensures",
+      "clause_ordinal": 0,
+      "clause_span": [
+        43,
+        62
+      ],
+      "clause_sha256": "71f966444022a5c66077193792cd0bd14efaeaba0cef87bfa0be8fc3992b6aed",
+      "clause_text": "result == x",
+      "selected": true,
+      "required_policy": "explicit_disposition; implementation proof only if supported and independently mapped"
+    }
+  ],
+  "compiler_observation": "not captured; syntax/type/mapping/proof dispositions remain unobserved",
+  "claim": "hand-authored lexical declaration and clause inventory, not compiler result or qualification acceptance"
+}

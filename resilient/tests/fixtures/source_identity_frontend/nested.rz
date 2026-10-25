@@ -1,0 +1,2 @@
+mod outer { mod inner { fn f(int x) -> int ensures result == x { return x; } } }
+println(outer::inner::f(1));
