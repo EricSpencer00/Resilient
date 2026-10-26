@@ -138,10 +138,7 @@ impl SupervisorState {
             } => {
                 let window_elapsed =
                     now_secs.saturating_sub(state.last_restart_time) >= window_secs as u64;
-                if window_elapsed {
-                    // New window: reset count
-                    Ok(true)
-                } else if state.restart_count < max_restarts {
+                if max_restarts > 0 && (window_elapsed || state.restart_count < max_restarts) {
                     Ok(true)
                 } else {
                     Err(format!(
@@ -155,6 +152,10 @@ impl SupervisorState {
 
     /// Record that a child was restarted.
     pub fn record_restart(&mut self, child_id: &str, now_secs: u64) -> Result<(), String> {
+        // This API can be called without a preceding scheduler policy check.
+        if !self.should_restart(child_id, now_secs)? {
+            return Err("Cannot restart transient actor".to_string());
+        }
         let (_, state) = match self.children.get_mut(child_id) {
             Some(pair) => pair,
             None => return Err(format!("Unknown child {}", child_id)),
@@ -507,3 +508,7 @@ mod tests {
         assert!(!handle_crash_event(crash, 1000));
     }
 }
+
+#[cfg(test)]
+#[path = "supervisor_restart_budget_tests.rs"]
+mod restart_budget_tests;
