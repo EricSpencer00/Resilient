@@ -1,3 +1,5 @@
+import Resilient.AST
+
 /-!
 # Resilient.Semantics — big-step evaluation
 
@@ -10,8 +12,6 @@ The evaluator is structural recursion on `Expr`, so it is total in
 the Lean sense — `eval` always returns, but the `Option` reflects
 that some Resilient expressions don't reduce to an integer.
 -/
-
-import Resilient.AST
 
 namespace Resilient
 

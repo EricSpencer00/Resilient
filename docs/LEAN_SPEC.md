@@ -108,7 +108,7 @@ def double : Expr := Expr.add (Expr.var "x") (Expr.var "x")
 
 theorem double_correct (x : Int) :
     eval (env_of [("x", x)]) double = some (x + x) := by
-  simp [eval, env_of, double]
+  simp [eval, env_of, Env.lookup, double]
 ```
 
 Build the model and explicitly check the generated module:
