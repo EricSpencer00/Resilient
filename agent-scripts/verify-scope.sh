@@ -23,6 +23,7 @@
 # Safe to run anywhere inside the repo (worktree or primary).
 
 set -o pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BASE="origin/main"
 HEAD="HEAD"
@@ -293,6 +294,15 @@ if [ -x "$REPO_ROOT/agent-scripts/test-reconcile-integration-squash-tree.sh" ]; 
   fi
 fi
 
+if [ -f "$SCRIPT_DIR/test_fleet_integration.py" ]; then
+  if PYTHONDONTWRITEBYTECODE=1 python3 "$SCRIPT_DIR/test_fleet_integration.py" >/tmp/agent-fleet-guardrail.log 2>&1; then
+    pass "fleet integration regression"
+  else
+    fail "fleet integration regression — see /tmp/agent-fleet-guardrail.log"
+    tail -40 /tmp/agent-fleet-guardrail.log | sed 's/^/       /'
+  fi
+fi
+
 if (( SKIP_FMT == 0 )); then
   # The repo has no top-level Cargo.toml, so `cargo fmt` from the
   # repo root cannot find a manifest. Point it at the workspace
@@ -333,28 +343,33 @@ if [ -x "$REPO_ROOT/agent-scripts/check-overlaps.sh" ]; then
     if [ "$OVERLAP_REF" = "HEAD" ]; then
       OVERLAP_REF="$(git rev-parse --abbrev-ref HEAD)"
     fi
-    if ! bash "$REPO_ROOT/agent-scripts/check-overlaps.sh" --pr-files "$OVERLAP_REF" >/tmp/agent-overlap.log 2>&1; then
-      # Filter out allowlisted files — overlaps there are expected and handled
-      # by sync-integration.sh's auto-resolve step. Only fail on others.
+    if bash "$REPO_ROOT/agent-scripts/check-overlaps.sh" --pr-files "$OVERLAP_REF" --base "$BASE" >/tmp/agent-overlap.log 2>&1; then
+      pass "no file overlap with other open PRs"
+    else
+      OVERLAP_EXIT=$?
       NON_ALLOWLIST_CONFLICTS=0
+      OVERLAP_MARKERS=0
       while IFS= read -r line; do
-        if [[ "$line" == "  CONFLICT"* ]]; then
-          conflicted_file="${line#  CONFLICT  }"
-          is_allowed=0
-          for allowed in "${EXTENSION_ALLOWLIST[@]}"; do
-            [ "$conflicted_file" = "$allowed" ] && is_allowed=1 && break
-          done
-          [ $is_allowed -eq 0 ] && NON_ALLOWLIST_CONFLICTS=$((NON_ALLOWLIST_CONFLICTS + 1))
-        fi
+        case "$line" in
+          "  CONFLICT  "*) conflicted_file="${line#  CONFLICT  }" ;;
+          "  CLAIMED   "*) conflicted_file="${line#  CLAIMED   }" ;;
+          *) continue ;;
+        esac
+        OVERLAP_MARKERS=$((OVERLAP_MARKERS + 1))
+        is_allowed=0
+        for allowed in "${EXTENSION_ALLOWLIST[@]}"; do
+          [ "$conflicted_file" = "$allowed" ] && is_allowed=1 && break
+        done
+        [ $is_allowed -eq 0 ] && NON_ALLOWLIST_CONFLICTS=$((NON_ALLOWLIST_CONFLICTS + 1))
       done < /tmp/agent-overlap.log
-      if [ $NON_ALLOWLIST_CONFLICTS -gt 0 ]; then
+      if [ "$OVERLAP_EXIT" -ne 1 ] || [ "$OVERLAP_MARKERS" -eq 0 ]; then
+        fail "overlap verification could not complete — see /tmp/agent-overlap.log"
+      elif [ "$NON_ALLOWLIST_CONFLICTS" -gt 0 ]; then
         fail "overlap detected on non-extension files — see /tmp/agent-overlap.log"
       else
         pass "extension-block overlaps only (auto-resolved by sync-integration.sh)"
       fi
       cat /tmp/agent-overlap.log | sed 's/^/       /'
-    else
-      pass "no file overlap with other open PRs"
     fi
   fi
 fi

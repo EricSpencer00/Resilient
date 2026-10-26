@@ -127,30 +127,56 @@ fi
 REPORT=/tmp/agent-guardrail-report.json
 PRE_SYNC_HEAD="$(git rev-parse HEAD)"
 
-if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
+FLEET_MODE="$(python3 "$SCRIPT_DIR/fleet-integration-check.py" --mode)"
+FLEET_BASE=""
+FLEET_HEAD=""
+if [[ "$FLEET_MODE" == "fleet" ]]; then
+  FLEET_INFO="$(mktemp "${TMPDIR:-/tmp}/resilient-fleet-guard.XXXXXX")"
+  if ! python3 "$SCRIPT_DIR/fleet-integration-check.py" --pr "$PR" > "$FLEET_INFO"; then
+    rm -f "$FLEET_INFO"
+    exit 2
+  fi
+  FLEET_BASE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' "$FLEET_INFO")"
+  FLEET_HEAD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["head_sha"])' "$FLEET_INFO")"
+  rm -f "$FLEET_INFO"
+  export GH_REPO=EricSpencer00/Resilient
+  export AGENT_CLAIMS_REMOTE=fleet-verified
+  export AGENT_CLAIMS_STRICT=1
+  export AGENT_EXPECTED_PR="$PR"
+fi
+
+run_guardrail() {
+  if [[ "$FLEET_MODE" == "fleet" ]]; then
+    bash "$SCRIPT_DIR/verify-scope.sh" --base "$FLEET_BASE" --head "$FLEET_HEAD" --report "$REPORT"
+  else
+    bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"
+  fi
+}
+
+if run_guardrail; then
   echo
-  echo "Guardrail green → syncing against agents/integration before marking ready."
+  echo "Guardrail green → verifying integration before marking ready."
   if (( DRY_RUN == 0 )); then
     if ! bash "$SCRIPT_DIR/sync-integration.sh" --pr "$PR"; then
       echo "sync-integration failed — leaving PR #$PR as draft."
-      github_comment_pr "$PR" "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
+      github_comment_pr "$PR" "Guardrail passed, but \`sync-integration.sh\` failed — integration verification refused the submission. Refresh it through its configured submission route, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
       exit 2
     fi
 
     POST_SYNC_HEAD="$(git rev-parse HEAD)"
     if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
       echo "Branch changed while syncing — rerunning guardrail on refreshed HEAD."
-      if ! bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
+      if ! run_guardrail; then
         echo "refreshed guardrail failed after sync — leaving PR #$PR as draft."
         BODY="$(python3 - "$REPORT" <<'PYEOF'
 import json, sys
 try:
     r = json.load(open(sys.argv[1]))
 except Exception:
-    print("Guardrail passed before sync, but the branch changed while syncing against `agents/integration` and the refreshed guardrail failed.")
+    print("Guardrail passed before sync, but the branch changed while checking the configured integration route and the refreshed guardrail failed.")
     sys.exit(0)
 lines = [
-    "Guardrail passed before sync, but the branch changed while syncing against `agents/integration` and the refreshed guardrail failed.",
+    "Guardrail passed before sync, but the branch changed while checking the configured integration route and the refreshed guardrail failed.",
     "",
     "Violations:",
 ]
@@ -210,9 +236,9 @@ PYEOF
   rm -f "$BODY_FILE" "${BODY_FILE}.next"
 
   if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
-      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\` and rechecked on the refreshed branch. Auto-merge will fire once remaining checks complete."
+      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Integration verified through the configured route and rechecked on the refreshed branch. Auto-merge will fire once remaining checks complete."
     else
-      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete."
+      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Integration verified through the configured route. Auto-merge will fire once remaining checks complete."
     fi
     github_comment_pr "$PR" "$READY_BODY" >/dev/null
     "$SCRIPT_DIR/agent-handoff.sh" \
