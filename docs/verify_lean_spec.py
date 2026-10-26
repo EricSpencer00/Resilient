@@ -46,8 +46,9 @@ def executable(value):
     if found is None:
         raise ValueError(f"executable not found: {value}")
     # Commands run in two directories, so relative executable paths must be
-    # resolved before entering either working directory.
-    return str(Path(found).resolve())
+    # made absolute before entering either working directory. Preserve the
+    # invocation name: toolchain proxies dispatch from names such as `lake`.
+    return str(Path(found).absolute())
 
 
 def main():
