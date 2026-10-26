@@ -317,6 +317,13 @@ class FleetIntegrationTests(unittest.TestCase):
         result, _ = self.refuse(ready=True)
         self.assertIn("overlap verification could not complete", result.stdout)
 
+    def test_saturated_pr_list_is_not_treated_as_complete(self):
+        self.state["other_prs"] = [{"number": n, "headRefName": f"other-{n}",
+                                     "headRefOid": "a"*40, "files": []}
+                                    for n in range(100, 1099)]
+        result, _ = self.refuse(ready=True)
+        self.assertIn("invalid open PR metadata", result.stdout)
+
     def test_missing_expected_pr_cannot_be_treated_as_no_overlap(self):
         self.state["omit_open_prs"] = True
         result, _ = self.refuse(ready=True)

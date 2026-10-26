@@ -101,7 +101,7 @@ if [ -n "${AGENT_EXPECTED_PR:-}" ] && ! command -v gh &>/dev/null; then
 fi
 OPEN_PR_BRANCHES=""
 if command -v gh &>/dev/null; then
-  if ! PR_JSON=$(gh pr list --state open --json number,headRefName,headRefOid,files 2>/dev/null); then
+  if ! PR_JSON=$(gh pr list --state open --limit 1000 --json number,headRefName,headRefOid,files 2>/dev/null); then
     echo "ERROR: open PR metadata unavailable" >&2
     exit 2
   fi
@@ -109,7 +109,7 @@ if command -v gh &>/dev/null; then
 import json,sys
 try:
     data=json.load(sys.stdin)
-    valid=isinstance(data,list) and all(
+    valid=isinstance(data,list) and len(data)<1000 and all(
         isinstance(pr,dict) and isinstance(pr.get("number"),int)
         and isinstance(pr.get("headRefName"),str) and isinstance(pr.get("headRefOid"),str)
         and isinstance(pr.get("files"),list)
