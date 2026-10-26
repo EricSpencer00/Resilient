@@ -63,8 +63,11 @@
 //!
 //! Every fallible path returns `Result<_, TimerError>`. The module
 //! has no `unwrap()` / `expect()` / `panic!()` calls in non-test
-//! code; CI proves this by building with `-D warnings` and the
-//! runtime's no-std cross-compilation gates.
+//! code. Warning and no-std build gates check compilation constraints;
+//! they do not constitute a formal proof that no panic is possible.
+
+#[path = "timer_identity.rs"]
+mod identity;
 
 use core::cell::UnsafeCell;
 #[cfg(target_has_atomic = "8")]
@@ -149,17 +152,21 @@ impl TimerConfig {
     }
 }
 
-/// Opaque handle to an initialised timer. Stable for the life of
-/// the firmware once allocated.
+/// Opaque handle to one timer allocation. Release or registry reset
+/// permanently invalidates that handle, even if its slot is reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimerId(u8);
+pub struct TimerId(u64);
 
 impl TimerId {
     /// Numeric index of the timer in the runtime table. Exposed
     /// for diagnostic printing; opaque to users for normal use.
     #[inline]
     pub const fn index(self) -> u8 {
-        self.0
+        self.0 as u8
+    }
+
+    const fn generation(self) -> u64 {
+        self.0 >> identity::INDEX_BITS
     }
 }
 
@@ -184,6 +191,7 @@ enum Status {
 
 #[derive(Clone, Copy)]
 struct TimerState {
+    generation: u64,
     status: Status,
     mode: TimerMode,
     /// Period between callbacks, in microseconds. Pre-computed
@@ -207,6 +215,7 @@ struct TimerState {
 
 impl TimerState {
     const FREE: Self = Self {
+        generation: 0,
         status: Status::Free,
         mode: TimerMode::OneShot,
         period_us: 0,
@@ -220,7 +229,7 @@ impl TimerState {
 /// Error returned by every fallible timer operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerError {
-    /// No free slot in the timer table. The runtime has at most
+    /// No reusable slot in the timer table. The runtime has at most
     /// [`MAX_TIMERS`] timers; free one with [`timer_release`] to
     /// allocate another.
     Exhausted,
@@ -335,32 +344,19 @@ fn validate_mode(mode: TimerMode) -> Result<(), TimerError> {
 pub fn timer_init(config: TimerConfig) -> Result<TimerId, TimerError> {
     validate_mode(config.mode)?;
     let period = period_from_hz(config.frequency_hz)?;
-    with_registry(|reg| {
-        for (idx, slot) in reg.slots.iter_mut().enumerate() {
-            if slot.status == Status::Free {
-                *slot = TimerState {
-                    status: Status::Stopped,
-                    mode: config.mode,
-                    period_us: period,
-                    accum_us: 0,
-                    count: 0,
-                    elapsed_us: 0,
-                    callback: None,
-                };
-                return Ok(TimerId(idx as u8));
-            }
-        }
-        Err(TimerError::Exhausted)
-    })
+    with_registry(|reg| identity::allocate(reg, config, period))
 }
 
 /// Release the slot held by `id`. After this call, the id is
 /// invalid; passing it to any other entry point returns
-/// [`TimerError::InvalidId`]. Idempotent on already-free slots.
+/// [`TimerError::InvalidId`]. Already-free or stale handles return that error.
 pub fn timer_release(id: TimerId) -> Result<(), TimerError> {
-    with_registry(|reg| match reg.slots.get_mut(id.0 as usize) {
-        Some(slot) if slot.status != Status::Free => {
-            *slot = TimerState::FREE;
+    with_registry(|reg| match reg.slots.get_mut(id.index() as usize) {
+        Some(slot) if slot.status != Status::Free && slot.generation == id.generation() => {
+            *slot = TimerState {
+                generation: slot.generation,
+                ..TimerState::FREE
+            };
             Ok(())
         }
         Some(_) => Err(TimerError::InvalidId),
@@ -372,8 +368,8 @@ fn with_slot<R>(
     id: TimerId,
     f: impl FnOnce(&mut TimerState) -> Result<R, TimerError>,
 ) -> Result<R, TimerError> {
-    with_registry(|reg| match reg.slots.get_mut(id.0 as usize) {
-        Some(slot) if slot.status != Status::Free => f(slot),
+    with_registry(|reg| match reg.slots.get_mut(id.index() as usize) {
+        Some(slot) if slot.status != Status::Free && slot.generation == id.generation() => f(slot),
         _ => Err(TimerError::InvalidId),
     })
 }
@@ -544,11 +540,17 @@ pub fn tick(elapsed_us: u32) {
     }
 }
 
-/// Reset the entire registry. Intended for test-suite use between
-/// cases; safe to call on production firmware but rarely useful.
+/// Reset the entire registry and invalidate every outstanding handle.
+/// Intended for test-suite use between cases; safe to call on production
+/// firmware but rarely useful.
 pub fn reset_all() {
     with_registry(|reg| {
-        reg.slots.fill(TimerState::FREE);
+        for slot in &mut reg.slots {
+            *slot = TimerState {
+                generation: slot.generation,
+                ..TimerState::FREE
+            };
+        }
     });
 }
 
