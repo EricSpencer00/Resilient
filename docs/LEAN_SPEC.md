@@ -24,7 +24,8 @@ resilient/lean-spec/
 └── Resilient/
     ├── AST.lean              — inductive Expr definition
     ├── Semantics.lean        — eval : Env → Expr → Option Int
-    └── Theorems.lean         — proven correctness lemmas
+    ├── Theorems.lean         — core expression lemmas
+    └── SignedArithmetic.lean — truncating quotient/remainder lemmas
 ```
 
 ## The AST mirror
@@ -55,7 +56,9 @@ of the Lean spec for the first slice. Adding them is a matter of extending
 
 Big-step evaluation `eval : Env → Expr → Option Int`. Total in the Lean sense
 (structural recursion on `Expr`); the `Option` reflects partial expressions like
-`x / 0`.
+`x / 0`. Values are integer-encoded, so the evaluator itself does not
+reject adding Boolean and integer syntax. Source operand types are checked
+by the Rust emitter; source-to-model type preservation is not proved here.
 
 ```lean
 def eval (env : Env) : Expr → Option Int
@@ -67,7 +70,7 @@ def eval (env : Env) : Expr → Option Int
   | .div l r =>
     match eval env l, eval env r with
     | some _, some 0 => none      -- divide by zero is an error
-    | some a, some b => some (a / b)
+    | some a, some b => some (Int.tdiv a b)
     | _, _ => none
   ...
 ```
@@ -83,9 +86,13 @@ The first four theorems we ship:
 | `eval_const_fold_sound` | `eval env (Add (Int a) (Int b)) = eval env (Int (a+b))` |
 | `eval_neg_involutive` | `eval env (Neg (Neg e)) = eval env e` |
 
-Each subsequent compiler optimisation pass (constant folding, peephole, etc.)
-can be discharged against the same `eval` relation. The proofs in
-`Theorems.lean` are the foundation; the obligations grow with the compiler.
+Additional transformations require explicit preservation proofs against the
+modeled subset. These lemmas do not establish optimizer or backend correctness.
+
+`SignedArithmetic.lean` additionally proves nonzero literal division/remainder
+evaluation, undefined results for zero divisors, the truncating
+quotient/remainder identity, and the negative nonmultiple example
+`-7 / 3 = -2`, `-7 % 3 = -1`. Its six lemmas concern unbounded `Int` arithmetic.
 
 ## Emitting per-function theorems
 
@@ -101,6 +108,9 @@ The output is a Lean source file:
 ```lean
 import Resilient.Semantics
 open Resilient
+
+local infixl:70 (priority := high) " / " => Int.tdiv
+local infixl:70 (priority := high) " % " => Int.tmod
 
 /-! Auto-generated from Resilient fn `double` -/
 
@@ -169,9 +179,17 @@ excluded by a nonzero-input premise.
 
 Run `python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` to
 check 16 generated symbolic, nested, zero-divisor and negative-arithmetic
-theorems. The signed arithmetic here is Lean `Int` division/remainder;
-agreement with the language's bounded machine arithmetic and runtime error
-behavior remains a separate obligation.
+theorems. Signed division and remainder use `Int.tdiv`/`Int.tmod`, which
+truncate toward zero. Generated modules explicitly bind `/` and `%` to these
+operations; Lean's default integer operators use a different rounding rule.
+
+`python3 docs/verify_lean_signed.py --compiler /absolute/path/to/rz` compares
+113 model observations with both the interpreter and bytecode VM in wrap
+mode (226 executions), covering signs, zero divisors and representable
+boundaries. It excludes `i64::MIN / -1`: the unbounded result is `2^63`, while
+wrap-mode execution produces `i64::MIN`. The paired examples do not prove
+universal backend refinement, other overflow policies, or runtime error
+equivalence for all programs.
 
 The small lemmas above establish properties of `eval`. They do not prove that
 the Rust optimizer applies only sound transformations or that generated

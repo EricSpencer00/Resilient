@@ -19,7 +19,7 @@ claim a fresh solver run or safety certification.
 |---|---|---|
 | Z3 function contracts | `resilient/src/contract_verify.rs`, `contract_verify/symbolic_eval.rs`, `verifier_z3.rs` | Supported clauses and function bodies; inspect `implementation` versus `clause-only` proof basis. `Unknown` is not a proof. Requires the Z3 build feature. |
 | Loop invariants | `resilient/src/verifier_loop_invariants.rs` | Initiation and preservation for supported body shapes. Unsupported forms do not become proofs. An invariant alone does not establish termination. |
-| Lean expression semantics | `resilient/lean-spec/Resilient/`, `resilient/src/lean_spec.rs` | Four lemmas about a small expression evaluator over unbounded integers; emitted modules need explicit Lean checking. No backend refinement theorem. |
+| Lean expression semantics | `resilient/lean-spec/Resilient/`, `resilient/src/lean_spec.rs` | Core expression and signed quotient/remainder lemmas over unbounded integers; emitted modules need explicit Lean checking. Paired runtime examples are bounded evidence, not backend refinement. |
 | TLA+ actor runtime | `resilient-runtime/tla/runtime.tla`, `runtime.cfg` | Handwritten scheduler abstraction: 3 identities, 2 payloads, mailbox depth 2, at most 4 sends and 3 crashes. These finite bounds do not establish correctness for all runtime executions. |
 | `@refines` annotation | `resilient/src/tla_refines.rs`, [actor model](../TLA_ACTOR_MODEL.md) | Mapping validation and an extern-contract guard. Annotation acceptance does not establish behavioral refinement of the function to the named TLA+ action. |
 | Certificate replay | [Tooling](../tooling) | Rechecks the encoded solver query. A valid query proof still needs evidence that the query faithfully represents the source, arithmetic, and required obligations. |
@@ -39,8 +39,9 @@ same contract for bounded machine arithmetic.
 fragment and matches the model's 0/1 boolean representation; the typed example
 checker elaborates generated theorems explicitly. Division/remainder
 results include a definedness domain and `none` for zero or undefined
-operands. Model additional parameter types and establish agreement between
-Lean signed arithmetic and each execution backend. Extend the model and lowering
+operands. Signed operations truncate toward zero, with paired interpreter/VM
+examples covering signs and representable boundaries. Model additional
+parameter types and machine overflow, and prove general backend correspondence. Extend the model and lowering
 together for statements, calls, loops, and effects. Then prove correspondence for compiler
 transformations and backend execution. See [Lean semantics](../lean-spec/).
 
@@ -90,6 +91,11 @@ not a universal emitter-correctness theorem.
 `python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` checks
 16 additional partial-arithmetic theorems over all parameter values, including
 the undefined result when a divisor is zero.
+`python3 docs/verify_lean_signed.py --compiler /absolute/path/to/rz` pairs
+113 model observations with both interpreter and bytecode VM runs in wrap
+mode. It excludes unrepresentable `i64::MIN / -1` division and does not prove
+universal correspondence or other overflow policies.
+
 Its lightweight regression checks run with:
 
 ```bash

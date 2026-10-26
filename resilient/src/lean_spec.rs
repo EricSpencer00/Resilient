@@ -238,6 +238,8 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     let mut out = String::with_capacity(256);
     out.push_str("import Resilient.Semantics\n");
     out.push_str("open Resilient\n\n");
+    out.push_str("local infixl:70 (priority := high) \" / \" => Int.tdiv\n");
+    out.push_str("local infixl:70 (priority := high) \" % \" => Int.tmod\n\n");
     let _ = writeln!(
         out,
         "/-! Auto-generated from Resilient fn `{}` -/\n",
