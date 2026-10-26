@@ -203,10 +203,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/mutual_tco.rs": {
-      "branch": "res-5083-terminal-tail-group",
-      "claimed_at": "2026-10-26T03:48:57Z"
     }
   }
 }
