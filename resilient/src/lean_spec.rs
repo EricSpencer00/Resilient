@@ -37,13 +37,11 @@
 //! produce a clear "unsupported" diagnostic — the spec is intentionally
 //! minimal for the first slice.
 //!
-//! ## Why "league of its own"
+//! ## Proof boundary
 //!
-//! No production embedded language exposes its evaluation rules in a
-//! proof assistant. CompCert exists for C but is mostly read-only; this
-//! gives every Resilient user a per-function theorem they can extend or
-//! re-prove. Combined with the existing certificate manifest, every
-//! shipped binary can carry a Lean-checkable proof of correctness.
+//! Emitted theorems must be checked explicitly with Lean. They concern
+//! the expression evaluator over unbounded integers, not machine-code
+//! execution or preservation of semantics by compiler backends.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
@@ -263,7 +261,7 @@ pub fn emit_theorem(f: &LeanFn) -> String {
         "    eval ({}) {} = some {} := by",
         env_str, f.name, native_body
     );
-    out.push_str("  simp [eval, env_of, ");
+    out.push_str("  simp [eval, env_of, Env.lookup, ");
     out.push_str(&f.name);
     out.push_str("]\n");
     out

@@ -1,3 +1,6 @@
+import Resilient.AST
+import Resilient.Semantics
+
 /-!
 # Resilient.Theorems — proven correctness lemmas
 
@@ -12,9 +15,6 @@ These are all small but they're the foundation: every additional
 optimisation pass in the Rust compiler can be discharged against the
 same `eval` relation.
 -/
-
-import Resilient.AST
-import Resilient.Semantics
 
 namespace Resilient
 
@@ -47,9 +47,8 @@ theorem eval_const_fold_sound (env : Env) (a b : Int) :
 /-- Negation is involutive: -(-x) = x. -/
 theorem eval_neg_involutive (env : Env) (e : Expr) :
     eval env (Expr.neg (Expr.neg e)) = eval env e := by
-  unfold eval
-  cases eval env e with
-  | none => rfl
-  | some v => simp
+  cases h : eval env e with
+  | none => simp [eval, h]
+  | some v => simp [eval, h]
 
 end Resilient
