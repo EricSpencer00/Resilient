@@ -45,6 +45,9 @@
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
+#[path = "lean_spec_domains.rs"]
+mod domains;
+
 #[path = "lean_spec_typed.rs"]
 mod typed;
 
@@ -249,7 +252,7 @@ pub fn emit_theorem(f: &LeanFn) -> String {
         .map(|(index, (ty, name))| format!("(\"{name}\", {})", typed::parameter(index, ty)))
         .collect();
     let env_str = format!("Resilient.env_of [{}]", param_pairs.join(", "));
-    let native_body = typed::native(&f.body, &f.params);
+    let native_body = domains::result(&f.body, &f.params);
     let param_typed: Vec<String> = f
         .params
         .iter()
@@ -265,9 +268,12 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     );
     let _ = writeln!(
         out,
-        "    Resilient.eval ({}) _root_.{} = some {} := by",
+        "    Resilient.eval ({}) _root_.{} = {} := by",
         env_str, f.name, native_body
     );
+    for (index, condition) in domains::zero_cases(&f.body, &f.params).iter().enumerate() {
+        let _ = writeln!(out, "  by_cases lean_zero_{index} : {condition} <;>");
+    }
     for (index, condition) in typed::conditions(&f.body, &f.params).iter().enumerate() {
         let _ = writeln!(out, "  by_cases lean_cmp_{index} : {condition} <;>");
     }

@@ -37,9 +37,11 @@ same contract for bounded machine arithmetic.
 
 **Lean theorem generation.** The emitter validates the supported int/bool
 fragment and matches the model's 0/1 boolean representation; the typed example
-checker elaborates generated theorems explicitly. Establish division
-preconditions and model additional parameter types. Extend the model and lowering together for
-statements, calls, loops, and effects. Then prove correspondence for compiler
+checker elaborates generated theorems explicitly. Division/remainder
+results include a definedness domain and `none` for zero or undefined
+operands. Model additional parameter types and establish agreement between
+Lean signed arithmetic and each execution backend. Extend the model and lowering
+together for statements, calls, loops, and effects. Then prove correspondence for compiler
 transformations and backend execution. See [Lean semantics](../lean-spec/).
 
 **Actor lifecycle and progress.** The current TLA+ actions cover spawn, send,
@@ -85,6 +87,9 @@ This checks two demo expression theorems explicitly after building the model.
 `python3 docs/verify_lean_types.py --compiler /absolute/path/to/rz` additionally
 checks 18 typed arithmetic/Boolean examples. These are regression examples,
 not a universal emitter-correctness theorem.
+`python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` checks
+16 additional partial-arithmetic theorems over all parameter values, including
+the undefined result when a divisor is zero.
 Its lightweight regression checks run with:
 
 ```bash
