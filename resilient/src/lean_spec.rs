@@ -45,6 +45,9 @@
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
+#[path = "lean_spec_typed.rs"]
+mod typed;
+
 use crate::Node;
 use std::fmt::Write as _;
 
@@ -102,6 +105,7 @@ pub fn lower_function(node: &Node) -> Result<LeanFn, LowerError> {
         name,
         parameters,
         body,
+        return_type,
         ..
     } = node
     else {
@@ -122,6 +126,7 @@ pub fn lower_function(node: &Node) -> Result<LeanFn, LowerError> {
         return Err(LowerError::NoReturn);
     };
     let body_expr = lower_expr(e)?;
+    typed::validate(&body_expr, parameters, return_type.as_deref())?;
     Ok(LeanFn {
         name: name.clone(),
         params: parameters.clone(),
@@ -240,14 +245,16 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     let param_pairs: Vec<String> = f
         .params
         .iter()
-        .map(|(_, name)| format!("(\"{name}\", {name})"))
+        .enumerate()
+        .map(|(index, (ty, name))| format!("(\"{name}\", {})", typed::parameter(index, ty)))
         .collect();
-    let env_str = format!("env_of [{}]", param_pairs.join(", "));
-    let native_body = render_native(&f.body);
+    let env_str = format!("Resilient.env_of [{}]", param_pairs.join(", "));
+    let native_body = typed::native(&f.body, &f.params);
     let param_typed: Vec<String> = f
         .params
         .iter()
-        .map(|(ty, name)| format!("({name} : {})", lean_type_for(ty)))
+        .enumerate()
+        .map(|(index, (ty, _))| format!("(lean_arg_{index} : {})", lean_type_for(ty)))
         .collect();
 
     let _ = writeln!(
@@ -258,10 +265,18 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     );
     let _ = writeln!(
         out,
-        "    eval ({}) {} = some {} := by",
+        "    Resilient.eval ({}) _root_.{} = some {} := by",
         env_str, f.name, native_body
     );
-    out.push_str("  simp [eval, env_of, Env.lookup, ");
+    for (index, condition) in typed::conditions(&f.body, &f.params).iter().enumerate() {
+        let _ = writeln!(out, "  by_cases lean_cmp_{index} : {condition} <;>");
+    }
+    for (index, (ty, _)) in f.params.iter().enumerate() {
+        if ty == "bool" {
+            let _ = writeln!(out, "  cases lean_arg_{index} <;>");
+        }
+    }
+    out.push_str("  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.");
     out.push_str(&f.name);
     out.push_str("]\n");
     out

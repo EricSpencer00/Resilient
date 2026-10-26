@@ -106,9 +106,10 @@ open Resilient
 
 def double : Expr := Expr.add (Expr.var "x") (Expr.var "x")
 
-theorem double_correct (x : Int) :
-    eval (env_of [("x", x)]) double = some (x + x) := by
-  simp [eval, env_of, Env.lookup, double]
+theorem double_correct (lean_arg_0 : Int) :
+    Resilient.eval (Resilient.env_of [("x", lean_arg_0)]) _root_.double =
+      some (lean_arg_0 + lean_arg_0) := by
+  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.double]
 ```
 
 Build the model and explicitly check the generated module:
@@ -135,6 +136,7 @@ root imports only `AST`, `Semantics`, and `Theorems`.
 
 For the first slice, `--emit-lean-spec` accepts:
 
+- `int` and `bool` parameters, with an optional matching return annotation
 - A single `return EXPR;` statement
 - `EXPR` is built from: integer/bool literals, parameter identifiers,
   `+ - * / %`, `== < <= > >=`, unary `-` and `!`
@@ -149,8 +151,16 @@ fragment grows.
 It does not model machine-width overflow, memory, hardware IO, actor scheduling,
 or the compiler's VM, JIT, and embedded code generators. The current lowering
 does not accept conditionals even though the Lean AST includes `ite`.
-Boolean literals, boolean parameters and comparisons also need correspondence
-work: the native theorem renderer uses `Bool`, while `eval` returns `Option Int`.
+Boolean parameters retain Lean `Bool` binders and enter the environment as
+0/1 integers. The native theorem result uses the same encoding. The emitter
+checks operand types, parameter bindings and declared return types, rejecting
+unsupported signatures before producing a theorem. Generated parameter names
+avoid shadowing the expression definition.
+Run `python3 docs/verify_lean_types.py --compiler /absolute/path/to/rz` to
+explicitly elaborate 18 typed examples against the pinned model. These examples
+include Boolean negation, equality, ordering and arithmetic; they do not prove
+the emitter correct for all inputs.
+
 Division and remainder need explicit domain conditions and agreement on signed
 arithmetic before generated theorems can be relied on for those expressions.
 
