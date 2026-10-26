@@ -161,8 +161,17 @@ explicitly elaborate 18 typed examples against the pinned model. These examples
 include Boolean negation, equality, ordering and arithmetic; they do not prove
 the emitter correct for all inputs.
 
-Division and remainder need explicit domain conditions and agreement on signed
-arithmetic before generated theorems can be relied on for those expressions.
+For division and remainder, the emitted result is
+`if domain then some value else none`. The domain requires each evaluated
+divisor to be nonzero and propagates undefined child expressions. The theorem
+is unconditional: zero-divisor inputs are represented by `none`, rather than
+excluded by a nonzero-input premise.
+
+Run `python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` to
+check 16 generated symbolic, nested, zero-divisor and negative-arithmetic
+theorems. The signed arithmetic here is Lean `Int` division/remainder;
+agreement with the language's bounded machine arithmetic and runtime error
+behavior remains a separate obligation.
 
 The small lemmas above establish properties of `eval`. They do not prove that
 the Rust optimizer applies only sound transformations or that generated
