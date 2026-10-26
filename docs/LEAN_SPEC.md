@@ -7,18 +7,12 @@ permalink: /lean-spec/
 
 # Lean-Proven Semantics
 
-> *"Your code is what the spec says it is — and the spec is checked in Lean."*
-
-Resilient ships its own operational semantics in **Lean 4**. The Lean project
-lives at [`resilient/lean-spec/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient/lean-spec)
-and is built with `lake build`. For every pure-arithmetic single-return function,
-the Resilient compiler can emit a Lean theorem stating that the AST means
-exactly what `eval` says it means.
-
-CompCert exists for C; **no embedded-targeted language ships its evaluation
-rules in a proof assistant**. This is what puts Resilient in a different league
-for tool qualification under DO-178C DAL-A: the certification authority can
-audit *the proof*, not just the test suite.
+Resilient includes a small operational semantics in **Lean 4**, in
+[`resilient/lean-spec/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient/lean-spec).
+It models expressions, and the compiler can emit theorem source for selected
+single-return functions. Emitting source is not a successful Lean proof check.
+A checked theorem relates the emitted expression to this model; it does not
+establish correctness of a compiled binary.
 
 ## What's in the Lean project
 
@@ -117,10 +111,25 @@ theorem double_correct (x : Int) :
   simp [eval, env_of, double]
 ```
 
-Save this into `lean-spec/Resilient/Generated/Double.lean` and run
-`lake build` — Lean re-derives the `double_correct` theorem from the
-operational semantics and the AST. If the proof fails, the Resilient
-compiler's lowering is incorrect.
+Build the model and explicitly check the generated module:
+
+```bash
+# From the repository root; rz must already be built.
+python3 docs/verify_lean_spec.py --compiler resilient/target/debug/rz
+```
+
+The checker runs `lake build`, emits `double` and `triple` from
+`resilient/examples/lean_spec_demo.rz`, and runs `lake env lean` on each
+output. It fails on missing tools, failed commands, timeouts, missing theorem
+declarations, and explicit `sorry`, `admit`, or `axiom` admissions in emitted
+source. The Lean toolchain is pinned by `lean-toolchain`; install Lake before
+running the command. Dependencies and the model remain part of the trusted base.
+
+For another function, save its emitted source to `Generated.lean`, build the
+library, then run `lake env lean /absolute/path/to/Generated.lean` from
+`resilient/lean-spec/`. Merely placing a file in a `Generated/` directory and
+running `lake build` does not show that it was checked: the default library
+root imports only `AST`, `Semantics`, and `Theorems`.
 
 ## What a function must look like to lower
 
@@ -128,29 +137,31 @@ For the first slice, `--emit-lean-spec` accepts:
 
 - A single `return EXPR;` statement
 - `EXPR` is built from: integer/bool literals, parameter identifiers,
-  `+ - * / %`, `== < <= > >=`, unary `-` and `!`, `if expr`
+  `+ - * / %`, `== < <= > >=`, unary `-` and `!`
 
 Functions with loops, calls, struct accesses, or multi-statement bodies
 yield an `unsupported` diagnostic. Each restriction lifts as the Lean
 fragment grows.
 
-## Why this changes the conversation
+## Proof boundary
 
-Tool qualification under safety standards (DO-178C, ISO 26262, IEC 61508)
-requires evidence that the *compiler* — not just the *user code* — preserves
-the semantics on the way from source to silicon. Today that evidence is built
-out of test suites and structural-coverage reports. With a Lean spec, the
-evidence shifts to *machine-checked theorems*. Two consequences:
+`eval` uses Lean's unbounded `Int`, with booleans represented as 0/1.
+It does not model machine-width overflow, memory, hardware IO, actor scheduling,
+or the compiler's VM, JIT, and embedded code generators. The current lowering
+does not accept conditionals even though the Lean AST includes `ite`.
+Boolean literals, boolean parameters and comparisons also need correspondence
+work: the native theorem renderer uses `Bool`, while `eval` returns `Option Int`.
+Division and remainder need explicit domain conditions and agreement on signed
+arithmetic before generated theorems can be relied on for those expressions.
 
-- The certification authority audits a small, independently-built spec
-  (the `Theorems.lean` file plus the build manifest), not the entire
-  compiler test suite.
-- The compiler itself becomes a *trusted base*: every commit either
-  re-derives the same theorems or fails the build.
+The small lemmas above establish properties of `eval`. They do not prove that
+the Rust optimizer applies only sound transformations or that generated
+instructions implement `eval`. No source-to-machine-code refinement theorem
+is supplied by this project. These artifacts alone do not qualify the compiler
+under a safety standard.
 
-Combined with the existing certificate manifest (RES-071, RES-194, RES-195),
-**every shipped Resilient binary can carry a Lean-checkable proof of
-correctness for each function it contains**.
+See [Formal-methods coverage](../formal-methods/) for the boundaries of the
+Z3, Lean, and TLA+ mechanisms and the remaining assurance gaps.
 
 ## Roadmap
 
@@ -161,5 +172,6 @@ The current spec is the **first slice**. Planned extensions:
 - **Calls**: function-call lowering and inlining proofs.
 - **Effects**: separate `eval` for pure vs. IO functions, with the
   Resilient `pure` / `io` / `fails` annotations bridged in.
-- **Linkage**: a CI step that runs `lake build` on the emitted theorem
-  bundle and fails the PR if any proof breaks.
+- **Linkage**: run the explicit generated-module checker in CI and retain
+  the tool versions, source revision, checked modules, and results. The
+  standalone checker above does not add a required CI gate.

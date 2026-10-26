@@ -10,9 +10,10 @@ permalink: /tutorial
 
 Five short lessons that take you from `Hello, world!` to a
 self-healing `live` block whose contracts are discharged by
-Z3. Each one builds on the last. Every code snippet in every
-lesson is verified by `docs/verify_tutorial_snippets.sh` — if
-a snippet stops working, CI notices.
+Z3. Each one builds on the last. Run `docs/verify_tutorial_snippets.sh`
+to execute the lessons’ `resilient` code blocks. Shell commands, displayed
+output and certificate replay need separate verification; see
+[formal-methods coverage]({{ site.baseurl }}/formal-methods/).
 {: .fs-6 .fw-300 }
 
 ## What you'll build
