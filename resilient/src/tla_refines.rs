@@ -14,6 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+#[path = "tla_refines_aliases.rs"]
+mod aliases;
+
 const ATTRIBUTE: &str = "refines";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,21 +256,15 @@ fn collect_summaries(
     HashMap<String, FunctionSummary>,
     HashMap<String, ExternSummary>,
 ) {
+    let globals = aliases::globals(program);
     let mut functions = HashMap::new();
     crate::uniqueness_walk::for_each_function(program, |name, _parameters, body| {
-        let mut summary = FunctionSummary::default();
-        crate::uniqueness_walk::visit(body, &mut |node| {
-            if let Node::CallExpression { function, span, .. } = node
-                && let Node::Identifier { name: callee, .. } = function.as_ref()
-            {
-                summary.calls.push(CallSite {
-                    callee: callee.clone(),
-                    line: span.start.line,
-                    column: span.start.column,
-                });
-            }
-        });
-        functions.insert(name.to_string(), summary);
+        functions.insert(
+            name.to_string(),
+            FunctionSummary {
+                calls: aliases::calls(body, &globals),
+            },
+        );
     });
 
     let mut externs = HashMap::new();
