@@ -35,9 +35,10 @@ The existing qualification work tracks these boundaries in
 A contract proof over mathematical integers cannot by itself establish the
 same contract for bounded machine arithmetic.
 
-**Lean theorem generation.** Match the model's 0/1 boolean representation to
-the theorem renderer, establish division preconditions, and reject or model
-unsupported parameter types. Extend the model and lowering together for
+**Lean theorem generation.** The emitter validates the supported int/bool
+fragment and matches the model's 0/1 boolean representation; the typed example
+checker elaborates generated theorems explicitly. Establish division
+preconditions and model additional parameter types. Extend the model and lowering together for
 statements, calls, loops, and effects. Then prove correspondence for compiler
 transformations and backend execution. See [Lean semantics](../lean-spec/).
 
@@ -81,6 +82,9 @@ python3 docs/verify_lean_spec.py --compiler /absolute/path/to/rz
 ```
 
 This checks two demo expression theorems explicitly after building the model.
+`python3 docs/verify_lean_types.py --compiler /absolute/path/to/rz` additionally
+checks 18 typed arithmetic/Boolean examples. These are regression examples,
+not a universal emitter-correctness theorem.
 Its lightweight regression checks run with:
 
 ```bash
