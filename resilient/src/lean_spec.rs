@@ -45,6 +45,9 @@
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
+#[path = "lean_spec_names.rs"]
+mod names;
+
 #[path = "lean_spec_domains.rs"]
 mod domains;
 
@@ -235,6 +238,7 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     // into `out`'s backing buffer. Pre-size to 256: covers the import
     // header (~40 bytes) + def + theorem + simp tactic for a typical
     // small fn before any growth.
+    let names = names::Names::new(&f.name);
     let mut out = String::with_capacity(256);
     out.push_str("import Resilient.Semantics\n");
     out.push_str("open Resilient\n\n");
@@ -245,7 +249,13 @@ pub fn emit_theorem(f: &LeanFn) -> String {
         "/-! Auto-generated from Resilient fn `{}` -/\n",
         f.name
     );
-    let _ = writeln!(out, "def {} : Expr := {}\n", f.name, render_expr(&f.body));
+    let _ = writeln!(out, "namespace {}\n", names.namespace);
+    let _ = writeln!(
+        out,
+        "def {} : Expr := {}\n",
+        names.expression,
+        render_expr(&f.body)
+    );
 
     let param_pairs: Vec<String> = f
         .params
@@ -262,16 +272,13 @@ pub fn emit_theorem(f: &LeanFn) -> String {
         .map(|(index, (ty, _))| format!("(lean_arg_{index} : {})", lean_type_for(ty)))
         .collect();
 
+    let _ = writeln!(out, "theorem {} {} :", names.theorem, param_typed.join(" "));
     let _ = writeln!(
         out,
-        "theorem {}_correct {} :",
-        f.name,
-        param_typed.join(" ")
-    );
-    let _ = writeln!(
-        out,
-        "    Resilient.eval ({}) _root_.{} = {} := by",
-        env_str, f.name, native_body
+        "    Resilient.eval ({}) {} = {} := by",
+        env_str,
+        names.reference(),
+        native_body
     );
     for (index, condition) in domains::zero_cases(&f.body, &f.params).iter().enumerate() {
         let _ = writeln!(out, "  by_cases lean_zero_{index} : {condition} <;>");
@@ -284,9 +291,10 @@ pub fn emit_theorem(f: &LeanFn) -> String {
             let _ = writeln!(out, "  cases lean_arg_{index} <;>");
         }
     }
-    out.push_str("  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.");
-    out.push_str(&f.name);
-    out.push_str("]\n");
+    out.push_str("  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, ");
+    out.push_str(&names.reference());
+    out.push_str("]\n\n");
+    let _ = writeln!(out, "end {}", names.namespace);
     out
 }
 

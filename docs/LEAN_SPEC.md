@@ -114,13 +114,27 @@ local infixl:70 (priority := high) " % " => Int.tmod
 
 /-! Auto-generated from Resilient fn `double` -/
 
-def double : Expr := Expr.add (Expr.var "x") (Expr.var "x")
+namespace double_generated
+
+def double_expr : Expr := Expr.add (Expr.var "x") (Expr.var "x")
 
 theorem double_correct (lean_arg_0 : Int) :
-    Resilient.eval (Resilient.env_of [("x", lean_arg_0)]) _root_.double =
+    Resilient.eval (Resilient.env_of [("x", lean_arg_0)]) _root_.double_generated.double_expr =
       some (lean_arg_0 + lean_arg_0) := by
-  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.double]
+  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.double_generated.double_expr]
+
+end double_generated
 ```
+
+Generated declarations use a function-specific namespace: `double` exports
+`double_generated.double_expr` and `double_generated.double_correct`. Source
+names receive deterministic suffixes so Lean keywords and imported names such
+as `Int` cannot capture the declarations. Source identifiers remain unchanged
+in evaluator environment keys.
+
+Run `python3 docs/verify_lean_names.py --compiler /absolute/path/to/rz` to
+check 14 core-name, keyword and suffix-collision examples individually and
+together in one Lean module.
 
 Build the model and explicitly check the generated module:
 
