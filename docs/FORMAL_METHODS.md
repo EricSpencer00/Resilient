@@ -88,6 +88,9 @@ This checks two demo expression theorems explicitly after building the model.
 `python3 docs/verify_lean_types.py --compiler /absolute/path/to/rz` additionally
 checks 18 typed arithmetic/Boolean examples. These are regression examples,
 not a universal emitter-correctness theorem.
+`python3 docs/verify_lean_names.py --compiler /absolute/path/to/rz` checks
+14 generated declarations individually and together, including Lean keywords,
+core types and suffix collisions.
 `python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` checks
 16 additional partial-arithmetic theorems over all parameter values, including
 the undefined result when a divisor is zero.
