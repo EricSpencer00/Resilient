@@ -53,6 +53,9 @@
 
 use crate::{Node, feature_attrs};
 
+#[path = "mutual_tco_groups.rs"]
+mod groups;
+
 /// Returns `true` when `fn_name` is annotated with `#[mutual_tail_call]`.
 ///
 /// Uses the same `find_kind` fast-path as `tail_calls::is_must_tail_call` —
@@ -86,11 +89,11 @@ pub(crate) fn mutual_tail_call_indices(
 
 /// Typecheck pass: validate `#[mutual_tail_call]` usage.
 ///
-/// Currently checks that each annotated function calls at least one other
-/// `#[mutual_tail_call]` function, catching the degenerate case where a
-/// programmer annotates a function but forgets to annotate its partner.
+/// Each annotated function must call another annotated member or receive a
+/// cross-function tail call from one. A terminal member can return directly
+/// without making another cross-call. Isolated annotations are still rejected.
 ///
-/// Full call-graph cycle validation (ensuring calls are in tail position) is
+/// Full validation that cross-function calls are in tail position remains
 /// a follow-up under RES-2659 acceptance criteria.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let attrs = feature_attrs::find_kind("mutual_tail_call");
@@ -107,6 +110,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     };
 
+    let incoming_tail_targets = groups::incoming_tail_targets(program, &annotated);
     for stmt in stmts {
         let Node::Function { name, body, .. } = &stmt.node else {
             continue;
@@ -116,10 +120,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             continue;
         }
 
-        // Check that the body contains at least one call to another
-        // #[mutual_tail_call]-annotated function. This catches the common
-        // mistake of annotating only one side of the mutual recursion.
-        if !body_calls_any(body, &annotated, name.as_str()) {
+        // A trampoline can finish at a target with no outgoing cross-call.
+        if !body_calls_any(body, &annotated, name.as_str()) && !incoming_tail_targets.contains(name)
+        {
             return Err(format!(
                 "{}: error: `#[mutual_tail_call]` function `{}` does not call any other \
                  `#[mutual_tail_call]`-annotated function — both sides of a mutual recursion \
