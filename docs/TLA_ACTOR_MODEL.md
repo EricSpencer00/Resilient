@@ -212,10 +212,17 @@ when jar is absent.
   unknown, empty, or non-string arguments. It does not load TLC or the
   referenced spec yet.
 - **B3 contract guard delivered:** the compiler walks each annotated
-  function's reachable call graph and rejects `extern fn` calls without
+  function's known call graph and rejects `extern fn` calls without
   both `requires` and `ensures` clauses (Q4), with a diagnostic at the
-  offending call site. Non-refined code keeps the existing permissive
-  behavior.
+  offending call site. This includes identifier aliases of externs and
+  helper functions, alias chains, and known reassignment targets. The
+  analysis conservatively retains all known assignment targets; it may
+  reject a path even when a particular target is not selected at runtime.
+  Non-refined code keeps the existing permissive behavior. Callable values
+  produced by factories, stored in containers, or passed through arbitrary
+  higher-order calls are not fully resolved by this guard. Annotation
+  acceptance is not a semantic refinement proof or a complete indirect-call
+  reachability guarantee.
 - `EXTENDS runtime` becomes valid once B2's `runtime.tla` exists to
   extend.
 - Re-evaluate "if warranted": if usage data from B2 (do maintainers
