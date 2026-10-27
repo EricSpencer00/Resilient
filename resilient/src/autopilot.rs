@@ -1,6 +1,6 @@
-//! Feature 8/50 — Vibe-Code Autopilot.
+//! Feature 8/50 — Advisory Assurance Autopilot.
 //!
-//! `rz autopilot <file>` runs the full safety-audit pipeline in one
+//! `rz autopilot <file>` runs the advisory analysis pipeline in one
 //! pass and emits a single human-readable report. It composes:
 //!
 //! 1. [`crate::vibe_debt`]: per-fn signal coverage.
