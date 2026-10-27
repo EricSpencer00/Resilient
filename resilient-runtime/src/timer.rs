@@ -63,8 +63,14 @@
 //!
 //! Every fallible path returns `Result<_, TimerError>`. The module
 //! has no `unwrap()` / `expect()` / `panic!()` calls in non-test
-//! code; CI proves this by building with `-D warnings` and the
-//! runtime's no-std cross-compilation gates.
+//! code. Warning and no-std build gates check compilation constraints;
+//! they do not constitute a formal proof that no panic is possible.
+
+#[path = "timer_delay.rs"]
+mod delay;
+
+#[path = "timer_identity.rs"]
+mod identity;
 
 use core::cell::UnsafeCell;
 #[cfg(target_has_atomic = "8")]
@@ -118,7 +124,7 @@ pub struct TimerConfig {
     /// with [`TimerError::InvalidFrequency`] at init time.
     pub frequency_hz: u32,
     /// Mode the timer starts in. Mode is captured at init; switching
-    /// modes requires a [`timer_reset`] + new init pair.
+    /// modes requires [`timer_release`] followed by a new allocation.
     pub mode: TimerMode,
 }
 
@@ -149,17 +155,21 @@ impl TimerConfig {
     }
 }
 
-/// Opaque handle to an initialised timer. Stable for the life of
-/// the firmware once allocated.
+/// Opaque handle to one timer allocation. Release or registry reset
+/// permanently invalidates that handle, even if its slot is reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimerId(u8);
+pub struct TimerId(u64);
 
 impl TimerId {
     /// Numeric index of the timer in the runtime table. Exposed
     /// for diagnostic printing; opaque to users for normal use.
     #[inline]
     pub const fn index(self) -> u8 {
-        self.0
+        self.0 as u8
+    }
+
+    const fn generation(self) -> u64 {
+        self.0 >> identity::INDEX_BITS
     }
 }
 
@@ -184,6 +194,8 @@ enum Status {
 
 #[derive(Clone, Copy)]
 struct TimerState {
+    delay: delay::Phase,
+    generation: u64,
     status: Status,
     mode: TimerMode,
     /// Period between callbacks, in microseconds. Pre-computed
@@ -207,6 +219,8 @@ struct TimerState {
 
 impl TimerState {
     const FREE: Self = Self {
+        delay: delay::Phase::Idle,
+        generation: 0,
         status: Status::Free,
         mode: TimerMode::OneShot,
         period_us: 0,
@@ -220,7 +234,7 @@ impl TimerState {
 /// Error returned by every fallible timer operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerError {
-    /// No free slot in the timer table. The runtime has at most
+    /// No reusable slot in the timer table. The runtime has at most
     /// [`MAX_TIMERS`] timers; free one with [`timer_release`] to
     /// allocate another.
     Exhausted,
@@ -335,36 +349,20 @@ fn validate_mode(mode: TimerMode) -> Result<(), TimerError> {
 pub fn timer_init(config: TimerConfig) -> Result<TimerId, TimerError> {
     validate_mode(config.mode)?;
     let period = period_from_hz(config.frequency_hz)?;
-    with_registry(|reg| {
-        for (idx, slot) in reg.slots.iter_mut().enumerate() {
-            if slot.status == Status::Free {
-                *slot = TimerState {
-                    status: Status::Stopped,
-                    mode: config.mode,
-                    period_us: period,
-                    accum_us: 0,
-                    count: 0,
-                    elapsed_us: 0,
-                    callback: None,
-                };
-                return Ok(TimerId(idx as u8));
-            }
-        }
-        Err(TimerError::Exhausted)
-    })
+    with_registry(|reg| identity::allocate(reg, config, period))
 }
 
 /// Release the slot held by `id`. After this call, the id is
 /// invalid; passing it to any other entry point returns
-/// [`TimerError::InvalidId`]. Idempotent on already-free slots.
+/// [`TimerError::InvalidId`]. Already-free or stale handles return that error.
 pub fn timer_release(id: TimerId) -> Result<(), TimerError> {
-    with_registry(|reg| match reg.slots.get_mut(id.0 as usize) {
-        Some(slot) if slot.status != Status::Free => {
-            *slot = TimerState::FREE;
-            Ok(())
-        }
-        Some(_) => Err(TimerError::InvalidId),
-        None => Err(TimerError::InvalidId),
+    with_registry(|reg| {
+        let slot = identity::slot(reg, id)?;
+        *slot = TimerState {
+            generation: slot.generation,
+            ..TimerState::FREE
+        };
+        Ok(())
     })
 }
 
@@ -372,17 +370,17 @@ fn with_slot<R>(
     id: TimerId,
     f: impl FnOnce(&mut TimerState) -> Result<R, TimerError>,
 ) -> Result<R, TimerError> {
-    with_registry(|reg| match reg.slots.get_mut(id.0 as usize) {
-        Some(slot) if slot.status != Status::Free => f(slot),
-        _ => Err(TimerError::InvalidId),
-    })
+    with_registry(|reg| identity::slot(reg, id).and_then(f))
 }
 
 /// Start (or restart) `id`. Re-arms an expired one-shot. A no-op
 /// returning `Ok(())` if the timer is already running — matches
-/// what most MCU HALs do.
+/// what most MCU HALs do. A pending delay reservation returns
+/// [`TimerError::InvalidState`] until its waiter completes or acknowledges
+/// cancellation.
 pub fn timer_start(id: TimerId) -> Result<(), TimerError> {
     with_slot(id, |slot| {
+        delay::ensure_idle(slot)?;
         slot.status = Status::Running;
         // Re-arming an expired one-shot or restarting a stopped
         // periodic clears the accum so the next expiry is a full
@@ -394,10 +392,12 @@ pub fn timer_start(id: TimerId) -> Result<(), TimerError> {
     })
 }
 
-/// Stop `id` without losing accumulated state. `timer_start` will
-/// resume it. Idempotent.
+/// Stop `id` without losing accumulated state and cancel any pending delay.
+/// `timer_start` can resume it after that waiter acknowledges cancellation.
+/// Idempotent.
 pub fn timer_stop(id: TimerId) -> Result<(), TimerError> {
     with_slot(id, |slot| {
+        delay::cancel(slot);
         if slot.status == Status::Running {
             slot.status = Status::Stopped;
         }
@@ -407,9 +407,11 @@ pub fn timer_stop(id: TimerId) -> Result<(), TimerError> {
 
 /// Zero every counter for `id`, leaving the mode + period intact
 /// and the timer in `Stopped` state. Callbacks are preserved —
-/// use [`timer_set_callback`] with `None` to clear.
+/// use [`timer_set_callback`] with `None` to clear. Any pending delay is
+/// cancelled; its waiter returns `InvalidState`.
 pub fn timer_reset(id: TimerId) -> Result<(), TimerError> {
     with_slot(id, |slot| {
+        delay::cancel(slot);
         slot.status = Status::Stopped;
         slot.accum_us = 0;
         slot.count = 0;
@@ -458,34 +460,28 @@ pub fn timer_pwm_level(id: TimerId) -> Result<bool, TimerError> {
     })
 }
 
-/// Block until `ms` milliseconds have elapsed on `id`. The wait
-/// is driven by [`tick`] calls (so test harnesses that call
-/// `tick(N)` directly satisfy it instantly). The timer must be
-/// stopped before calling — `timer_delay_ms` does not interleave
-/// with running interrupts on the same id.
+/// Block until `ms` milliseconds of driver time have elapsed. Positive
+/// [`tick`] calls advance the delay even after a one-shot peripheral expires;
+/// its own counters and callback still follow one-shot semantics.
 ///
-/// On real firmware, callers would typically use a WFI loop while
-/// the systick ISR drives `tick`. The function therefore needs
-/// to release the registry lock between checks; we busy-spin
-/// through `wait_until_elapsed`, which polls a snapshot.
+/// The timer must not be running or reserved by another delay. Start and
+/// another delay return [`TimerError::InvalidState`] while this call owns
+/// the reservation. Stop/reset cancel this call with `InvalidState`; the
+/// reservation remains until the waiter acknowledges that cancellation.
+/// Release or registry reset invalidates the allocation and returns
+/// [`TimerError::InvalidId`] to the waiter.
+///
+/// Progress requires continuing positive ticks and scheduling the waiter.
+/// The registry lock is released between polls; no timer-local elapsed
+/// counter or wrapping timestamp is used to decide completion.
 pub fn timer_delay_ms(id: TimerId, ms: u32) -> Result<(), TimerError> {
-    let target_us = (ms as u64).saturating_mul(1_000);
-    with_slot(id, |slot| {
-        if slot.status == Status::Running {
-            return Err(TimerError::InvalidState);
+    let ticket = with_registry(|reg| delay::begin(reg, id, ms))?;
+    loop {
+        if with_registry(|reg| delay::poll(reg, ticket))? {
+            return Ok(());
         }
-        slot.status = Status::Running;
-        slot.accum_us = 0;
-        slot.elapsed_us = 0;
-        Ok(())
-    })?;
-    while timer_elapsed_us(id)? < target_us {
         core::hint::spin_loop();
     }
-    with_slot(id, |slot| {
-        slot.status = Status::Stopped;
-        Ok(())
-    })
 }
 
 /// Drive every running timer forward by `elapsed_us` microseconds.
@@ -505,6 +501,7 @@ pub fn tick(elapsed_us: u32) {
     let mut to_fire: [(Option<TimerCallback>, u32); MAX_TIMERS] = [(None, 0); MAX_TIMERS];
     with_registry(|reg| {
         for (idx, slot) in reg.slots.iter_mut().enumerate() {
+            delay::advance(slot, elapsed_us);
             if slot.status != Status::Running {
                 continue;
             }
@@ -544,11 +541,17 @@ pub fn tick(elapsed_us: u32) {
     }
 }
 
-/// Reset the entire registry. Intended for test-suite use between
-/// cases; safe to call on production firmware but rarely useful.
+/// Reset the entire registry and invalidate every outstanding handle.
+/// Intended for test-suite use between cases; safe to call on production
+/// firmware but rarely useful.
 pub fn reset_all() {
     with_registry(|reg| {
-        reg.slots.fill(TimerState::FREE);
+        for slot in &mut reg.slots {
+            *slot = TimerState {
+                generation: slot.generation,
+                ..TimerState::FREE
+            };
+        }
     });
 }
 
