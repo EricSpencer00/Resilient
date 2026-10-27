@@ -1,17 +1,19 @@
+import Resilient.AST
+
 /-!
 # Resilient.Semantics — big-step evaluation
 
 We define a partial big-step evaluator `eval : Env → Expr → Option Int`
-that yields `none` on a type mismatch (e.g. adding an `int` and a
-`bool`) or a divide-by-zero. The `Env` is an association list keyed
-by parameter name.
+that yields `none` for an unbound variable, a zero divisor, or an
+undefined subexpression. Values are integer-encoded; the evaluator itself
+does not reject mixing integer and Boolean syntax. The emitter checks
+the supported source fragment's types before lowering. The `Env` is an
+association list keyed by parameter name.
 
 The evaluator is structural recursion on `Expr`, so it is total in
 the Lean sense — `eval` always returns, but the `Option` reflects
 that some Resilient expressions don't reduce to an integer.
 -/
-
-import Resilient.AST
 
 namespace Resilient
 
@@ -48,12 +50,12 @@ def eval (env : Env) : Expr → Option Int
   | .div l r =>
     match eval env l, eval env r with
     | some _, some 0 => none
-    | some a, some b => some (a / b)
+    | some a, some b => some (Int.tdiv a b)
     | _, _ => none
   | .mod l r =>
     match eval env l, eval env r with
     | some _, some 0 => none
-    | some a, some b => some (a % b)
+    | some a, some b => some (Int.tmod a b)
     | _, _ => none
   | .eq l r =>
     match eval env l, eval env r with

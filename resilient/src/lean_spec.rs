@@ -37,15 +37,22 @@
 //! produce a clear "unsupported" diagnostic — the spec is intentionally
 //! minimal for the first slice.
 //!
-//! ## Why "league of its own"
+//! ## Proof boundary
 //!
-//! No production embedded language exposes its evaluation rules in a
-//! proof assistant. CompCert exists for C but is mostly read-only; this
-//! gives every Resilient user a per-function theorem they can extend or
-//! re-prove. Combined with the existing certificate manifest, every
-//! shipped binary can carry a Lean-checkable proof of correctness.
+//! Emitted theorems must be checked explicitly with Lean. They concern
+//! the expression evaluator over unbounded integers, not machine-code
+//! execution or preservation of semantics by compiler backends.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
+
+#[path = "lean_spec_names.rs"]
+mod names;
+
+#[path = "lean_spec_domains.rs"]
+mod domains;
+
+#[path = "lean_spec_typed.rs"]
+mod typed;
 
 use crate::Node;
 use std::fmt::Write as _;
@@ -104,6 +111,7 @@ pub fn lower_function(node: &Node) -> Result<LeanFn, LowerError> {
         name,
         parameters,
         body,
+        return_type,
         ..
     } = node
     else {
@@ -124,6 +132,7 @@ pub fn lower_function(node: &Node) -> Result<LeanFn, LowerError> {
         return Err(LowerError::NoReturn);
     };
     let body_expr = lower_expr(e)?;
+    typed::validate(&body_expr, parameters, return_type.as_deref())?;
     Ok(LeanFn {
         name: name.clone(),
         params: parameters.clone(),
@@ -229,43 +238,63 @@ pub fn emit_theorem(f: &LeanFn) -> String {
     // into `out`'s backing buffer. Pre-size to 256: covers the import
     // header (~40 bytes) + def + theorem + simp tactic for a typical
     // small fn before any growth.
+    let names = names::Names::new(&f.name);
     let mut out = String::with_capacity(256);
     out.push_str("import Resilient.Semantics\n");
     out.push_str("open Resilient\n\n");
+    out.push_str("local infixl:70 (priority := high) \" / \" => Int.tdiv\n");
+    out.push_str("local infixl:70 (priority := high) \" % \" => Int.tmod\n\n");
     let _ = writeln!(
         out,
         "/-! Auto-generated from Resilient fn `{}` -/\n",
         f.name
     );
-    let _ = writeln!(out, "def {} : Expr := {}\n", f.name, render_expr(&f.body));
+    let _ = writeln!(out, "namespace {}\n", names.namespace);
+    let _ = writeln!(
+        out,
+        "def {} : Expr := {}\n",
+        names.expression,
+        render_expr(&f.body)
+    );
 
     let param_pairs: Vec<String> = f
         .params
         .iter()
-        .map(|(_, name)| format!("(\"{name}\", {name})"))
+        .enumerate()
+        .map(|(index, (ty, name))| format!("(\"{name}\", {})", typed::parameter(index, ty)))
         .collect();
-    let env_str = format!("env_of [{}]", param_pairs.join(", "));
-    let native_body = render_native(&f.body);
+    let env_str = format!("Resilient.env_of [{}]", param_pairs.join(", "));
+    let native_body = domains::result(&f.body, &f.params);
     let param_typed: Vec<String> = f
         .params
         .iter()
-        .map(|(ty, name)| format!("({name} : {})", lean_type_for(ty)))
+        .enumerate()
+        .map(|(index, (ty, _))| format!("(lean_arg_{index} : {})", lean_type_for(ty)))
         .collect();
 
+    let _ = writeln!(out, "theorem {} {} :", names.theorem, param_typed.join(" "));
     let _ = writeln!(
         out,
-        "theorem {}_correct {} :",
-        f.name,
-        param_typed.join(" ")
+        "    Resilient.eval ({}) {} = {} := by",
+        env_str,
+        names.reference(),
+        native_body
     );
-    let _ = writeln!(
-        out,
-        "    eval ({}) {} = some {} := by",
-        env_str, f.name, native_body
-    );
-    out.push_str("  simp [eval, env_of, ");
-    out.push_str(&f.name);
-    out.push_str("]\n");
+    for (index, condition) in domains::zero_cases(&f.body, &f.params).iter().enumerate() {
+        let _ = writeln!(out, "  by_cases lean_zero_{index} : {condition} <;>");
+    }
+    for (index, condition) in typed::conditions(&f.body, &f.params).iter().enumerate() {
+        let _ = writeln!(out, "  by_cases lean_cmp_{index} : {condition} <;>");
+    }
+    for (index, (ty, _)) in f.params.iter().enumerate() {
+        if ty == "bool" {
+            let _ = writeln!(out, "  cases lean_arg_{index} <;>");
+        }
+    }
+    out.push_str("  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, ");
+    out.push_str(&names.reference());
+    out.push_str("]\n\n");
+    let _ = writeln!(out, "end {}", names.namespace);
     out
 }
 

@@ -7,18 +7,12 @@ permalink: /lean-spec/
 
 # Lean-Proven Semantics
 
-> *"Your code is what the spec says it is — and the spec is checked in Lean."*
-
-Resilient ships its own operational semantics in **Lean 4**. The Lean project
-lives at [`resilient/lean-spec/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient/lean-spec)
-and is built with `lake build`. For every pure-arithmetic single-return function,
-the Resilient compiler can emit a Lean theorem stating that the AST means
-exactly what `eval` says it means.
-
-CompCert exists for C; **no embedded-targeted language ships its evaluation
-rules in a proof assistant**. This is what puts Resilient in a different league
-for tool qualification under DO-178C DAL-A: the certification authority can
-audit *the proof*, not just the test suite.
+Resilient includes a small operational semantics in **Lean 4**, in
+[`resilient/lean-spec/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient/lean-spec).
+It models expressions, and the compiler can emit theorem source for selected
+single-return functions. Emitting source is not a successful Lean proof check.
+A checked theorem relates the emitted expression to this model; it does not
+establish correctness of a compiled binary.
 
 ## What's in the Lean project
 
@@ -30,7 +24,8 @@ resilient/lean-spec/
 └── Resilient/
     ├── AST.lean              — inductive Expr definition
     ├── Semantics.lean        — eval : Env → Expr → Option Int
-    └── Theorems.lean         — proven correctness lemmas
+    ├── Theorems.lean         — core expression lemmas
+    └── SignedArithmetic.lean — truncating quotient/remainder lemmas
 ```
 
 ## The AST mirror
@@ -61,7 +56,9 @@ of the Lean spec for the first slice. Adding them is a matter of extending
 
 Big-step evaluation `eval : Env → Expr → Option Int`. Total in the Lean sense
 (structural recursion on `Expr`); the `Option` reflects partial expressions like
-`x / 0`.
+`x / 0`. Values are integer-encoded, so the evaluator itself does not
+reject adding Boolean and integer syntax. Source operand types are checked
+by the Rust emitter; source-to-model type preservation is not proved here.
 
 ```lean
 def eval (env : Env) : Expr → Option Int
@@ -73,7 +70,7 @@ def eval (env : Env) : Expr → Option Int
   | .div l r =>
     match eval env l, eval env r with
     | some _, some 0 => none      -- divide by zero is an error
-    | some a, some b => some (a / b)
+    | some a, some b => some (Int.tdiv a b)
     | _, _ => none
   ...
 ```
@@ -89,9 +86,13 @@ The first four theorems we ship:
 | `eval_const_fold_sound` | `eval env (Add (Int a) (Int b)) = eval env (Int (a+b))` |
 | `eval_neg_involutive` | `eval env (Neg (Neg e)) = eval env e` |
 
-Each subsequent compiler optimisation pass (constant folding, peephole, etc.)
-can be discharged against the same `eval` relation. The proofs in
-`Theorems.lean` are the foundation; the obligations grow with the compiler.
+Additional transformations require explicit preservation proofs against the
+modeled subset. These lemmas do not establish optimizer or backend correctness.
+
+`SignedArithmetic.lean` additionally proves nonzero literal division/remainder
+evaluation, undefined results for zero divisors, the truncating
+quotient/remainder identity, and the negative nonmultiple example
+`-7 / 3 = -2`, `-7 % 3 = -1`. Its six lemmas concern unbounded `Int` arithmetic.
 
 ## Emitting per-function theorems
 
@@ -108,49 +109,110 @@ The output is a Lean source file:
 import Resilient.Semantics
 open Resilient
 
+local infixl:70 (priority := high) " / " => Int.tdiv
+local infixl:70 (priority := high) " % " => Int.tmod
+
 /-! Auto-generated from Resilient fn `double` -/
 
-def double : Expr := Expr.add (Expr.var "x") (Expr.var "x")
+namespace double_generated
 
-theorem double_correct (x : Int) :
-    eval (env_of [("x", x)]) double = some (x + x) := by
-  simp [eval, env_of, double]
+def double_expr : Expr := Expr.add (Expr.var "x") (Expr.var "x")
+
+theorem double_correct (lean_arg_0 : Int) :
+    Resilient.eval (Resilient.env_of [("x", lean_arg_0)]) _root_.double_generated.double_expr =
+      some (lean_arg_0 + lean_arg_0) := by
+  simp_all [Resilient.eval, Resilient.env_of, Resilient.Env.lookup, _root_.double_generated.double_expr]
+
+end double_generated
 ```
 
-Save this into `lean-spec/Resilient/Generated/Double.lean` and run
-`lake build` — Lean re-derives the `double_correct` theorem from the
-operational semantics and the AST. If the proof fails, the Resilient
-compiler's lowering is incorrect.
+Generated declarations use a function-specific namespace: `double` exports
+`double_generated.double_expr` and `double_generated.double_correct`. Source
+names receive deterministic suffixes so Lean keywords and imported names such
+as `Int` cannot capture the declarations. Source identifiers remain unchanged
+in evaluator environment keys.
+
+Run `python3 docs/verify_lean_names.py --compiler /absolute/path/to/rz` to
+check 14 core-name, keyword and suffix-collision examples individually and
+together in one Lean module.
+
+Build the model and explicitly check the generated module:
+
+```bash
+# From the repository root; rz must already be built.
+python3 docs/verify_lean_spec.py --compiler resilient/target/debug/rz
+```
+
+The checker runs `lake build`, emits `double` and `triple` from
+`resilient/examples/lean_spec_demo.rz`, and runs `lake env lean` on each
+output. It fails on missing tools, failed commands, timeouts, missing theorem
+declarations, and explicit `sorry`, `admit`, or `axiom` admissions in emitted
+source. The Lean toolchain is pinned by `lean-toolchain`; install Lake before
+running the command. Dependencies and the model remain part of the trusted base.
+
+For another function, save its emitted source to `Generated.lean`, build the
+library, then run `lake env lean /absolute/path/to/Generated.lean` from
+`resilient/lean-spec/`. Merely placing a file in a `Generated/` directory and
+running `lake build` does not show that it was checked: the default library
+root imports only `AST`, `Semantics`, and `Theorems`.
 
 ## What a function must look like to lower
 
 For the first slice, `--emit-lean-spec` accepts:
 
+- `int` and `bool` parameters, with an optional matching return annotation
 - A single `return EXPR;` statement
 - `EXPR` is built from: integer/bool literals, parameter identifiers,
-  `+ - * / %`, `== < <= > >=`, unary `-` and `!`, `if expr`
+  `+ - * / %`, `== < <= > >=`, unary `-` and `!`
 
 Functions with loops, calls, struct accesses, or multi-statement bodies
 yield an `unsupported` diagnostic. Each restriction lifts as the Lean
 fragment grows.
 
-## Why this changes the conversation
+## Proof boundary
 
-Tool qualification under safety standards (DO-178C, ISO 26262, IEC 61508)
-requires evidence that the *compiler* — not just the *user code* — preserves
-the semantics on the way from source to silicon. Today that evidence is built
-out of test suites and structural-coverage reports. With a Lean spec, the
-evidence shifts to *machine-checked theorems*. Two consequences:
+`eval` uses Lean's unbounded `Int`, with booleans represented as 0/1.
+It does not model machine-width overflow, memory, hardware IO, actor scheduling,
+or the compiler's VM, JIT, and embedded code generators. The current lowering
+does not accept conditionals even though the Lean AST includes `ite`.
+Boolean parameters retain Lean `Bool` binders and enter the environment as
+0/1 integers. The native theorem result uses the same encoding. The emitter
+checks operand types, parameter bindings and declared return types, rejecting
+unsupported signatures before producing a theorem. Generated parameter names
+avoid shadowing the expression definition.
+Run `python3 docs/verify_lean_types.py --compiler /absolute/path/to/rz` to
+explicitly elaborate 18 typed examples against the pinned model. These examples
+include Boolean negation, equality, ordering and arithmetic; they do not prove
+the emitter correct for all inputs.
 
-- The certification authority audits a small, independently-built spec
-  (the `Theorems.lean` file plus the build manifest), not the entire
-  compiler test suite.
-- The compiler itself becomes a *trusted base*: every commit either
-  re-derives the same theorems or fails the build.
+For division and remainder, the emitted result is
+`if domain then some value else none`. The domain requires each evaluated
+divisor to be nonzero and propagates undefined child expressions. The theorem
+is unconditional: zero-divisor inputs are represented by `none`, rather than
+excluded by a nonzero-input premise.
 
-Combined with the existing certificate manifest (RES-071, RES-194, RES-195),
-**every shipped Resilient binary can carry a Lean-checkable proof of
-correctness for each function it contains**.
+Run `python3 docs/verify_lean_domains.py --compiler /absolute/path/to/rz` to
+check 16 generated symbolic, nested, zero-divisor and negative-arithmetic
+theorems. Signed division and remainder use `Int.tdiv`/`Int.tmod`, which
+truncate toward zero. Generated modules explicitly bind `/` and `%` to these
+operations; Lean's default integer operators use a different rounding rule.
+
+`python3 docs/verify_lean_signed.py --compiler /absolute/path/to/rz` compares
+113 model observations with both the interpreter and bytecode VM in wrap
+mode (226 executions), covering signs, zero divisors and representable
+boundaries. It excludes `i64::MIN / -1`: the unbounded result is `2^63`, while
+wrap-mode execution produces `i64::MIN`. The paired examples do not prove
+universal backend refinement, other overflow policies, or runtime error
+equivalence for all programs.
+
+The small lemmas above establish properties of `eval`. They do not prove that
+the Rust optimizer applies only sound transformations or that generated
+instructions implement `eval`. No source-to-machine-code refinement theorem
+is supplied by this project. These artifacts alone do not qualify the compiler
+under a safety standard.
+
+See [Formal-methods coverage](../formal-methods/) for the boundaries of the
+Z3, Lean, and TLA+ mechanisms and the remaining assurance gaps.
 
 ## Roadmap
 
@@ -161,5 +223,6 @@ The current spec is the **first slice**. Planned extensions:
 - **Calls**: function-call lowering and inlining proofs.
 - **Effects**: separate `eval` for pure vs. IO functions, with the
   Resilient `pure` / `io` / `fails` annotations bridged in.
-- **Linkage**: a CI step that runs `lake build` on the emitted theorem
-  bundle and fails the PR if any proof breaks.
+- **Linkage**: run the explicit generated-module checker in CI and retain
+  the tool versions, source revision, checked modules, and results. The
+  standalone checker above does not add a required CI gate.
