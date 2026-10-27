@@ -1,12 +1,26 @@
 # Formal Verification: Scope and Limitations
 
-Resilient's `requires` and `ensures` system proves correctness **within a mathematical model**. This document clarifies what is proven, what is not, and how to use formal verification safely in real-world systems.
+Resilient's verifier can check supported `requires` and `ensures` obligations
+**within a mathematical model**. Merely declaring them does not prove them.
+Agent-written code can be excellent; human authorship supplies no guarantee.
+Review requirements, assumptions, implementation conformance and the actual
+properties checked. The [assurance provisions](ASSURANCE_PROVISIONS.md) give a
+concrete example and the evidence to retain.
 
 ## Core Truth
 
-Formal verification can prove: "If this code is called correctly, in a single-threaded context, on a perfectly functioning machine, with a correct specification — then the property holds."
+Formal verification establishes stated properties under explicit assumptions
+about a model or implementation. Its scope depends on the verification method
+and evidence. A conforming implementation can faithfully implement a wrong or
+incomplete specification; a correct specification can also have a nonconforming
+implementation.
 
-What it **cannot** guarantee: that any of those preconditions actually hold in production.
+Review separately whether assumptions hold in production. A TLC pass applies to
+the configured model, enabled properties and exploration performed; it does not
+alone establish all intended requirements, unrestricted system sizes, or code
+correctness. TLA+ supports refinement reasoning, and additional implementation
+verification can connect code to a spec. Identify that evidence rather than
+assuming it from model checking.
 
 ---
 
@@ -35,13 +49,18 @@ This proof guarantees that money is conserved **in the model**. But the model is
 
 The code is a correct implementation of an **imperfect specification**. The proof is mathematically sound but practically misleading.
 
-**Lesson**: Verify critical invariants, not entire application logic. Formal proofs shine for small, well-specified kernels (cryptographic primitives, memory allocators, schedulers) — not for business rules.
+**Lesson**: Review whether the properties capture the intended business rules
+and failure modes. Proof of a conservation invariant alone does not establish
+all transfer requirements. Choose a verification scope whose assumptions and
+coverage can be reviewed.
 
 ---
 
-### 2. Concurrency Is Not Modeled
+### 2. A Sequential Proof Does Not Establish Concurrent Behavior
 
-`requires` and `ensures` prove sequential correctness. Multi-threaded execution bypasses all guarantees.
+A sequential function-contract argument does not automatically cover interference
+from other threads. Concurrency can be modeled and verified, but requires
+appropriate state, atomicity, interleaving and fairness assumptions.
 
 **Example:**
 
@@ -67,7 +86,9 @@ In reality:
 
 The formal proof covered Thread A's execution perfectly. The concurrent scenario was never verified.
 
-**Lesson**: Formal verification + concurrency = unsafe. Layer concurrency controls *outside* verified code (locks, atomic operations, message queues) and keep the verified region single-threaded.
+**Lesson**: Review synchronization and concurrent behavior explicitly. TLA+
+models can check concurrent protocols; connecting them to the implementation
+requires conformance evidence. Sequential function results alone do not supply it.
 
 ---
 
@@ -178,16 +199,16 @@ Formal verification works best on:
 - Verify **small, critical kernels**: cryptographic primitives, memory allocators, schedulers, consensus protocols.
 - Write **tight, realistic specifications**: the spec should reflect what actually matters.
 - **Pair verification with testing**: proofs prove the model; tests probe reality.
-- **Keep the verified region single-threaded**: handle concurrency outside the proof boundary.
+- **Model interference explicitly** when claiming concurrent properties; otherwise keep the claim scoped to the sequential context.
 - **Defend the hardware**: checksums, parity, watchdog timers, redundancy.
 - **Document assumptions**: list everything the proof assumes and where it might break.
 
 ### ❌ Don't
 
-- Verify entire applications. (Proofs are expensive; focus on the kernel.)
+- Claim application-wide verification from a proof of one kernel or model.
 - Trust the spec without reality-checking it. (Walk through production failure modes.)
 - Claim "mathematically guaranteed safety" in marketing. (You've proven the model, not the world.)
-- Ignore concurrency. (Formal proofs are sequential by default.)
+- Infer concurrent correctness from an argument that only models sequential execution.
 - Skip testing integration points. (This is where bugs actually live.)
 - Assume the proof prevents human error. (Configuration, deployment, and operational mistakes still happen.)
 
@@ -199,9 +220,9 @@ Resilient offers `requires` and `ensures` annotations to enable **targeted forma
 
 - ✓ Memory safety: enforced by the type system and borrow checker.
 - ✓ Type safety: enforced at compile time.
-- ✓ Formal properties of individual functions: proven via `requires`/`ensures` (with the caveats above).
+- ✓ Supported function obligations: use actually discharged verifier results for the identified source and configuration, with the caveats above.
 - ✗ Whole-program safety: not guaranteed.
-- ✗ Concurrency safety: not covered by proofs (use language-level concurrency primitives).
+- ✗ Whole-system concurrency safety: not established by sequential contracts alone; review the concurrent model and implementation evidence.
 - ✗ Hardware faults: not modeled (use external defenses).
 
 Use Resilient's formal capabilities wisely: as one tool among many (testing, code review, monitoring, redundancy) in building reliable systems.

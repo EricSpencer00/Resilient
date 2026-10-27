@@ -1,16 +1,15 @@
 //! Feature 11/50 — Anti-Regression Contracts.
 //!
 //! `#[stable(since = "1.0", behavior = "<digest>")]` marks a function
-//! whose observable behavior is locked-in across versions. The
+//! whose fingerprinted declarations are checked across versions. The
 //! `behavior` argument is a fingerprint digest produced by
 //! `crate::behavioral_fingerprint`; if the current digest of the
 //! function diverges from the recorded one, the build fails.
 //!
-//! This is the direct CI-enforceable answer to "make sure my
-//! vibe-coded app doesn't break after refactoring": once a function
-//! has a `#[stable]` tag, every subsequent edit must preserve its
-//! behavior or explicitly bump the digest (with a follow-up that
-//! confirms the change is intentional and acceptable).
+//! A `#[stable]` tag detects changes to the fingerprinted surface and
+//! requires an explicit digest update. It does not prove that arbitrary
+//! body changes preserve behavior or that a specification is adequate;
+//! review and execution-based regression evidence remain necessary.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
