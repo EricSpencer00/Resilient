@@ -154,7 +154,7 @@ For another function, save its emitted source to `Generated.lean`, build the
 library, then run `lake env lean /absolute/path/to/Generated.lean` from
 `resilient/lean-spec/`. Merely placing a file in a `Generated/` directory and
 running `lake build` does not show that it was checked: the default library
-root imports only `AST`, `Semantics`, and `Theorems`.
+root imports the checked-in model modules, not arbitrary generated files.
 
 ## What a function must look like to lower
 
