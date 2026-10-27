@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # sync-integration.sh
 #
-# Rebase the current branch onto `origin/main`, then push that rebased
+# Fleet workspaces verify their registered submission against current main
+# without direct pushes. Legacy workspaces rebase onto `origin/main`, then push that rebased
 # branch back into `agents/integration` via a fast-forward (keeping the
 # tracking branch in sync with shipped work).
 #
@@ -37,12 +38,16 @@ cd "$REPO_ROOT"
 PR=""
 PUSH=1
 INTEGRATION_REF="agents/integration"
+EXPECTED_BASE=""
+EXPECTED_HEAD=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr) PR="$2"; shift 2 ;;
         --no-push) PUSH=0; shift ;;
         --integration) INTEGRATION_REF="$2"; shift 2 ;;
+        --expected-base) EXPECTED_BASE="$2"; shift 2 ;;
+        --expected-head) EXPECTED_HEAD="$2"; shift 2 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
@@ -59,6 +64,38 @@ fi
 
 if [[ -z "$PR" ]]; then
     PR="$(github_rest_find_open_pr "$branch" 2>/dev/null || true)"
+fi
+
+MODE="$(python3 "$SCRIPT_DIR/fleet-integration-check.py" --mode)"
+if [[ "$MODE" == "fleet" ]]; then
+    if [[ -z "$PR" || "$PR" == "null" || "$INTEGRATION_REF" != "agents/integration" ]]; then
+        echo "refuse: fleet integration requires --pr and the default integration route" >&2
+        exit 2
+    fi
+    VERIFY_ARGUMENTS=(--pr "$PR")
+    if [[ -n "$EXPECTED_BASE" || -n "$EXPECTED_HEAD" ]]; then
+        if [[ -z "$EXPECTED_BASE" || -z "$EXPECTED_HEAD" ]]; then
+            echo "refuse: both expected commit IDs are required" >&2
+            exit 2
+        fi
+        VERIFY_ARGUMENTS+=(--expected-base "$EXPECTED_BASE" --expected-head "$EXPECTED_HEAD")
+    fi
+    EVIDENCE="$(python3 "$SCRIPT_DIR/fleet-integration-check.py" "${VERIFY_ARGUMENTS[@]}")"
+    echo "Fleet integration verified: $EVIDENCE"
+    if (( PUSH == 0 )); then
+        echo "(--no-push) verification only; labels unchanged"
+        exit 0
+    fi
+    github_add_pr_label "$PR" "integration-synced" "0E8A16" \
+        "PR integration verified through the configured integration route" >/dev/null
+    github_comment_pr "$PR" "Fleet integration verified against current main with a matching clean workspace tree. No direct Git push was used. Evidence: \`$EVIDENCE\`" >/dev/null
+    echo "sync complete (fleet; no direct code push)"
+    exit 0
+fi
+
+if [[ -n "$EXPECTED_BASE" || -n "$EXPECTED_HEAD" ]]; then
+    echo "refuse: expected fleet verification context cannot use legacy integration" >&2
+    exit 2
 fi
 
 echo "Syncing $branch against origin/main (tracking via $INTEGRATION_REF)"
