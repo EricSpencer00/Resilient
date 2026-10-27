@@ -1,0 +1,24 @@
+{
+  "profile": "vm-i64-wrap-v1",
+  "status": "independent read-only technical review passed",
+  "source_scope": "Four import-free, single i64-input identity functions returning x with ensures result == x; no faulting arithmetic or side effects.",
+  "formula_review": "Each session negates conjunction of true arithmetic definedness, true entry premise implying path definedness, and true entry premise implying domain => x == x. Domain appears twice and its ordered Boolean tree is retained.",
+  "families": {
+    "straight": "One unrestricted entry path.",
+    "if_else": "Signed x >= 0 then path and its complement.",
+    "early_fallthrough": "Same two signed domains, early return followed by fallthrough.",
+    "first_match_guarded": "Ordered pattern zero with signed guard, pattern one excluding the complete first guarded pattern, default excluding both prior patterns; retain true/false factors."
+  },
+  "reuse": "qualification/proof-coverage/reviews/40065217486/review.md and proof_coverage_audit.rs actual_bv_commands settle the two-path BV identity template.",
+  "limits": "Manual descriptor completeness and applicability require review; identity matches do not establish general source-to-SMT correctness or implementation conformance.",
+  "reviewer_kind": "independent automated agent; not external qualification or maintainer approval",
+  "checker_sha256": "5f30c771c36599111e960eaeee991b9555a7229d3e9300520c9f917d790da33a",
+  "descriptor_sha256": {
+    "bv_early_fallthrough.json": "17ec1cf44391ef6823cda79002eaad3c63cb82332aea0289d1998110664a091a",
+    "bv_first_match_guarded.json": "3d265d37eef5e3762787dde67292e51de07f5e4c779688673471588eb76f7f11",
+    "bv_if_else.json": "70c5ffc8c46b635b2a18b6b391daf3345438ebf64bca30fa2fe8cec1a60c8500",
+    "bv_straight.json": "3901035283e4cc74215393153c8d10a2361372817d1a9998b988940f4ed3fa12"
+  },
+  "review_disposition": "Source domains, ordered exclusions, true definedness/entry factors and x == x return goals checked against all four source families. Legacy fixtures, authentication, lexical scope and structural strictness preserved.",
+  "execution_evidence": "All 21 approved live-certificate tests passed in isolated NUC run; evidence bundle checksum 55f5eab803d483b6593209dea18377ec027a00c95b3c1afeab48e2f192a0521a. This observation is scoped to that source snapshot and compiler/solver identities retained by the run."
+}

@@ -15,6 +15,7 @@ import threading
 import time
 
 PROFILE = 'legacy-lia-identity-v1'
+BV_PROFILE = 'vm-i64-wrap-v1'
 DEPENDENCY_SHA256 = 'de839e6f5a2f108421aef147cf64830cfd179d65883b1ff79e1efe59588aab62'
 
 
@@ -109,6 +110,42 @@ def reference(entry):
     return entry['fn'], entry['kind'], entry['idx']
 
 
+def bv_commands(path):
+    """Reviewed identity template; no algebraic or Boolean normalization."""
+    remaining = 256
+    def domain(node, depth=0):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 32:
+            return False
+        if isinstance(node, str):
+            return node in ('true', 'false')
+        if not isinstance(node, list) or not node:
+            return False
+        operator = node[0]
+        if operator in ('and', 'or') and len(node) >= 2:
+            return all(domain(child, depth + 1) for child in node[1:])
+        if operator == 'not' and len(node) == 2:
+            return domain(node[1], depth + 1)
+        if operator in ('=', 'bvsge') and len(node) == 3:
+            literal = node[2]
+            return (node[1] == 'x' and isinstance(literal, str)
+                    and len(literal) == 18 and literal.startswith('#x')
+                    and all(char in '0123456789abcdef' for char in literal[2:]))
+        return False
+
+    guard = path.get('domain')
+    if not domain(guard):
+        core.reject('binding', 'invalid_descriptor', 'unreviewed BV identity domain')
+    goal = ['=', 'x', 'x']
+    claim = ['and', 'true',
+             ['=>', 'true', ['and', 'true', ['=>', guard, 'true']]],
+             ['=>', 'true', ['=>', guard, goal]]]
+    return [['set-logic', 'QF_BV'],
+            ['declare-fun', 'x', [], ['_', 'BitVec', '64']],
+            ['assert', ['not', claim]], ['check-sat']]
+
+
 def descriptor(args):
     raw = core.read(args.descriptor)
     if core.digest(raw) != args.descriptor_sha256:
@@ -117,8 +154,8 @@ def descriptor(args):
     if (not isinstance(value, dict) or value.get('schema') != 'resilient-structural-source-checkpoints'
             or type(value.get('version')) is not int or value['version'] != 1):
         core.reject('binding', 'invalid_descriptor', 'unsupported descriptor schema/version')
-    if args.profile != PROFILE or value.get('profile') != PROFILE:
-        core.reject('binding', 'unsupported_profile', 'only explicit legacy-LIA identity checkpoints are supported')
+    if args.profile not in (PROFILE, BV_PROFILE) or value.get('profile') != args.profile:
+        core.reject('binding', 'unsupported_profile', 'explicit matching reviewed identity profile required')
     source = value.get('source')
     if (not isinstance(source, dict) or not isinstance(source.get('path'), str)
             or Path(source['path']).name != source['path'] or not source['path'].endswith('.rz')
@@ -145,6 +182,8 @@ def descriptor(args):
         commands = path.get('commands')
         if not isinstance(commands, list):
             core.reject('binding', 'invalid_descriptor', 'missing exact command checkpoint')
+        if args.profile == BV_PROFILE and commands != bv_commands(path):
+            core.reject('binding', 'invalid_descriptor', 'BV domain/return command checkpoint fields disagree')
         encoded = ('\n'.join(core.render(command) for command in commands) + '\n').encode()
         if len(encoded) > core.MAX_QUERY or core.sexpressions(encoded) != commands:
             core.reject('binding', 'invalid_descriptor', 'invalid command checkpoint')
@@ -152,6 +191,8 @@ def descriptor(args):
         goal = path.get('postcondition_after_substitution')
         if path.get('returned_value') != 'x' or goal != ['=', 'x', 'x']:
             core.reject('binding', 'invalid_descriptor', 'only the reviewed identity-return goal is supported')
+        if args.profile == BV_PROFILE:
+            continue
         if path['id'] != 'entry' or path.get('domain') != 'true':
             prefix.append(['assert', path.get('domain')])
         expected = prefix + [['assert', ['not', goal]], ['check-sat']]
@@ -251,7 +292,7 @@ def audit(args, state):
         fail('input_changed', 'reviewed dependency changed during audit')
     checker_hash = core.digest(core.read(Path(__file__).resolve()))
     budget()
-    return {'stage': 'structure', 'code': 'matched', 'authenticated': True, 'profile': PROFILE,
+    return {'stage': 'structure', 'code': 'matched', 'authenticated': True, 'profile': args.profile,
             'claim': 'only supplied source-authored structural checkpoints; not automatic source enumeration, runtime reachability or full translation proof',
             'descriptor_sha256': args.descriptor_sha256, 'source_sha256': source['sha256'],
             'qualified_declaration': expected['qualified_declaration'], 'clause': expected['clause'],

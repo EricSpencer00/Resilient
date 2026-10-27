@@ -1,0 +1,206 @@
+{
+  "schema": "resilient-structural-source-checkpoints",
+  "version": 1,
+  "profile": "vm-i64-wrap-v1",
+  "source": {
+    "path": "program.rz",
+    "sha256": "cdf18fcffa19bdfa05a0a69ed9faa8c9c90356b33d184fa784f44cb2246bb797",
+    "bytes": 92
+  },
+  "qualified_declaration": "program::identity",
+  "clause": 0,
+  "paths": [
+    {
+      "id": "early-return",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 0
+      },
+      "domain": [
+        "and",
+        [
+          "bvsge",
+          "x",
+          "#x0000000000000000"
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "QF_BV"
+        ],
+        [
+          "declare-fun",
+          "x",
+          [],
+          [
+            "_",
+            "BitVec",
+            "64"
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "and",
+              "true",
+              [
+                "=>",
+                "true",
+                [
+                  "and",
+                  "true",
+                  [
+                    "=>",
+                    [
+                      "and",
+                      [
+                        "bvsge",
+                        "x",
+                        "#x0000000000000000"
+                      ]
+                    ],
+                    "true"
+                  ]
+                ]
+              ],
+              [
+                "=>",
+                "true",
+                [
+                  "=>",
+                  [
+                    "and",
+                    [
+                      "bvsge",
+                      "x",
+                      "#x0000000000000000"
+                    ]
+                  ],
+                  [
+                    "=",
+                    "x",
+                    "x"
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    },
+    {
+      "id": "fallthrough",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 1
+      },
+      "domain": [
+        "and",
+        [
+          "not",
+          [
+            "bvsge",
+            "x",
+            "#x0000000000000000"
+          ]
+        ]
+      ],
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "QF_BV"
+        ],
+        [
+          "declare-fun",
+          "x",
+          [],
+          [
+            "_",
+            "BitVec",
+            "64"
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "and",
+              "true",
+              [
+                "=>",
+                "true",
+                [
+                  "and",
+                  "true",
+                  [
+                    "=>",
+                    [
+                      "and",
+                      [
+                        "not",
+                        [
+                          "bvsge",
+                          "x",
+                          "#x0000000000000000"
+                        ]
+                      ]
+                    ],
+                    "true"
+                  ]
+                ]
+              ],
+              [
+                "=>",
+                "true",
+                [
+                  "=>",
+                  [
+                    "and",
+                    [
+                      "not",
+                      [
+                        "bvsge",
+                        "x",
+                        "#x0000000000000000"
+                      ]
+                    ]
+                  ],
+                  [
+                    "=",
+                    "x",
+                    "x"
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    }
+  ],
+  "claim": "Manually source-authored i64 identity checkpoints. Exact command/Boolean/guard order with lexical-let expansion only. No general arithmetic, automatic source enumeration, solver-equivalence acceptance, backend conformance or qualification claim."
+}
