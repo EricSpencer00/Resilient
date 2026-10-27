@@ -329,7 +329,7 @@ $ rz --vibe-gate 0.3 my_module.rz
 For each top-level function, `vibe_debt` scores 4 boolean signals —
 has a `requires`, has an `ensures`, is referenced elsewhere in the
 program, carries a `pure`/`@pure` annotation — and reports
-`1 - (sum_score / (4 * fn_count))` as the program's debt percentage.
+`1 - (sum_score / (4 * fn_count))` as the gate's debt fraction.
 These are annotation/reference signals, not a measure of how much code is
 proved correct. A call reference does not establish test execution, and a
 contract declaration does not establish an adequate or verified contract.
