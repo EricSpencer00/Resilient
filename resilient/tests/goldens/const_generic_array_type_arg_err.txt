@@ -1,6 +1,6 @@
 exit=1
-<tmp>.rz:0:0: warning[resilience]: `sum3` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
-<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[resilience]: `sum3` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
 <tmp>.rz:0:0: warning[contract_infer]: `sum3` — inferred suggestion: requires len(v) > 0
 mutation: 20 total mutation site(s) across 2 function(s)
 mutation:   `main`: 9 site(s) [literal]
