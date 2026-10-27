@@ -12,7 +12,9 @@ file-claims + extension-point system introduced in PR #230.
 | `release-claims.sh` | Release claims (called by CI on PR close) |
 | `reconcile-integration.sh` | Safely reconcile `agents/integration` after squash merges |
 | `test-reconcile-integration.sh` | Exercise integration-ref reconciliation states locally and in CI |
-| `test-sync-integration.sh` | Exercise integration push success, retry, and exhausted-retry paths |
+| `test-sync-integration.sh` | Exercise legacy integration push success, retry, and exhausted-retry paths |
+| `fleet-integration-check.py` | Verify a registered fleet PR against current main and the clean local tree without code pushes |
+| `test_fleet_integration.py` | Exercise fleet readiness, stale/racing metadata, overlap checks and refusal paths using local bare Git fixtures |
 | `pick-ticket.sh` | Select the next `agent-ready` ticket by priority / roadmap order, skipping open PR claims |
 | `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket, then record inferred file claims |
 | `agent-handoff.sh` | Post resumable PR handoff comments when model context is lost |
@@ -20,9 +22,44 @@ file-claims + extension-point system introduced in PR #230.
 | `clear-approval-holds.sh` | Clear the `action_required` bot-approval hold on ready PRs (close+reopen) so no human ever clicks "Approve and run" |
 | `agent-status.sh` | One-screen or JSON view of worktrees, open PRs, queue health, claims, and the next ticket |
 | **`verify-scope.sh`** | Guardrail: diff-shape + fmt + clippy + test + overlap, writes JSON report |
-| **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready, labels `agent-vetted`, and adds `Closes #N` only on green |
+| **`ready-or-bail.sh`** | Runs the full scope and integration checks; marks PR ready and labels `agent-vetted` only on green; preserves explicit `Closes #N` intent |
 | **`orchestrator.sh`** | The grand loop: pick → dispatch → sub-agent → ready-or-bail |
 | **`ralph-loop.sh`** | The reusable open-ended improvement loop, preloaded with the Ralph prompt |
+
+## Fleet integration
+
+Submit shared-repository code through `fleet checkout`, commit and
+`fleet submit`. Then run `ready-or-bail.sh --pr N` for the returned PR.
+The fleet route needs neither an `origin` remote nor direct Git pushes.
+
+It verifies the workspace lease and registered changeset, trusted
+same-repository PR ownership, current-main ancestry, and equality between
+the committed PR tree and the clean workspace. Head and base metadata are
+checked again before integration is accepted. Missing tools or uncertain
+metadata fail closed. The verifier uses a dedicated `fleet-verified` fetch
+remote and refuses to overwrite a conflicting remote configuration. Readiness
+requires fresh, valid claims and open-PR metadata containing the submitted head;
+a failed lookup cannot be interpreted as an empty overlap set. A canonical project checkout without a valid fleet
+lease cannot fall back to legacy direct pushing, including when transport
+rewrites or SSH host aliases are configured.
+
+The verified base/head IDs feed the existing substantive-diff, formatting,
+lint, test and overlap checks. Fleet metadata does not waive those checks or
+required hosted CI. If main advances or the submitted tree differs, sync and
+resubmit through fleet before retrying. `sync-integration.sh --no-push --pr N`
+performs verification without stamping labels. Legacy integration behavior
+remains available for unregistered remotes.
+
+The fleet regression driver is included in the local scope guardrail and can
+also be run independently:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 agent-scripts/test_fleet_integration.py -v
+```
+
+Its Git repositories, tool responses and mutation logs are isolated fixtures;
+it does not contact GitHub or fleet, disable production hooks, or push shared
+repository code. No CI workflow definition is changed by this route.
 
 ## Four-layer guardrail architecture
 

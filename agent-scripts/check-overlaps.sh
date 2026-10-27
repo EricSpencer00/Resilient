@@ -27,13 +27,20 @@ cd "$REPO_ROOT"
 # a local copy that may be stale or absent on a brand-new branch.
 CLAIMS_FILE="$(mktemp)"
 trap 'rm -f "$CLAIMS_FILE"' EXIT
-claims_fetch_base "$CLAIMS_FILE"
+if ! claims_fetch_base "$CLAIMS_FILE"; then
+  exit 2
+fi
 
 FILES_TO_CHECK=()
 CHECK_MODE="files"
+BASE_REF="origin/main"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --base)
+      BASE_REF="$2"
+      shift 2
+      ;;
     --pr-files)
       CHECK_MODE="pr-files"
       BRANCH="${2:-}"
@@ -51,9 +58,13 @@ if [ "$CHECK_MODE" = "pr-files" ]; then
     echo "ERROR: --pr-files requires a branch name" >&2
     exit 1
   fi
+  if ! PR_FILES="$(git diff --name-only "${BASE_REF}...${BRANCH}" -- 2>/dev/null)"; then
+    echo "ERROR: could not derive overlap scope from base/head" >&2
+    exit 2
+  fi
   while IFS= read -r file; do
     [ -n "$file" ] && FILES_TO_CHECK+=("$file")
-  done < <(git diff --name-only "origin/main...${BRANCH}" 2>/dev/null || true)
+  done <<< "$PR_FILES"
 fi
 
 if [ ${#FILES_TO_CHECK[@]} -eq 0 ]; then
@@ -84,9 +95,45 @@ if [ "$CHECK_MODE" = "pr-files" ]; then
 fi
 
 # 1. Check GitHub open PRs
+if [ -n "${AGENT_EXPECTED_PR:-}" ] && ! command -v gh &>/dev/null; then
+  echo "ERROR: open PR metadata tool unavailable" >&2
+  exit 2
+fi
 OPEN_PR_BRANCHES=""
 if command -v gh &>/dev/null; then
-  PR_JSON=$(gh pr list --state open --json number,headRefName,headRefOid,files 2>/dev/null || echo "[]")
+  if ! PR_JSON=$(gh pr list --state open --limit 1000 --json number,headRefName,headRefOid,files 2>/dev/null); then
+    echo "ERROR: open PR metadata unavailable" >&2
+    exit 2
+  fi
+  if ! printf '%s' "$PR_JSON" | python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+    valid=isinstance(data,list) and len(data)<1000 and all(
+        isinstance(pr,dict) and isinstance(pr.get("number"),int)
+        and isinstance(pr.get("headRefName"),str) and isinstance(pr.get("headRefOid"),str)
+        and isinstance(pr.get("files"),list)
+        and all(isinstance(f,dict) and isinstance(f.get("path"),str) for f in pr["files"])
+        for pr in data)
+except (ValueError,TypeError):
+    valid=False
+sys.exit(0 if valid else 1)
+'; then
+    echo "ERROR: invalid open PR metadata" >&2
+    exit 2
+  fi
+  if [ -n "${AGENT_EXPECTED_PR:-}" ]; then
+    if ! printf '%s' "$PR_JSON" | python3 -c '
+import json,sys
+items=json.load(sys.stdin)
+expected=int(sys.argv[1])
+head=sys.argv[2]
+sys.exit(0 if any(item["number"]==expected and item["headRefOid"]==head for item in items) else 1)
+' "$AGENT_EXPECTED_PR" "$SELF_SHA"; then
+      echo "ERROR: expected PR head missing from overlap metadata" >&2
+      exit 2
+    fi
+  fi
   # If SELF_BRANCH didn't resolve to anything in the gh json, try to
   # match by SHA — when the caller passed a sha or `HEAD`, that's the
   # only way to find the matching PR.
@@ -138,7 +185,8 @@ fi
 # auto-cleaned when the merge workflow runs release-claims.sh, but
 # we don't want stale claims from already-merged branches blocking
 # unrelated work indefinitely).
-python3 - "$CLAIMS_FILE" "$SELF_BRANCH" "$OPEN_PR_BRANCHES" "${FILES_TO_CHECK[@]}" <<'PYEOF'
+CLAIMS_EXIT=0
+python3 - "$CLAIMS_FILE" "$SELF_BRANCH" "$OPEN_PR_BRANCHES" "${FILES_TO_CHECK[@]}" <<'PYEOF' || CLAIMS_EXIT=$?
 import sys, json
 
 claims_file = sys.argv[1]
@@ -147,12 +195,21 @@ open_branches = set(filter(None, sys.argv[3].splitlines()))
 files_to_check = sys.argv[4:]
 found = False
 
-with open(claims_file) as f:
-    data = json.load(f)
+try:
+    with open(claims_file) as f:
+        data = json.load(f)
+    if not isinstance(data,dict) or not isinstance(data.get("claims"),dict):
+        raise ValueError("invalid claims object")
+    for c in data["claims"].values():
+        if not isinstance(c,dict) or not isinstance(c.get("branch"),str) or not isinstance(c.get("claimed_at"),str):
+            raise ValueError("invalid claim entry")
+except (OSError,ValueError,TypeError):
+    print("ERROR: invalid claims metadata", file=sys.stderr)
+    sys.exit(2)
 
 for file in files_to_check:
-    c = data.get("claims", {}).get(file)
-    if not c:
+    c = data["claims"].get(file)
+    if c is None:
         continue
     branch = c["branch"]
     # Self-claims aren't conflicts.
@@ -170,8 +227,10 @@ for file in files_to_check:
 
 sys.exit(1 if found else 0)
 PYEOF
-CLAIMS_EXIT=$?
-[ $CLAIMS_EXIT -ne 0 ] && CONFLICTS_FOUND=1
+if [ "$CLAIMS_EXIT" -gt 1 ]; then
+  exit 2
+fi
+[ "$CLAIMS_EXIT" -ne 0 ] && CONFLICTS_FOUND=1
 
 echo
 if [ $CONFLICTS_FOUND -eq 0 ]; then

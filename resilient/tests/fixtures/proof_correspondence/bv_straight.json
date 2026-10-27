@@ -1,0 +1,85 @@
+{
+  "schema": "resilient-structural-source-checkpoints",
+  "version": 1,
+  "profile": "vm-i64-wrap-v1",
+  "source": {
+    "path": "program.rz",
+    "sha256": "527159883e8af9699d7fdbef01e27fbf027b7e777a3ee31c106cbac573b370c2",
+    "bytes": 60
+  },
+  "qualified_declaration": "program::identity",
+  "clause": 0,
+  "paths": [
+    {
+      "id": "entry",
+      "obligation": {
+        "fn": "identity:ensures:0",
+        "kind": "ensures_implementation",
+        "idx": 0
+      },
+      "domain": "true",
+      "returned_value": "x",
+      "postcondition_after_substitution": [
+        "=",
+        "x",
+        "x"
+      ],
+      "commands": [
+        [
+          "set-logic",
+          "QF_BV"
+        ],
+        [
+          "declare-fun",
+          "x",
+          [],
+          [
+            "_",
+            "BitVec",
+            "64"
+          ]
+        ],
+        [
+          "assert",
+          [
+            "not",
+            [
+              "and",
+              "true",
+              [
+                "=>",
+                "true",
+                [
+                  "and",
+                  "true",
+                  [
+                    "=>",
+                    "true",
+                    "true"
+                  ]
+                ]
+              ],
+              [
+                "=>",
+                "true",
+                [
+                  "=>",
+                  "true",
+                  [
+                    "=",
+                    "x",
+                    "x"
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          "check-sat"
+        ]
+      ]
+    }
+  ],
+  "claim": "Manually source-authored i64 identity checkpoints. Exact command/Boolean/guard order with lexical-let expansion only. No general arithmetic, automatic source enumeration, solver-equivalence acceptance, backend conformance or qualification claim."
+}

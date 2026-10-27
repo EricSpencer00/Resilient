@@ -69,11 +69,30 @@ claims_fetch_base() {
   remote="$(claims_remote_name)"
   ref="$(claims_ref_name)"
 
-  git fetch -q "$remote" "+refs/heads/${ref}:refs/remotes/${remote}/${ref}" >/dev/null 2>&1 || true
+  if ! git fetch -q "$remote" "+refs/heads/${ref}:refs/remotes/${remote}/${ref}" >/dev/null 2>&1; then
+    if [[ "${AGENT_CLAIMS_STRICT:-0}" == "1" ]]; then
+      local available
+      if ! available="$(git ls-remote --heads "$remote" "refs/heads/$ref" 2>/dev/null)"; then
+        echo "ERROR: fresh claims metadata unavailable" >&2
+        return 1
+      fi
+      if [[ -n "$available" ]]; then
+        echo "ERROR: could not fetch current claims metadata" >&2
+        return 1
+      fi
+      CLAIMS_BASE_SHA=""
+      printf '{"claims": {}}' > "$out_file"
+      return 0
+    fi
+  fi
 
   if git rev-parse -q --verify "refs/remotes/${remote}/${ref}" >/dev/null 2>&1; then
     CLAIMS_BASE_SHA="$(git rev-parse "refs/remotes/${remote}/${ref}")"
     if ! git show "${CLAIMS_BASE_SHA}:file-claims.json" > "$out_file" 2>/dev/null; then
+      if [[ "${AGENT_CLAIMS_STRICT:-0}" == "1" ]]; then
+        echo "ERROR: current claims registry missing" >&2
+        return 1
+      fi
       printf '{"claims": {}}' > "$out_file"
     fi
   else

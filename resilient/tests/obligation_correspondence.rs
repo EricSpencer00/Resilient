@@ -23,6 +23,20 @@ fn render(node: &Value) -> String {
         node.as_str().unwrap().into()
     }
 }
+fn substitute(node: &Value, before: &Value, after: &Value) -> Value {
+    if node == before {
+        after.clone()
+    } else if let Some(items) = node.as_array() {
+        Value::Array(
+            items
+                .iter()
+                .map(|item| substitute(item, before, after))
+                .collect(),
+        )
+    } else {
+        node.clone()
+    }
+}
 struct Fixture {
     root: PathBuf,
     key: SigningKey,
@@ -33,10 +47,9 @@ impl Fixture {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let data =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proof_correspondence");
-        let descriptor: Value = serde_json::from_slice(
-            &std::fs::read(data.join(format!("legacy_{name}.json"))).unwrap(),
-        )
-        .unwrap();
+        let descriptor: Value =
+            serde_json::from_slice(&std::fs::read(data.join(format!("bv_{name}.json"))).unwrap())
+                .unwrap();
         let root = std::env::temp_dir().join(format!(
             "structural_{}_{}",
             std::process::id(),
@@ -174,7 +187,7 @@ impl Fixture {
             .arg("--descriptor-sha256")
             .arg(hash(&descriptor_raw))
             .arg("--profile")
-            .arg("legacy-lia-identity-v1")
+            .arg(self.descriptor["profile"].as_str().unwrap())
             .arg("--build-profile")
             .arg("debug")
             .output()
@@ -225,7 +238,7 @@ fn actual_first_match_preserves_ordered_exclusion() {
 fn missing_guard_is_rejected_after_authentication() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
-    c.as_array_mut().unwrap().remove(2);
+    c[2] = substitute(&c[2], &f.descriptor["paths"][0]["domain"], &json!("true"));
     f.replace(0, &c);
     f.check("checkpoint_mismatch");
 }
@@ -280,7 +293,11 @@ fn extra_path_is_rejected_after_authentication() {
 fn missing_first_match_exclusion_is_rejected() {
     let f = Fixture::new("first_match_guarded");
     let mut c = f.commands(2);
-    c[2] = json!(["assert", "true"]);
+    c[2] = substitute(
+        &c[2],
+        &f.descriptor["paths"][2]["domain"][2],
+        &json!("true"),
+    );
     f.replace(2, &c);
     f.check("checkpoint_mismatch");
 }
@@ -288,7 +305,11 @@ fn missing_first_match_exclusion_is_rejected() {
 fn equivalent_return_expression_is_a_checkpoint_deviation() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
-    c[3] = json!(["assert", ["not", ["=", ["+", "x", "0"], "x"]]]);
+    c[2] = substitute(
+        &c[2],
+        &json!(["=", "x", "x"]),
+        &json!(["=", ["bvadd", "x", "#x0000000000000000"], "x"]),
+    );
     f.replace(0, &c);
     f.check("checkpoint_mismatch");
 }
@@ -306,9 +327,10 @@ fn extra_true_axiom_is_a_checkpoint_deviation() {
 fn parallel_let_values_use_outer_scope() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
+    let claim = substitute(&c[2][1], &json!("x"), &json!("saved"));
     c[2] = json!([
         "assert",
-        ["let", [["x", "0"], ["saved", "x"]], [">=", "saved", "0"]]
+        ["let", [["x", "#x0000000000000000"], ["saved", "x"]], claim]
     ]);
     f.replace(0, &c);
     f.check("matched");
@@ -317,12 +339,13 @@ fn parallel_let_values_use_outer_scope() {
 fn inner_shadow_does_not_capture_saved_free_input() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
+    let claim = substitute(&c[2][1], &json!("x"), &json!("saved"));
     c[2] = json!([
         "assert",
         [
             "let",
             [["saved", "x"]],
-            ["let", [["x", "0"]], [">=", "saved", "0"]]
+            ["let", [["x", "#x0000000000000000"]], claim]
         ]
     ]);
     f.replace(0, &c);
@@ -332,9 +355,10 @@ fn inner_shadow_does_not_capture_saved_free_input() {
 fn changed_let_binding_is_rejected() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
+    let claim = substitute(&c[2][1], &json!("x"), &json!("saved"));
     c[2] = json!([
         "assert",
-        ["let", [["saved", "0"], ["x", "x"]], [">=", "saved", "0"]]
+        ["let", [["saved", "#x0000000000000000"], ["x", "x"]], claim]
     ]);
     f.replace(0, &c);
     f.check("checkpoint_mismatch");
@@ -343,7 +367,8 @@ fn changed_let_binding_is_rejected() {
 fn quoted_identifier_alias_is_withheld_safely() {
     let f = Fixture::new("if_else");
     let mut c = f.commands(0);
-    c[2] = json!(["assert", ["let", [["|x|", "0"]], [">=", "x", "0"]]]);
+    let claim = c[2][1].clone();
+    c[2] = json!(["assert", ["let", [["|x|", "#x0000000000000000"]], claim]]);
     f.replace(0, &c);
     f.check("unsupported_identifier");
 }
