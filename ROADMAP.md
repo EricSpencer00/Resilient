@@ -66,7 +66,7 @@ time, commit it, and only then move the post.
 | **G20** | Self-hosting | 🟡 Both prerequisites closed: RES-323 (#115) shipped `self-host/lexer.rz` and RES-379 (#171) shipped `self-host/parser.rz`. The `self_host_parity` test gates the Rust front end against both. A self-hosted typechecker and back end remain. |
 | **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
 | **G22** | TLA+ model checking | ⏳ See the V2 ladder below for the full status — this goalpost lives there. |
-| **G23** | 50-feature vibe-coded-resilience pass | ✅ PR #1076 — 51 new compiler modules. `resilience_score`, `vibe_debt`, `behavioral_fingerprint`, `contract_inference`, `anti_regression`, and 46 more. See `MISSING_FEATURES.md`. |
+| **G23** | 50-feature assurance-signal pass | ✅ PR #1076 — 51 new compiler modules. `resilience_score`, `vibe_debt`, `behavioral_fingerprint`, `contract_inference`, `anti_regression`, and 46 more. See `MISSING_FEATURES.md`. |
 | **G24** | AI-aware type system | ✅ `ai_threat_model` — 10 detections (`OffByOne`, `MissedElse`, `SwallowedError`, `MagicNumber`, `CopyPasteBlock`, `UnboundedLoop`, `GhostHandler`, `HallucinatedIdent`, `NestedConditional`, `SilentSwallow`). `--ai-threats` CLI + `#[ai_review_required]` hard gate. First production language with an explicit threat model for its own contributors. See `docs/AI_THREAT_MODEL.md`. |
 | **G25** | Lean-proven operational semantics | ✅ `lean-spec/` Lake project + Rust emitter `lean_spec`. Four proven theorems (`eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive`). `--emit-lean-spec=FN` exports per-function theorems for downstream `lake build`. CompCert-class evidence bundle for safety-critical certification. See `docs/LEAN_SPEC.md`. |
 
@@ -131,7 +131,7 @@ changelog entry below.
   RES-383 FFI v1 security audit signed off (no CVEs).
   RES-392b per-prefix `recovers_to` BMC scaffolding.
 - 2026-05-09 — **G23 landed**: 50-feature pass (PR #1076). 51 new compiler modules covering the
-  full vibe-coded-resilience pipeline (`resilience_score`, `vibe_debt`, `behavioral_fingerprint`,
+  full assurance-signal pipeline (`resilience_score`, `vibe_debt`, `behavioral_fingerprint`,
   `contract_inference`, `semantic_regression`, `semver_behavior`, `blame_attribution`, `autopilot`,
   `crash_only_cert`, `intent_blocks`, `anti_regression`) plus type-system innovations, verification,
   embedded/hardware, concurrency, ecosystem, and ergonomics features. See `MISSING_FEATURES.md`

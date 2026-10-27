@@ -1,10 +1,10 @@
 ---
-title: "How-To: Make AI-Generated Code Provably Correct"
+title: "How-To: Build Evidence for Code Correctness"
 nav_order: 13
 permalink: /howto-provably-correct-ai-code
 ---
 
-# How to Make AI-Generated Code Provably Correct
+# How to Build Evidence for Code Correctness
 {: .no_toc }
 
 A task-oriented walkthrough of the RES-3780 verification stack: tag
@@ -12,6 +12,13 @@ AI-authored code for the audit trail, opt a module into mandatory
 contracts, bound its loops, and produce a portable proof artifact a
 downstream consumer can check without re-running the compiler.
 {: .fs-6 .fw-300 }
+
+Agent-written code can be excellent. The same assurance obligations apply to
+human-written code: validate requirements and assumptions, connect the model to
+the implementation, and check the properties that matter. A successful checker
+or certificate replay establishes a scoped result, not the completeness of a
+specification or correctness of an entire deployed system. Start with the
+[assurance provisions](ASSURANCE_PROVISIONS.md) for the evidence to retain.
 
 <details open markdown="block">
   <summary>Table of contents</summary>
@@ -321,8 +328,11 @@ $ rz --vibe-gate 0.3 my_module.rz
 
 For each top-level function, `vibe_debt` scores 4 boolean signals —
 has a `requires`, has an `ensures`, is referenced elsewhere in the
-program, carries a `pure`/`io`/`@pure` effect annotation — and reports
+program, carries a `pure`/`@pure` annotation — and reports
 `1 - (sum_score / (4 * fn_count))` as the program's debt percentage.
+These are annotation/reference signals, not a measure of how much code is
+proved correct. A call reference does not establish test execution, and a
+contract declaration does not establish an adequate or verified contract.
 The gate prints one line of JSON to stderr and sets the exit code:
 
 ```console
@@ -346,9 +356,9 @@ $ echo $?
 2
 ```
 
-(`add` scores 2/4 signals — `requires` and `ensures` present, but
-never called elsewhere and carries no effect annotation — and `main`
-scores 0/4, so the file-wide debt lands at 50%. A `// @requires` /
+(`add` scores 3/4 signals — `requires`, `ensures` and a call reference
+are present; `main` scores 1/4 because of the top-level call, so the
+file-wide debt lands at 50%. A `// @requires` /
 `// @ensures` *comment* does not count; only the real `requires`
 / `ensures` keywords do.)
 
