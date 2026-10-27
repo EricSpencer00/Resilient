@@ -55,3 +55,6 @@ frequency arithmetic, expiry counts, deferred callback delivery, interrupt
 interleavings, fairness, latency or hardware register behavior. The existing
 single-core/registry-access assumptions still apply. In particular, this work
 does not establish cancellation of callbacks already captured by a `tick`.
+
+Blocking delay ownership and fair progress are covered separately in the
+[timer delay model](TIMER_DELAY_MODEL.md).

@@ -25,6 +25,7 @@ pub(super) fn allocate(
         };
         *slot = TimerState {
             generation,
+            delay: super::delay::Phase::Idle,
             status: Status::Stopped,
             mode: config.mode,
             period_us,
@@ -36,6 +37,14 @@ pub(super) fn allocate(
         return Ok(TimerId((generation << INDEX_BITS) | index as u64));
     }
     Err(TimerError::Exhausted)
+}
+
+pub(super) fn slot(registry: &mut Registry, id: TimerId) -> Result<&mut TimerState, TimerError> {
+    registry
+        .slots
+        .get_mut(id.index() as usize)
+        .filter(|slot| slot.status != Status::Free && slot.generation == id.generation())
+        .ok_or(TimerError::InvalidId)
 }
 
 #[cfg(test)]
