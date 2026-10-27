@@ -1,8 +1,8 @@
 # Structural Enforcement — the Resilient trust model
 
-> **TL;DR.** The LLM is a *client* of the type system, not a participant in
-> the proof. Z3 and TLA+ are external deterministic solvers that don't
-> trust the LLM. The compiler — not the agent — enforces.
+> **Scope.** Code from any author is subject to compiler checks. Deterministic
+> verification tools check stated properties within a model; assurance also needs
+> evidence that the model captures requirements and the implementation conforms.
 
 This document answers a critique that came up publicly:
 
@@ -14,9 +14,11 @@ This document answers a critique that came up publicly:
 >
 > — [r/VibeCodersNest, 2026](https://www.reddit.com/r/VibeCodersNest/comments/1ssv8ih/)
 
-The framing is right: filtering ≠ safety, and structural unrepresentability
-is the goal. The framing is also incomplete — it conflates the *invariant
-checker* with the *invariant author*. Resilient separates the two.
+Separating the invariant checker from its author is useful, but does not close
+the specification gap. A correct checker can accept an incomplete or wrong
+specification. Agent-written code can be excellent, and human authorship offers
+no guarantee. See the [assurance provisions](ASSURANCE_PROVISIONS.md) for the
+requirements, conformance and check-coverage evidence to review.
 
 ## The boundary
 
@@ -31,7 +33,7 @@ checker* with the *invariant author*. Resilient separates the two.
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Inside the trust boundary (deterministic, audited)          │
+│  Trusted checking components (with assumptions)             │
 │                                                              │
 │   ┌────────────┐   ┌────────────┐   ┌──────────────────┐     │
 │   │  Compiler  │ + │  Z3 SMT    │ + │  TLA+ checker    │     │
@@ -47,12 +49,12 @@ checker* with the *invariant author*. Resilient separates the two.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The compiler **does not trust** anything written above the boundary. Every
-invariant the LLM asserts is re-derived: every `requires`/`ensures` is
-discharged by the typechecker (and Z3 when the predicate is symbolic),
-every linear-type usage is checked, every `recovers_to:` postcondition is
-re-proved. A self-consistent wrong claim from the LLM is **rejected** at
-the boundary the same way a wrong claim from a human would be.
+The compiler checks supported obligations using its configured analyses and
+optional verifier paths. The diagram is a trust-boundary sketch, not a claim
+that every annotation is proved in every configuration. A specification that
+contradicts its checked obligations may be rejected; one that omits an intended
+requirement can still pass. Compiler translation and backend correspondence
+need their own evidence, irrespective of the source's author.
 
 ## What's structural (compile-time, type-system-level)
 
@@ -64,15 +66,15 @@ the boundary the same way a wrong claim from a human would be.
 | Newtype nominal typing | adding `Meters` to `Seconds` | [resilient/src/newtypes.rs](../resilient/src/newtypes.rs), RES-319 |
 | Bounds-check obligations | unproven `arr[i]` under `--deny-unproven-bounds` | [resilient/src/bounds_check.rs](../resilient/src/bounds_check.rs), RES-351 |
 | Termination annotation | unbounded direct recursion under `--strict-termination` | [resilient/src/termination.rs](../resilient/src/termination.rs), RES-398 |
-| Spec-provenance lint (L0012) | LLM-invented invariants without a paper trail | [resilient/src/lint.rs](../resilient/src/lint.rs), RES-397 |
+| Spec-provenance lint (L0012) | Missing source comments on spec-bearing sites, regardless of author; default warning, opt-in denial | [resilient/src/lint.rs](../resilient/src/lint.rs), RES-397 |
 | `no_std` enforcement | heap allocation in the embedded runtime | `resilient-runtime/Cargo.toml` |
 
 ## What's external (deterministic verifiers we delegate to)
 
 | Solver | Role | Trust assumption |
 |---|---|---|
-| **Z3** | Discharges `requires`/`ensures`, loop invariants, bounds, recovery postconditions | We trust Z3's soundness as published; we don't trust the SMT-LIB query the LLM produced — the *compiler* produces the query from the typed AST. |
-| **TLA+** | Model-checks concurrent / distributed protocols | Same — we trust the checker; the spec it consumes is generated from Resilient source, not pasted from an LLM. |
+| **Z3** | Checks supported contract, invariant, bounds and recovery obligations when enabled | Solver correctness and the compiler's source-to-query translation are separate assumptions; a successful solver result alone does not establish translation correctness or obligation completeness. |
+| **TLA+ / TLC** | Expresses specifications / checks configured concurrent or distributed models | Review the spec, configuration, enabled properties and any translation to/from code. Generation from source alone does not establish model adequacy or conformance. |
 | **`cargo clippy`** | Lints the compiler itself | Standard Rust toolchain. |
 | **Embedded cross-compile gates** | Proves no-std / size / target-triple constraints | `thumbv7em-none-eabihf`, `thumbv6m-none-eabi`, `riscv32imac-unknown-none-elf`. |
 
@@ -81,24 +83,24 @@ the boundary the same way a wrong claim from a human would be.
 - The Resilient compiler. (Audited like any compiler. Self-hosting goal —
   see [RES-323](https://github.com/EricSpencer00/Resilient/issues/115) and
   [RES-379](https://github.com/EricSpencer00/Resilient/issues/171) — closes
-  the trust loop end-to-end once the bootstrap is complete.)
+  the bootstrap path; self-hosting alone does not establish compiler correctness.)
 - Z3 / TLA+ / the LLVM / Cranelift backends. Standard verifier and codegen
   infrastructure with decades of engineering behind them.
 - The Rust toolchain that hosts the compiler.
 
 ## What we explicitly do not trust
 
-- The LLM. Anything it writes — code, invariants, comments — passes
-  through the boundary. The verifier re-derives every safety claim.
+- Authorship as an assurance signal. Human- and agent-written code, invariants
+  and comments all need evidence; a verifier checks its supported obligations.
 - The user-supplied spec, *as a spec*. See the spec-provenance section
   below — a wrong-but-internally-consistent spec is provable and useless,
-  so we require provenance.
+  so provenance is a starting point, not validation of the spec.
 
 ## Spec provenance — the strongest version of the critique
 
 The Reddit critique's strongest claim is about **spec provenance**: if the
-LLM invents the invariant, a self-consistent wrong spec is provable and
-useless. This is a real gap. Our answer:
+author supplies an incomplete or wrong invariant, it may be provable while
+missing the intended requirement. Provenance supports review of this gap:
 
 1. **L0012** ([RES-397](https://github.com/EricSpencer00/Resilient/issues/327)):
    every spec-bearing site (`requires`, `ensures`, `recovers_to`, `fails`,
@@ -108,7 +110,8 @@ useless. This is a real gap. Our answer:
 2. **Acceptable sources** are *external* anchors: an RFC, a hardware
    manual, a paper, an internal design doc, or a deliberate "derived from
    <api-contract>". The point is that the invariant has a paper trail
-   independent of the LLM that wrote the surrounding code.
+   that reviewers can compare with the requirement. A paper trail does not
+   establish that the source is correct, applicable, or fully modeled.
 
 3. **Citation validation boundary**: today L0012 requires the source
    comment; a later hardening pass should also validate that the cited

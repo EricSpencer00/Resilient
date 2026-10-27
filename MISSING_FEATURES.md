@@ -32,15 +32,17 @@ All 51 modules below follow the feature-isolation pattern (`src/<name>.rs` + a s
 Each is a **first slice**: attribute parsing, registry, static analysis, tests. Follow-up
 PRs can deepen each one (full lowering, Z3 integration, runtime semantics).
 
-### Vibe-Coded Resilience — the flagship cluster
+### Assurance Signals — the resilience cluster
 
-The core answer to "I vibe-coded this app, how do I know it doesn't break?"
+Review aids for code from any author. Annotation and call-reference signals do
+not establish correctness; use the [assurance provisions](docs/ASSURANCE_PROVISIONS.md)
+to connect requirements, specification, implementation and checks.
 
 | Module | What it does |
 |--------|-------------|
-| `resilience_score` | Grades every function A–F across five buckets: contracts, effects, liveness, coverage, simplicity |
-| `vibe_debt` | Measures the gap between "what the programmer asserted" and "what the compiler could assert" |
-| `behavioral_fingerprint` | SipHash over contract signatures; detects silent behavioral drift between commits |
+| `resilience_score` | Grades weighted contract declarations, purity, `live` blocks, call references and body size |
+| `vibe_debt` | Counts missing contract, effect-annotation and call-reference signals; does not measure proof coverage |
+| `behavioral_fingerprint` | Hashes selected contract, signature and recovery metadata; detects changes to that surface, not arbitrary body behavior |
 | `contract_inference` | Infers `requires`/`ensures` from the function body (division-by-zero, index bounds, single-return) |
 | `semantic_regression` | Diffs contract counts and `fails` variants; flags any weakening as a hard error |
 | `semver_behavior` | Classifies a diff as MAJOR/MINOR/PATCH based on behavioral fingerprint + semantic regression |
