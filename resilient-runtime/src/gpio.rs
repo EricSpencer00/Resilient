@@ -552,6 +552,8 @@ mod tests {
     }
 
     static STATE: OnceLock<Mutex<MockState>> = OnceLock::new();
+    // Isolate complete mock register test sequences.
+    static TEST_SEQUENCE: Mutex<()> = Mutex::new(());
 
     fn lock() -> MutexGuard<'static, MockState> {
         STATE
@@ -562,10 +564,12 @@ mod tests {
 
     /// Zero out the mock state. Every test that uses the mock
     /// should call this first so tests are order-independent.
-    fn mock_reset() {
+    fn mock_reset() -> MutexGuard<'static, ()> {
+        let sequence = TEST_SEQUENCE.lock().unwrap_or_else(|p| p.into_inner());
         let mut g = lock();
         g.regs = [0; TOTAL_CELLS];
         g.input_levels = [[false; 16]; 8];
+        sequence
     }
 
     /// Drive the input level for the given port + pin. Subsequent
@@ -637,7 +641,7 @@ mod tests {
 
     #[test]
     fn invalid_pin_errors() {
-        mock_reset();
+        let _sequence = mock_reset();
         let err = gpio_output::<MockGpio>(Port::A, 16).unwrap_err();
         assert_eq!(err, GpioError::InvalidPin(16));
         let err = gpio_input::<MockGpio>(Port::A, 99).unwrap_err();
@@ -656,7 +660,7 @@ mod tests {
 
     #[test]
     fn output_set_high_writes_low_half_of_bsrr() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::B, 3).expect("valid pin");
         pin.set_high();
         let bsrr = read_mock_reg(Port::B, MockGpio::bsrr_offset());
@@ -669,7 +673,7 @@ mod tests {
 
     #[test]
     fn output_set_low_writes_upper_half_of_bsrr() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::B, 3).expect("valid pin");
         pin.set_low();
         let bsrr = read_mock_reg(Port::B, MockGpio::bsrr_offset());
@@ -682,7 +686,7 @@ mod tests {
 
     #[test]
     fn output_toggle_inverts_the_pin_via_odr() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::C, 7).expect("valid pin");
         // Start: ODR.7 = 0 (default after reset).
         pin.toggle();
@@ -697,7 +701,7 @@ mod tests {
 
     #[test]
     fn input_read_returns_driven_level() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_input::<MockGpio>(Port::D, 0).expect("valid pin");
         assert!(!pin.read(), "default low");
         mock_set_input_level(Port::D, 0, true);
@@ -709,7 +713,7 @@ mod tests {
     #[test]
     fn input_read_isolates_pins_within_port() {
         // Driving pin 0 must not affect pin 1, and vice versa.
-        mock_reset();
+        let _sequence = mock_reset();
         let p0 = gpio_input::<MockGpio>(Port::E, 0).expect("valid pin");
         let p1 = gpio_input::<MockGpio>(Port::E, 1).expect("valid pin");
         mock_set_input_level(Port::E, 0, true);
@@ -724,7 +728,7 @@ mod tests {
 
     #[test]
     fn typestate_transition_output_to_input() {
-        mock_reset();
+        let _sequence = mock_reset();
         let out = gpio_output::<MockGpio>(Port::A, 2).expect("valid pin");
         out.set_high();
         let inp: GpioPin<MockGpio, Input> = out.into_input();
@@ -736,7 +740,7 @@ mod tests {
 
     #[test]
     fn typestate_transition_input_to_output() {
-        mock_reset();
+        let _sequence = mock_reset();
         let inp = gpio_input::<MockGpio>(Port::F, 4).expect("valid pin");
         let out = inp.into_output();
         out.set_high();
@@ -748,7 +752,7 @@ mod tests {
 
     #[test]
     fn pin_handles_carry_port_and_pin_accessors() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::G, 11).expect("valid pin");
         assert_eq!(pin.port(), Port::G);
         assert_eq!(pin.pin(), 11);
@@ -758,7 +762,7 @@ mod tests {
 
     #[test]
     fn moder_bits_are_updated_per_pin_without_disturbing_neighbours() {
-        mock_reset();
+        let _sequence = mock_reset();
         let _p3 = gpio_output::<MockGpio>(Port::A, 3).expect("valid pin");
         let _p7 = gpio_output::<MockGpio>(Port::A, 7).expect("valid pin");
         let moder = read_mock_reg(Port::A, MockGpio::moder_offset());
@@ -770,7 +774,7 @@ mod tests {
 
     #[test]
     fn moder_clears_back_to_input_from_output() {
-        mock_reset();
+        let _sequence = mock_reset();
         let out = gpio_output::<MockGpio>(Port::B, 5).expect("valid pin");
         let moder_out = read_mock_reg(Port::B, MockGpio::moder_offset());
         assert_eq!((moder_out >> 10) & 0b11, 0b01, "output mode");
@@ -835,7 +839,7 @@ mod tests {
 
     #[test]
     fn pin_zero_output_valid() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::A, 0).expect("pin 0 should be valid");
         pin.set_high();
         let bsrr = read_mock_reg(Port::A, MockGpio::bsrr_offset());
@@ -844,7 +848,7 @@ mod tests {
 
     #[test]
     fn pin_zero_input_valid() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_input::<MockGpio>(Port::B, 0).expect("pin 0 input should be valid");
         mock_set_input_level(Port::B, 0, true);
         assert!(pin.read());
@@ -852,7 +856,7 @@ mod tests {
 
     #[test]
     fn pin_fifteen_output_valid() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_output::<MockGpio>(Port::C, 15).expect("pin 15 should be valid");
         pin.set_high();
         let bsrr = read_mock_reg(Port::C, MockGpio::bsrr_offset());
@@ -861,7 +865,7 @@ mod tests {
 
     #[test]
     fn pin_fifteen_input_valid() {
-        mock_reset();
+        let _sequence = mock_reset();
         let pin = gpio_input::<MockGpio>(Port::D, 15).expect("pin 15 input should be valid");
         mock_set_input_level(Port::D, 15, true);
         assert!(pin.read());
@@ -869,7 +873,7 @@ mod tests {
 
     #[test]
     fn pin_16_rejected() {
-        mock_reset();
+        let _sequence = mock_reset();
         assert!(gpio_output::<MockGpio>(Port::A, 16).is_err());
         assert!(gpio_input::<MockGpio>(Port::A, 16).is_err());
     }
@@ -878,7 +882,7 @@ mod tests {
 
     #[test]
     fn typestate_round_trip_out_in_out() {
-        mock_reset();
+        let _sequence = mock_reset();
         let out1 = gpio_output::<MockGpio>(Port::E, 7).expect("valid pin");
         out1.set_high();
         let inp = out1.into_input();
@@ -892,7 +896,7 @@ mod tests {
 
     #[test]
     fn typestate_round_trip_in_out_in() {
-        mock_reset();
+        let _sequence = mock_reset();
         let inp1 = gpio_input::<MockGpio>(Port::F, 3).expect("valid pin");
         mock_set_input_level(Port::F, 3, true);
         assert!(inp1.read());
