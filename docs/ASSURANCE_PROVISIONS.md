@@ -63,7 +63,9 @@ Extend the model with waiting, completion and cancellation states. Write the
 progress property and state the scheduling/driver fairness assumptions. Review
 whether those assumptions hold in deployment. Exercise the actual implementation
 with a delay longer than a one-shot period and with stop/reset during a wait.
-A deliberately frozen countdown should fail the relevant check. If only the
+Even with progress specified in the model, an implementation whose countdown
+stops at expiry has a separate conformance failure. A deliberately frozen
+countdown should fail the relevant check. If only the
 model was checked, keep implementation conformance open. This is an illustrative
 review scenario, not a claim that a particular release completed this evidence.
 

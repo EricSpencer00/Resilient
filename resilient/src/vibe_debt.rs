@@ -14,7 +14,7 @@
 //!
 //! A fn at 0/4 has none of these signals; at 4/4 all are present,
 //! without establishing correctness. The module-level percentage is
-//! `1 - (sum_score / (4 * fn_count))`.
+//! `100 * (1 - (sum_score / (4 * fn_count)))`.
 //!
 //! The CLI surface lands as `--vibe-debt`: walks the parsed program,
 //! prints the per-fn breakdown plus the program-wide percentage, and
