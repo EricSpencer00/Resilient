@@ -36,10 +36,87 @@
 //! on that invariant; the runtime check fires unchanged.
 
 use crate::Node;
-#[cfg(feature = "z3")]
 use crate::span::Span;
 #[cfg(feature = "z3")]
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use std::collections::{HashMap, HashSet};
+
+// Expanded imports can share spans; AST identity keeps their annotations distinct.
+// These identities are used only while checking the same immutable program.
+pub(crate) struct ProofCoverage {
+    sites: HashMap<usize, Span>,
+    proven: HashSet<usize>,
+}
+impl ProofCoverage {
+    fn new(program: &Node, enabled: bool) -> Self {
+        let mut result = Self {
+            sites: HashMap::new(),
+            proven: HashSet::new(),
+        };
+        if enabled {
+            crate::uniqueness_walk::visit(program, &mut |node| match node {
+                Node::WhileStatement {
+                    invariants, span, ..
+                }
+                | Node::ForInStatement {
+                    invariants, span, ..
+                } => {
+                    for invariant in invariants {
+                        result.sites.insert(
+                            invariant as *const Node as usize,
+                            invariant_span(invariant).copied().unwrap_or(*span),
+                        );
+                    }
+                }
+                Node::InvariantStatement { expr, span } => {
+                    result
+                        .sites
+                        .insert(expr.as_ref() as *const Node as usize, *span);
+                }
+                _ => {}
+            });
+        }
+        result
+    }
+    #[cfg(feature = "z3")]
+    fn record(&mut self, invariant: &Node, before: usize, after: usize) {
+        let identity = invariant as *const Node as usize;
+        if after == before + 1 && self.sites.contains_key(&identity) {
+            self.proven.insert(identity);
+        }
+    }
+    pub(crate) fn enforce(self, source: &str) -> Result<(), String> {
+        let mut unresolved: Vec<_> = self
+            .sites
+            .iter()
+            .filter(|(identity, _)| !self.proven.contains(identity))
+            .map(|(_, span)| *span)
+            .collect();
+        unresolved.sort_by_key(|span| (span.start.line, span.start.column));
+        if unresolved.is_empty() {
+            return Ok(());
+        }
+        let mut errors: Vec<_> = unresolved
+            .iter()
+            .take(32)
+            .map(|span| {
+                format!(
+                    "{}:{}:{}: unproven-loop-invariant: static proof required for this annotation",
+                    source, span.start.line, span.start.column
+                )
+            })
+            .collect();
+        if unresolved.len() > 32 {
+            errors.push(format!(
+                "{} additional unproven loop invariants",
+                unresolved.len() - 32
+            ));
+        }
+        #[cfg(not(feature = "z3"))]
+        errors.push("loop proofs require a compiler built with the z3 feature".to_string());
+        Err(errors.join("\n"))
+    }
+}
 
 #[cfg(feature = "z3")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,7 +177,11 @@ fn integer_names(sorts: &HashMap<String, Sort>) -> HashSet<String> {
 /// a no-op and the runtime check from `loop_invariants.rs` is the
 /// only line of defense.
 #[cfg(feature = "z3")]
-pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, program: &Node) {
+pub(crate) fn verify_and_capture(
+    tc: &mut crate::typechecker::TypeChecker,
+    program: &Node,
+) -> ProofCoverage {
+    let mut coverage = ProofCoverage::new(program, tc.deny_unproven_invariants);
     // RES-1297 / RES-1917: the typechecker gates this call behind
     // statement-form, while, or finite-loop invariant markers,
     // so the program is guaranteed to contain at least one invariant.
@@ -135,11 +216,18 @@ pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, progr
         &mut next_idx,
         timeout_ms,
         verbose,
+        &mut coverage,
     );
+    coverage
 }
 
 #[cfg(not(feature = "z3"))]
-pub(crate) fn verify_and_capture(_tc: &mut crate::typechecker::TypeChecker, _program: &Node) {}
+pub(crate) fn verify_and_capture(
+    tc: &mut crate::typechecker::TypeChecker,
+    program: &Node,
+) -> ProofCoverage {
+    ProofCoverage::new(program, tc.deny_unproven_invariants)
+}
 
 /// Recursive walk of the program AST. Tracks the lexically-visible
 /// integer-literal bindings as we descend, so each loop sees the
@@ -156,6 +244,7 @@ fn walk(
     next_idx: &mut usize,
     timeout_ms: u32,
     verbose: bool,
+    coverage: &mut ProofCoverage,
 ) {
     match node {
         Node::Program(stmts) => {
@@ -165,7 +254,9 @@ fn walk(
             let snap = bindings.clone();
             let sort_snap = sorts.clone();
             for s in stmts {
-                walk(&s.node, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                walk(
+                    &s.node, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                );
             }
             *bindings = snap;
             sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
@@ -174,7 +265,9 @@ fn walk(
             let snap = bindings.clone();
             let sort_snap = sorts.clone();
             for s in stmts {
-                walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                walk(
+                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                );
             }
             *bindings = snap;
             sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
@@ -212,6 +305,7 @@ fn walk(
                 next_idx,
                 timeout_ms,
                 verbose,
+                coverage,
             );
         }
 
@@ -258,13 +352,16 @@ fn walk(
                 next_idx,
                 timeout_ms,
                 verbose,
+                coverage,
             );
             let consequence_sorts = sorts.clone();
             match alternative {
                 Some(alt) => {
                     *bindings = snap.clone();
                     *sorts = sort_snap.clone();
-                    walk(alt, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                    walk(
+                        alt, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    );
                     *bindings = snap;
                     sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
                 }
@@ -288,7 +385,9 @@ fn walk(
             let entry_sorts = sorts.clone();
             // A nested loop can run after any number of outer iterations.
             invalidate_mutations(body, bindings, sorts);
-            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+            walk(
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+            );
             invalidate_mutations(body, bindings, sorts);
 
             // Collect the full invariant list — both pre-body
@@ -311,6 +410,7 @@ fn walk(
             collect_assigned_names(body, &mut assigned);
 
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
+                let before = tc.stats.loop_invariants_proven;
                 try_prove_invariant(
                     tc,
                     inv,
@@ -324,6 +424,7 @@ fn walk(
                     timeout_ms,
                     verbose,
                 );
+                coverage.record(inv, before, tc.stats.loop_invariants_proven);
             }
         }
         Node::ForInStatement {
@@ -347,7 +448,9 @@ fn walk(
                     Sort::Unknown
                 },
             );
-            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+            walk(
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+            );
             invalidate_mutations(body, bindings, sorts);
             if let Some(sort) = entry_sorts.get(name) {
                 sorts.insert(name.clone(), *sort);
@@ -369,6 +472,7 @@ fn walk(
             let mut entry_sorts = entry_sorts;
             entry_sorts.insert(name.clone(), Sort::Integer);
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
+                let before = tc.stats.loop_invariants_proven;
                 try_prove_for_in_invariant(
                     tc,
                     inv,
@@ -382,10 +486,13 @@ fn walk(
                     timeout_ms,
                     verbose,
                 );
+                coverage.record(inv, before, tc.stats.loop_invariants_proven);
             }
         }
         Node::LiveBlock { body, .. } => {
-            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+            walk(
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+            );
         }
         Node::TryCatch { body, handlers, .. } => {
             // A handler can start after any prefix of the protected body.
@@ -393,13 +500,17 @@ fn walk(
             let entry_bindings = bindings.clone();
             let entry_sorts = sorts.clone();
             for s in body {
-                walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                walk(
+                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                );
             }
             for (_v, h) in handlers {
                 *bindings = entry_bindings.clone();
                 *sorts = entry_sorts.clone();
                 for s in h {
-                    walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                    walk(
+                        s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    );
                 }
             }
             *bindings = entry_bindings;
@@ -408,7 +519,9 @@ fn walk(
         }
         Node::ImplBlock { methods, .. } => {
             for m in methods {
-                walk(m, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+                walk(
+                    m, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                );
             }
         }
         _ => invalidate_mutations(node, bindings, sorts),
@@ -955,7 +1068,6 @@ fn contains_ident(node: &Node, name: &str) -> bool {
 /// Best-effort span of an invariant expression, for the verbose
 /// stderr line. Falls back to the loop span when the invariant's
 /// own node doesn't carry one.
-#[cfg(feature = "z3")]
 fn invariant_span(node: &Node) -> Option<&Span> {
     match node {
         Node::InfixExpression { span, .. }

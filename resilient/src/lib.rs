@@ -368,6 +368,7 @@ mod loop_invariants;
 // the verifier only adds an SMT-LIB2 proof certificate + a verbose
 // `-- invariant proven, runtime check elided` line when both base
 // and inductive goals discharge.
+mod strict_loop_cli;
 mod verifier_loop_invariants;
 
 // RES-296 (RES-128 follow-up): named type synonyms — `type Meters = float;`.
@@ -31775,6 +31776,7 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
     verbose_invariants: bool,
+    deny_unproven_invariants: bool,
     live_log: Option<&Path>,
     #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
     no_cache: bool,
@@ -32030,8 +32032,8 @@ fn execute_file(
     // `typecheck_strict`:  treat any type error as fatal (exit 1).
     // `--typecheck-strict` sets the latter without the former.
     let verbose_typecheck = type_check || audit || explain_effects || emit_cert_dir.is_some();
-    let typecheck_strict = verbose_typecheck || type_strict;
-    let want_typecheck = !no_typecheck;
+    let typecheck_strict = verbose_typecheck || type_strict || deny_unproven_invariants;
+    let want_typecheck = !no_typecheck || deny_unproven_invariants;
     let mut proven_fns: HashSet<String> = HashSet::new();
     let mut typecheck_failed = false;
     if want_typecheck {
@@ -32051,6 +32053,7 @@ fn execute_file(
             // RES-318: `--verbose` opts into per-loop-invariant
             // proof messages on stderr.
             .with_verbose_loop_invariants(verbose_invariants)
+            .with_deny_unproven_invariants(deny_unproven_invariants)
             // RES-1322: opt into the post-typecheck IO-effect
             // fixpoint only when its result is consumed. `--audit`
             // and `--explain-effects` both read `stats.fn_effects`;
@@ -34494,6 +34497,7 @@ COMMON FLAGS:
                                  replayable SMT-LIB2 dump / fail with
                                  counterexample / unknown). Works on every
                                  build; verdicts need --features z3 (RES-3859)
+        --deny-unproven-invariants Require static proof for every loop invariant
         --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)
         --safety-critical        Promote vacuous proof-discharge constructs
                                  such as `assume(false)` to hard errors
@@ -34915,6 +34919,17 @@ pub struct RunResult {
 /// closure unless you want the inner capture to be the only output
 /// the outer call sees.
 pub fn run_program(src: &str) -> RunResult {
+    run_program_with_options(src, RunOptions::default())
+}
+
+/// Optional verification gates for in-memory interpreter execution.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RunOptions {
+    pub deny_unproven_invariants: bool,
+}
+
+/// Execute only after the requested verification gates succeed.
+pub fn run_program_with_options(src: &str, options: RunOptions) -> RunResult {
     let (program, parse_errors) = parse(src);
     if !parse_errors.is_empty() {
         return RunResult {
@@ -34922,6 +34937,16 @@ pub fn run_program(src: &str) -> RunResult {
             stdout: String::new(),
             errors: parse_errors,
         };
+    }
+    if options.deny_unproven_invariants {
+        let mut checker = typechecker::TypeChecker::new().with_deny_unproven_invariants(true);
+        if let Err(error) = checker.check_program_with_source(&program, "<input>") {
+            return RunResult {
+                ok: false,
+                stdout: String::new(),
+                errors: vec![error],
+            };
+        }
     }
     let (eval_result, captured) = output_sink::with_captured_output(|| {
         let mut interp = Interpreter::new();
@@ -35073,6 +35098,13 @@ fn dispatch_stack_usage_subcommand(args: &[String]) -> Option<i32> {
 pub fn run_cli() {
     // Get command line arguments
     let mut args: Vec<String> = env::args().collect();
+    let deny_unproven_invariants = match strict_loop_cli::validate(&mut args) {
+        Ok(enabled) => enabled,
+        Err(message) => {
+            eprintln!("Error: {message}");
+            std::process::exit(2);
+        }
+    };
     if args.get(1).map(String::as_str) == Some("--")
         && matches!(
             args.get(2).map(String::as_str),
@@ -35451,6 +35483,8 @@ pub fn run_cli() {
                 // invariant. Implies --typecheck so the verifier
                 // pass actually runs.
                 verbose_invariants = true;
+                type_check = true;
+            } else if arg == "--deny-unproven-invariants" {
                 type_check = true;
             } else if arg == "--deny-unproven-bounds" {
                 // RES-351: strict mode — unproven array-bounds
@@ -36164,6 +36198,7 @@ pub fn run_cli() {
                     verifier_timeout_ms,
                     warn_unverified,
                     verbose_invariants,
+                    deny_unproven_invariants,
                     live_log_owned.as_deref(),
                     #[cfg(feature = "z3")]
                     z3_theory_snap,
@@ -36226,6 +36261,7 @@ pub fn run_cli() {
                 verifier_timeout_ms,
                 warn_unverified,
                 verbose_invariants,
+                deny_unproven_invariants,
                 emit_live_log.as_deref(),
                 #[cfg(feature = "z3")]
                 z3_theory,

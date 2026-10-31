@@ -29,3 +29,13 @@ Integer symbols must have a tracked signed-integer domain; floating-point and un
 The supported expression model includes signed integer literals and identifiers, arithmetic, signed comparisons, Boolean connectives, and integer bitwise AND/OR/XOR. Unsupported constructs receive no static proof. Query size, expression depth, and solver time are bounded; unknown or timed-out results do not count as proofs. Symbolic substitution charges a shared 32,768-node expansion budget before allocating copies, with a depth limit of 128. Finite traces share their budget across assignments and iterations. Exhausting it declines static proof credit while preserving runtime guards.
 
 These certificates establish the emitted obligations within this restricted model. They do not prove arbitrary compiler correctness, program termination in general, every program safety property, or certification to a safety standard. Runtime guards remain part of the executable behavior.
+
+## Requiring proof before execution
+
+Use `rz --deny-unproven-invariants program.rz` to require static proof for every active loop annotation. The gate inventories header and statement annotations separately from proof generation and tracks each site individually. Unsupported or omitted sites, failed obligations, and exhausted solver or expansion limits reject execution with `unproven-loop-invariant` diagnostics. A build without Z3 rejects annotated programs under this flag. A program with no loop annotations can pass; this grants no proof credit.
+
+The flag supports ordinary file execution, including the VM dispatch paths, and forces strict typechecking. It rejects `--no-typecheck`, interactive or inspection modes, subcommands, and unsupported options before dispatch. Normal typechecking and runtime behavior remain unchanged without the flag. Warm execution caches do not substitute for the gate. Existing runtime invariant checks remain enabled after successful verification.
+
+Library callers can use `run_program_with_options(source, RunOptions { deny_unproven_invariants: true })`. The existing `run_program` and default options retain their previous behavior. This in-memory API checks and executes its parsed program; it does not add the CLI's import and lowering pipeline.
+
+This is a completeness gate for this compiler's loop-proof results within the documented model. It is not independent source-to-query verification or certification, and it does not require or prove contracts unrelated to loop invariants.
