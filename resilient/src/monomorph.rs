@@ -43,6 +43,8 @@ use std::collections::HashMap;
 /// Returns a (possibly new) `Node::Program`.  If the program contains no
 /// generic functions the original clone is returned unchanged.
 pub fn lower(program: &Node) -> Node {
+    let guarded = crate::loop_bound_runtime::lower(program);
+    let program = guarded.as_ref().unwrap_or(program);
     let stmts = match program {
         Node::Program(s) => s,
         _ => return program.clone(),

@@ -34,6 +34,9 @@ pub struct LoopBoundSpec {
 
 /// Collect all `#[loop_bound(N)]` attributes from the feature registry.
 pub fn collect() -> HashMap<String, LoopBoundSpec> {
+    if let Some(bounds) = crate::loop_bound_runtime::scoped_bounds() {
+        return bounds;
+    }
     let attrs = crate::feature_attrs::find_kind("loop_bound");
     let mut out = HashMap::with_capacity(attrs.len());
     for (item, rec) in attrs {
@@ -119,10 +122,17 @@ fn verify_loop_bounds(
                 name,
                 body,
                 requires,
+                parameters,
                 ..
             } = &stmt.node
             {
                 if name == fn_name {
+                    if !static_fragment(program, body, requires, parameters) {
+                        eprintln!(
+                            "{source_path}: warning[loop_bound]: `{fn_name}` is outside the static integer-counter fragment; will rely on runtime check"
+                        );
+                        return Ok(());
+                    }
                     let initial_values = HashMap::new();
                     verify_while_loops_in_node(
                         body,
@@ -138,6 +148,98 @@ fn verify_loop_bounds(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "z3")]
+fn static_fragment(
+    program: &Node,
+    body: &Node,
+    requires: &[Node],
+    parameters: &[(String, String)],
+) -> bool {
+    use std::collections::HashSet;
+    if crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Const { .. })) {
+        return false;
+    }
+    let integers: HashSet<_> = parameters
+        .iter()
+        .filter(|(ty, _)| ty == "int")
+        .map(|(_, name)| name.as_str())
+        .collect();
+    let mut referenced = HashSet::new();
+    let mut valid = true;
+    for clause in requires {
+        crate::uniqueness_walk::visit(clause, &mut |n| match n {
+            Node::Identifier { name, .. } => {
+                valid &= integers.contains(name.as_str());
+                referenced.insert(name.as_str());
+            }
+            Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => {}
+            Node::InfixExpression { operator, .. }
+                if matches!(
+                    *operator,
+                    "<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||"
+                ) => {}
+            Node::PrefixExpression {
+                operator: "-" | "+" | "!",
+                right,
+                ..
+            } if matches!(
+                right.as_ref(),
+                Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. }
+            ) => {}
+            _ => valid = false,
+        });
+    }
+    crate::uniqueness_walk::visit(body, &mut |n| match n {
+        Node::Assignment { value, .. } | Node::LetStatement { value, .. } => {
+            if crate::uniqueness_walk::any_node(value, |child| {
+                !matches!(
+                    child,
+                    Node::IntegerLiteral { .. }
+                        | Node::Identifier { .. }
+                        | Node::InfixExpression { .. }
+                        | Node::PrefixExpression { .. }
+                )
+            }) {
+                valid = false;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            if crate::uniqueness_walk::any_node(body, |n| matches!(n, Node::WhileStatement { .. }))
+            {
+                valid = false;
+            }
+            match condition.as_ref() {
+                Node::InfixExpression { right, .. } => match right.as_ref() {
+                    Node::IntegerLiteral { .. } => {}
+                    Node::Identifier { name, .. } if integers.contains(name.as_str()) => {
+                        referenced.insert(name.as_str());
+                    }
+                    _ => valid = false,
+                },
+                _ => valid = false,
+            }
+        }
+        Node::Block { .. }
+        | Node::ExpressionStatement { .. }
+        | Node::ReturnStatement { .. }
+        | Node::IntegerLiteral { .. }
+        | Node::Identifier { .. }
+        | Node::InfixExpression { .. }
+        | Node::PrefixExpression { .. } => {}
+        _ => valid = false,
+    });
+    crate::uniqueness_walk::visit(body, &mut |n| {
+        if let Node::Assignment { name, .. } | Node::LetStatement { name, .. } = n {
+            if referenced.contains(name.as_str()) {
+                valid = false;
+            }
+        }
+    });
+    valid
 }
 
 #[cfg(feature = "z3")]
@@ -197,13 +299,6 @@ fn verify_while_loops_in_node(
         Node::Block { stmts, .. } => {
             let mut known_initials = known_initials.clone();
             for statement in stmts {
-                match statement {
-                    Node::LetStatement { name, value, .. }
-                    | Node::Assignment { name, value, .. } => {
-                        record_literal_initializer(&mut known_initials, name, value);
-                    }
-                    _ => {}
-                }
                 verify_while_loops_in_node(
                     statement,
                     declared_bound,
@@ -212,6 +307,13 @@ fn verify_while_loops_in_node(
                     requires,
                     &known_initials,
                 )?;
+                match statement {
+                    Node::LetStatement { name, value, .. }
+                    | Node::Assignment { name, value, .. } => {
+                        record_literal_initializer(&mut known_initials, name, value);
+                    }
+                    _ => known_initials.clear(),
+                }
             }
             Ok(())
         }
@@ -440,6 +542,30 @@ fn verify_one_while_loop(
         }
     };
 
+    let safe_upper = i64::MAX - step + 1;
+    let arithmetic_safe = Node::InfixExpression {
+        left: Box::new(bound_expr.clone()),
+        operator: "<=",
+        right: Box::new(Node::IntegerLiteral {
+            value: safe_upper,
+            span,
+        }),
+        span,
+    };
+    if crate::verifier_z3::prove_with_axioms_and_timeout(
+        &arithmetic_safe,
+        &HashMap::new(),
+        requires,
+        LOOP_BOUND_TIMEOUT_MS,
+    )
+    .0 != Some(true)
+    {
+        eprintln!(
+            "{source_path}:{line}:0: warning[loop_bound]: counter arithmetic may overflow in `{fn_name}`; will rely on runtime check"
+        );
+        return Ok(());
+    }
+
     let obligation =
         match create_bound_check_obligation(&bound_expr, initial_value, declared_bound, step) {
             Some(o) => o,
@@ -489,7 +615,20 @@ fn extract_loop_bound_pattern(condition: &Node) -> Option<(String, Node)> {
         } => {
             if let Node::Identifier { name, .. } = left.as_ref() {
                 if matches!(*operator, "<" | "<=") {
-                    return Some((name.clone(), (**right).clone()));
+                    let limit = if *operator == "<=" {
+                        Node::InfixExpression {
+                            left: right.clone(),
+                            operator: "+",
+                            right: Box::new(Node::IntegerLiteral {
+                                value: 1,
+                                span: crate::span::Span::point(crate::span::Pos::default()),
+                            }),
+                            span: crate::span::Span::point(crate::span::Pos::default()),
+                        }
+                    } else {
+                        (**right).clone()
+                    };
+                    return Some((name.clone(), limit));
                 }
             }
             None
@@ -503,48 +642,48 @@ fn extract_counter_increment_pattern(
     body: &Node,
     counter_name: &str,
     known_initials: &HashMap<String, i64>,
-) -> Option<(i64, u32)> {
+) -> Option<(i64, i64)> {
     let initial_value = known_initials.get(counter_name).copied()?;
-
-    fn walk(node: &Node, counter_name: &str) -> Option<u32> {
-        match node {
-            Node::ExpressionStatement { expr, .. } => walk(expr, counter_name),
+    let Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut step = None;
+    for stmt in stmts {
+        let stmt = match stmt {
+            Node::ExpressionStatement { expr, .. } => expr.as_ref(),
+            _ => stmt,
+        };
+        match stmt {
             Node::Assignment { name, value, .. } if name == counter_name => {
-                if let Node::InfixExpression {
+                if step.is_some() {
+                    return None;
+                }
+                let Node::InfixExpression {
                     left,
-                    operator,
+                    operator: "+",
                     right,
                     ..
                 } = value.as_ref()
-                {
-                    if *operator == "+" {
-                        if let Node::Identifier {
-                            name: left_name, ..
-                        } = left.as_ref()
-                        {
-                            if left_name == counter_name {
-                                if let Node::IntegerLiteral { value: step, .. } = right.as_ref() {
-                                    if *step > 0 {
-                                        return Some(*step as u32);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                else {
+                    return None;
+                };
+                if !matches!(left.as_ref(), Node::Identifier { name, .. } if name == counter_name) {
+                    return None;
                 }
-                None
+                let Node::IntegerLiteral { value, .. } = right.as_ref() else {
+                    return None;
+                };
+                if *value <= 0 {
+                    return None;
+                }
+                step = Some(*value);
             }
-            Node::Block { stmts, .. } => stmts.iter().find_map(|s| walk(s, counter_name)),
-            Node::IfStatement {
-                consequence,
-                alternative,
-                ..
-            } => walk(consequence, counter_name)
-                .or_else(|| alternative.as_ref().and_then(|a| walk(a, counter_name))),
-            _ => None,
+            Node::LetStatement { name, .. } if name == counter_name => return None,
+            Node::Assignment { .. } | Node::LetStatement { .. } => {}
+            _ => return None,
         }
     }
-    walk(body, counter_name).map(|step| (initial_value, step))
+    step.map(|step| (initial_value, step))
 }
 
 #[cfg(feature = "z3")]
@@ -552,7 +691,7 @@ fn create_bound_check_obligation(
     counter_bound: &Node,
     initial_value: i64,
     declared_bound: u32,
-    step: u32,
+    step: i64,
 ) -> Option<Node> {
     let span = crate::span::Span::point(crate::span::Pos::default());
     let bound_minus_initial = Node::InfixExpression {
@@ -564,8 +703,13 @@ fn create_bound_check_obligation(
         }),
         span,
     };
-    let max_iterations = Node::IntegerLiteral {
-        value: (declared_bound as i64) * (step as i64),
+    let max_iterations = Node::InfixExpression {
+        left: Box::new(Node::IntegerLiteral {
+            value: i64::from(declared_bound),
+            span,
+        }),
+        operator: "*",
+        right: Box::new(Node::IntegerLiteral { value: step, span }),
         span,
     };
     Some(Node::InfixExpression {

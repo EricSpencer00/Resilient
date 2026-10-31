@@ -2104,7 +2104,7 @@ fn has_runtime_contracts(program: &Node) -> bool {
 ///           plus the program's top-level non-function
 ///           statements as `main`.
 fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
-    if has_runtime_contracts(program) {
+    if has_runtime_contracts(program) || crate::loop_bound_runtime::needs_guard(program) {
         return Err(JitError::RuntimeContracts);
     }
 

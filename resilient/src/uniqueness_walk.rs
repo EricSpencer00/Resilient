@@ -366,6 +366,336 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     }
 }
 
+/// Visit direct mutable children without recursively borrowing their parents.
+pub(crate) fn children_mut(node: &mut Node, f: &mut impl FnMut(&mut Node)) {
+    match node {
+        Node::Program(items) => {
+            for s in items {
+                f(&mut s.node);
+            }
+        }
+        Node::Extern { decls, .. } => {
+            for decl in decls {
+                for clause in &mut decl.requires {
+                    f(clause);
+                }
+                for clause in &mut decl.ensures {
+                    f(clause);
+                }
+            }
+        }
+        Node::Function {
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for default in defaults.iter_mut().flatten() {
+                f(default);
+            }
+            for clause in requires {
+                f(clause);
+            }
+            f(body);
+            for clause in ensures {
+                f(clause);
+            }
+            if let Some(clause) = recovers_to {
+                f(clause);
+            }
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                f(method);
+            }
+        }
+        Node::ModuleDecl { body, .. } => {
+            for item in body {
+                f(item);
+            }
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            f(state_init);
+            for clause in concurrent_ensures {
+                f(clause);
+            }
+            for handler in handlers {
+                for clause in &mut handler.ensures {
+                    f(clause);
+                }
+                f(&mut handler.body);
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            for (_, _, initializer) in state_fields {
+                f(initializer);
+            }
+            for clause in always_clauses {
+                f(clause);
+            }
+            for clause in eventually_clauses {
+                f(&mut clause.post);
+            }
+            for handler in receive_handlers {
+                for clause in &mut handler.requires {
+                    f(clause);
+                }
+                for clause in &mut handler.ensures {
+                    f(clause);
+                }
+                f(&mut handler.body);
+            }
+            for handler in handlers {
+                for clause in &mut handler.ensures {
+                    f(clause);
+                }
+                f(&mut handler.body);
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => {
+            for invariant in invariants {
+                f(invariant);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                f(s);
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. } => f(value),
+        Node::ReturnStatement { value: Some(v), .. } => f(v),
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            f(condition);
+            f(consequence);
+            if let Some(alt) = alternative {
+                f(alt);
+            }
+        }
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            f(condition);
+            for invariant in invariants {
+                f(invariant);
+            }
+            f(body);
+        }
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            f(iterable);
+            for invariant in invariants {
+                f(invariant);
+            }
+            f(body);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            f(function);
+            for a in arguments {
+                f(a);
+            }
+        }
+        Node::FieldAccess { target, .. } => f(target),
+        Node::FieldAssignment { target, value, .. } => {
+            f(target);
+            f(value);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            f(target);
+            f(index);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        Node::PrefixExpression { right, .. } => f(right),
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                f(i);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => f(expr),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            f(scrutinee);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    f(g);
+                }
+                f(body);
+            }
+        }
+        // RES-2510: the following were missing, causing visitors to
+        // silently skip sub-nodes inside these constructs.
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for clause in requires {
+                f(clause);
+            }
+            f(body);
+            for clause in ensures {
+                f(clause);
+            }
+            if let Some(clause) = recovers_to {
+                f(clause);
+            }
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            f(condition);
+            if let Some(m) = message {
+                f(m);
+            }
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            f(target);
+            f(index);
+            f(value);
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            f(value);
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        Node::SetLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+            for i in items {
+                f(i);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                f(b);
+            }
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            f(target);
+            if let Some(l) = lo {
+                f(l);
+            }
+            if let Some(h) = hi {
+                f(h);
+            }
+        }
+        Node::Range { lo, hi, .. } => {
+            f(lo);
+            f(hi);
+        }
+        Node::TupleIndex { tuple, .. } => f(tuple),
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    f(expr);
+                }
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for s in body {
+                f(s);
+            }
+            for (_, handler_body) in handlers {
+                for s in handler_body {
+                    f(s);
+                }
+            }
+        }
+        Node::TryExpression { expr, .. } => f(expr),
+        Node::NewtypeConstruct { value, .. } | Node::NamedArg { value, .. } => f(value),
+        Node::OptionalChain { object, access, .. } => {
+            f(object);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    f(a);
+                }
+            }
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            f(body);
+            for inv in invariants {
+                f(inv);
+            }
+            if let Some(timeout) = timeout {
+                f(timeout);
+            }
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    f(lo);
+                    f(hi);
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => f(iterable),
+            }
+            f(body);
+        }
+        Node::InvariantStatement { expr, .. }
+        | Node::BreakWith { value: expr, .. }
+        | Node::DeferStatement { expr, .. } => f(expr),
+        Node::StaticAssert { condition, .. } => f(condition),
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => f(body),
+        // Leaf nodes and declarations without expression children.
+        _ => {}
+    }
+}
+
 /// Iterate every top-level Function in a Program, calling `f` with the
 /// function's name, parameter list (type, name), and body.
 pub(crate) fn for_each_function(
