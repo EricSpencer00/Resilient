@@ -13009,7 +13009,7 @@ pub(crate) fn format_integer_literal_overflow_error(
 ) -> String {
     let prefix = if rich_diag_enabled() { "[E0023] " } else { "" };
     format!(
-        "<input>:{line}:{column}: error: {prefix}integer literal `{literal}` overflows i64 (max {})",
+        "{prefix}<input>:{line}:{column}: error: integer literal `{literal}` overflows i64 (max {})",
         i64::MAX
     )
 }
