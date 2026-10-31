@@ -1,5 +1,5 @@
 //! RES-318: Z3 inductive verification of `invariant` annotations on
-//! `while` loops. Standard Hoare-logic loop rule:
+//! `while` and finite `for` loops. While-loop induction checks:
 //!
 //! 1. **Base**: prove the invariant holds before the first iteration.
 //! 2. **Inductive**: assume the invariant + the loop condition; prove
@@ -8,7 +8,7 @@
 //! When both goals discharge, certificate emission writes one isolated
 //! SMT-LIB2 query per base or inductive obligation. The stats counter
 //! still counts proven invariants. With `--verbose` set,
-//! one `-- invariant proven, runtime check elided at L:C` line per
+//! one `-- invariant proven, runtime check retained at L:C` line per
 //! discharged invariant is written to stderr.
 //!
 //! This module is a *best-effort* verifier — the runtime check
@@ -21,9 +21,9 @@
 //!   - `while COND { ASSIGN ; ASSIGN ; ... }` bodies, where every
 //!     statement is either `Node::Assignment { name, value, .. }`
 //!     (plain `name = expr;`) or a no-op `InvariantStatement`.
-//!   - The condition + invariants must lie in the LIA / BV32 subset
-//!     understood by `verifier_z3::translate_bool` (integer arithmetic,
-//!     comparisons, boolean connectives). Anything richer makes the
+//!   - Expressions use signed 64-bit bit-vectors with the selected wrap,
+//!     saturate, or trap policy. Accepted queries also prove arithmetic
+//!     definedness on executed paths. Unsupported expressions make the
 //!     translator return `None`, which is treated the same as
 //!     "unprovable" — runtime check stays in.
 //!   - Pre-loop integer constants declared as `let NAME = INT_LITERAL`
@@ -39,7 +39,61 @@ use crate::Node;
 #[cfg(feature = "z3")]
 use crate::span::Span;
 #[cfg(feature = "z3")]
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+#[cfg(feature = "z3")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sort {
+    Integer,
+    IntegerFunction,
+    Unknown,
+}
+#[cfg(feature = "z3")]
+fn integer_type(ty: &str) -> bool {
+    matches!(ty, "int" | "Int" | "i64" | "Int64" | "long")
+}
+#[cfg(feature = "z3")]
+fn expression_sort(node: &Node, sorts: &HashMap<String, Sort>) -> Sort {
+    fn visit(node: &Node, sorts: &HashMap<String, Sort>, depth: usize) -> Sort {
+        if depth > 128 {
+            return Sort::Unknown;
+        }
+        match node {
+            Node::IntegerLiteral { .. } => Sort::Integer,
+            Node::Identifier { name, .. } => sorts.get(name).copied().unwrap_or(Sort::Unknown),
+            Node::PrefixExpression {
+                operator: "-",
+                right,
+                ..
+            } if visit(right, sorts, depth + 1) == Sort::Integer => Sort::Integer,
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } if matches!(*operator, "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^")
+                && visit(left, sorts, depth + 1) == Sort::Integer
+                && visit(right, sorts, depth + 1) == Sort::Integer =>
+            {
+                Sort::Integer
+            }
+            Node::CallExpression { function, .. }
+                if visit(function, sorts, depth + 1) == Sort::IntegerFunction =>
+            {
+                Sort::Integer
+            }
+            _ => Sort::Unknown,
+        }
+    }
+    visit(node, sorts, 0)
+}
+#[cfg(feature = "z3")]
+fn integer_names(sorts: &HashMap<String, Sort>) -> HashSet<String> {
+    sorts
+        .iter()
+        .filter_map(|(name, sort)| (*sort == Sort::Integer).then_some(name.clone()))
+        .collect()
+}
 
 /// Public entry point — feature-gated so callers don't need to do
 /// their own `#[cfg(feature = "z3")]` guards. Without `z3`, this is
@@ -58,10 +112,25 @@ pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, progr
     // (have at least one invariant) typically declare 2-10 const
     // bindings; 8 covers the common case without rehash churn.
     let mut bindings: HashMap<String, i64> = HashMap::with_capacity(8);
+    let mut sorts = HashMap::new();
+    if let Node::Program(statements) = program {
+        for statement in statements {
+            if let Node::Function {
+                name,
+                return_type: Some(ty),
+                ..
+            } = &statement.node
+                && integer_type(ty)
+            {
+                sorts.insert(name.clone(), Sort::IntegerFunction);
+            }
+        }
+    }
     let mut next_idx = 0usize;
     walk(
         program,
         &mut bindings,
+        &mut sorts,
         tc,
         &mut next_idx,
         timeout_ms,
@@ -78,9 +147,11 @@ pub(crate) fn verify_and_capture(_tc: &mut crate::typechecker::TypeChecker, _pro
 /// shadowed by a re-`let` are overwritten in the local map; the
 /// caller's snapshot is restored when the recursive call returns.
 #[cfg(feature = "z3")]
+#[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
     bindings: &mut HashMap<String, i64>,
+    sorts: &mut HashMap<String, Sort>,
     tc: &mut crate::typechecker::TypeChecker,
     next_idx: &mut usize,
     timeout_ms: u32,
@@ -92,20 +163,29 @@ fn walk(
             // scope; we still snapshot so a stray non-program caller
             // doesn't leak bindings.
             let snap = bindings.clone();
+            let sort_snap = sorts.clone();
             for s in stmts {
-                walk(&s.node, bindings, tc, next_idx, timeout_ms, verbose);
+                walk(&s.node, bindings, sorts, tc, next_idx, timeout_ms, verbose);
             }
             *bindings = snap;
+            sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
         }
         Node::Block { stmts, .. } => {
             let snap = bindings.clone();
+            let sort_snap = sorts.clone();
             for s in stmts {
-                walk(s, bindings, tc, next_idx, timeout_ms, verbose);
+                walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
             }
             *bindings = snap;
-            invalidate_mutations(node, bindings);
+            sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
+            invalidate_mutations(node, bindings, sorts);
         }
-        Node::Function { body, .. } | Node::FunctionLiteral { body, .. } => {
+        Node::Function {
+            body, parameters, ..
+        }
+        | Node::FunctionLiteral {
+            body, parameters, ..
+        } => {
             // Each fn body opens a fresh scope. Pre-loop constants
             // declared inside the fn become bindings just for that
             // fn; the outer caller's bindings are NOT visible (we
@@ -113,10 +193,41 @@ fn walk(
             // RES-1798: pre-size to 8 — same shape as the outer
             // bindings map. Each fn body opens a fresh scope.
             let mut fn_bindings: HashMap<String, i64> = HashMap::with_capacity(8);
-            walk(body, &mut fn_bindings, tc, next_idx, timeout_ms, verbose);
+            let mut fn_sorts = HashMap::new();
+            for (ty, name) in parameters {
+                fn_sorts.insert(
+                    name.clone(),
+                    if integer_type(ty) {
+                        Sort::Integer
+                    } else {
+                        Sort::Unknown
+                    },
+                );
+            }
+            walk(
+                body,
+                &mut fn_bindings,
+                &mut fn_sorts,
+                tc,
+                next_idx,
+                timeout_ms,
+                verbose,
+            );
         }
+
         Node::LetStatement { name, value, .. } | Node::Const { name, value, .. } => {
-            invalidate_mutations(value, bindings);
+            let call_sort = if matches!(value.as_ref(), Node::CallExpression { .. }) {
+                expression_sort(value, sorts)
+            } else {
+                Sort::Unknown
+            };
+            invalidate_mutations(value, bindings, sorts);
+            let sort = if call_sort == Sort::Integer {
+                call_sort
+            } else {
+                expression_sort(value, sorts)
+            };
+            sorts.insert(name.clone(), sort);
             if let Some(v) = literal_int(value) {
                 bindings.insert(name.clone(), v);
             } else {
@@ -126,7 +237,8 @@ fn walk(
             }
         }
         Node::Assignment { name, value, .. } => {
-            invalidate_mutations(value, bindings);
+            invalidate_mutations(value, bindings, sorts);
+            sorts.insert(name.clone(), expression_sort(value, sorts));
             bindings.remove(name);
         }
         Node::IfStatement {
@@ -135,20 +247,34 @@ fn walk(
             alternative,
             ..
         } => {
-            invalidate_mutations(condition, bindings);
+            invalidate_mutations(condition, bindings, sorts);
             let snap = bindings.clone();
-            walk(consequence, bindings, tc, next_idx, timeout_ms, verbose);
+            let sort_snap = sorts.clone();
+            walk(
+                consequence,
+                bindings,
+                sorts,
+                tc,
+                next_idx,
+                timeout_ms,
+                verbose,
+            );
+            let consequence_sorts = sorts.clone();
             match alternative {
                 Some(alt) => {
                     *bindings = snap.clone();
-                    walk(alt, bindings, tc, next_idx, timeout_ms, verbose);
+                    *sorts = sort_snap.clone();
+                    walk(alt, bindings, sorts, tc, next_idx, timeout_ms, verbose);
                     *bindings = snap;
+                    sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
                 }
                 None => {
                     *bindings = snap;
+                    sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
                 }
             }
-            invalidate_mutations(node, bindings);
+            sorts.retain(|name, sort| consequence_sorts.get(name) == Some(sort));
+            invalidate_mutations(node, bindings, sorts);
         }
         Node::WhileStatement {
             condition,
@@ -157,12 +283,13 @@ fn walk(
             span,
             ..
         } => {
-            invalidate_mutations(condition, bindings);
+            invalidate_mutations(condition, bindings, sorts);
             let entry_bindings = bindings.clone();
+            let entry_sorts = sorts.clone();
             // A nested loop can run after any number of outer iterations.
-            invalidate_mutations(body, bindings);
-            walk(body, bindings, tc, next_idx, timeout_ms, verbose);
-            invalidate_mutations(body, bindings);
+            invalidate_mutations(body, bindings, sorts);
+            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+            invalidate_mutations(body, bindings, sorts);
 
             // Collect the full invariant list — both pre-body
             // (RES-132a) and statement-form (RES-222) variants.
@@ -190,6 +317,7 @@ fn walk(
                     condition,
                     body,
                     &entry_bindings,
+                    &integer_names(&entry_sorts),
                     &assigned,
                     span,
                     next_idx,
@@ -206,12 +334,26 @@ fn walk(
             span,
             ..
         } => {
-            invalidate_mutations(iterable, bindings);
+            invalidate_mutations(iterable, bindings, sorts);
             let entry_bindings = bindings.clone();
-            invalidate_mutations(body, bindings);
+            let entry_sorts = sorts.clone();
+            invalidate_mutations(body, bindings, sorts);
             bindings.remove(name);
-            walk(body, bindings, tc, next_idx, timeout_ms, verbose);
-            invalidate_mutations(body, bindings);
+            sorts.insert(
+                name.clone(),
+                if literal_int_array(iterable).is_some() {
+                    Sort::Integer
+                } else {
+                    Sort::Unknown
+                },
+            );
+            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
+            invalidate_mutations(body, bindings, sorts);
+            if let Some(sort) = entry_sorts.get(name) {
+                sorts.insert(name.clone(), *sort);
+            } else {
+                sorts.remove(name);
+            }
 
             let body_invs = crate::loop_invariants::collect_body_invariants(body);
             if pre_invariants.is_empty() && body_invs.is_empty() {
@@ -224,6 +366,8 @@ fn walk(
             let Some(elements) = literal_int_array(iterable) else {
                 return;
             };
+            let mut entry_sorts = entry_sorts;
+            entry_sorts.insert(name.clone(), Sort::Integer);
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 try_prove_for_in_invariant(
                     tc,
@@ -232,6 +376,7 @@ fn walk(
                     body,
                     &elements,
                     &entry_bindings,
+                    &integer_names(&entry_sorts),
                     span,
                     next_idx,
                     timeout_ms,
@@ -240,41 +385,52 @@ fn walk(
             }
         }
         Node::LiveBlock { body, .. } => {
-            walk(body, bindings, tc, next_idx, timeout_ms, verbose);
+            walk(body, bindings, sorts, tc, next_idx, timeout_ms, verbose);
         }
         Node::TryCatch { body, handlers, .. } => {
             // A handler can start after any prefix of the protected body.
-            invalidate_mutations(node, bindings);
+            invalidate_mutations(node, bindings, sorts);
             let entry_bindings = bindings.clone();
+            let entry_sorts = sorts.clone();
             for s in body {
-                walk(s, bindings, tc, next_idx, timeout_ms, verbose);
+                walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
             }
             for (_v, h) in handlers {
                 *bindings = entry_bindings.clone();
+                *sorts = entry_sorts.clone();
                 for s in h {
-                    walk(s, bindings, tc, next_idx, timeout_ms, verbose);
+                    walk(s, bindings, sorts, tc, next_idx, timeout_ms, verbose);
                 }
             }
             *bindings = entry_bindings;
-            invalidate_mutations(node, bindings);
+            *sorts = entry_sorts;
+            invalidate_mutations(node, bindings, sorts);
         }
         Node::ImplBlock { methods, .. } => {
             for m in methods {
-                walk(m, bindings, tc, next_idx, timeout_ms, verbose);
+                walk(m, bindings, sorts, tc, next_idx, timeout_ms, verbose);
             }
         }
-        _ => invalidate_mutations(node, bindings),
+        _ => invalidate_mutations(node, bindings, sorts),
     }
 }
 
 #[cfg(feature = "z3")]
-fn invalidate_mutations(node: &Node, bindings: &mut HashMap<String, i64>) {
+fn invalidate_mutations(
+    node: &Node,
+    bindings: &mut HashMap<String, i64>,
+    sorts: &mut HashMap<String, Sort>,
+) {
     crate::uniqueness_walk::visit(node, &mut |child| match child {
-        Node::Assignment { name, .. } => {
+        Node::Assignment { name, value, .. } => {
             bindings.remove(name);
+            sorts.insert(name.clone(), expression_sort(value, sorts));
         }
         // Calls may mutate captured or global state beyond this local model.
-        Node::CallExpression { .. } => bindings.clear(),
+        Node::CallExpression { .. } => {
+            bindings.clear();
+            sorts.clear();
+        }
         _ => {}
     });
 }
@@ -289,31 +445,27 @@ fn try_prove_invariant(
     condition: &Node,
     body: &Node,
     bindings: &HashMap<String, i64>,
+    integers: &HashSet<String>,
     assigned: &BTreeSet<&str>,
     loop_span: &Span,
     next_idx: &mut usize,
     timeout_ms: u32,
     verbose: bool,
 ) {
-    let prove = if tc.captures_proofs() {
-        crate::verifier_z3::prove_tautology_with_certificate
-    } else {
-        crate::verifier_z3::prove_tautology_with_axioms_and_timeout
-    };
     // -------- Base case --------
     // Bindings include every pre-loop constant. If the invariant
     // is provable from these alone, the entry obligation is met.
     //
-    // RES-1194: only the `Some(true)` verdict matters here — the
-    // immediate `return` discards everything else identically. Use
-    // the tautology-only fast path so Z3 doesn't run the
-    // contradiction-phase `solver.check()` whose result we'd
-    // throw away. Certificate is still produced for the proven case
-    // so the SMT-LIB2 emission below keeps working.
-    let (base_proven, base_cert, _timed) = prove(invariant, bindings, &[], timeout_ms);
-    if !base_proven || (tc.captures_proofs() && base_cert.is_none()) {
+    let Some(base_cert) = crate::verifier_z3::prove_loop_machine(
+        invariant,
+        bindings,
+        integers,
+        None,
+        &[],
+        timeout_ms,
+    ) else {
         return;
-    }
+    };
 
     // -------- Inductive step --------
     // Drop bindings for names assigned in the body so they're free.
@@ -335,39 +487,147 @@ fn try_prove_invariant(
         None => return, // body shape unsupported — bail
     };
 
-    // Goal: (invariant /\ cond) => WP(body, invariant)
-    //     ≡ NOT(invariant /\ cond) || WP(body, invariant)
-    let goal = build_implication(invariant, condition, &wp);
-
-    // The inductive step needs the invariant itself as a hypothesis
-    // — we pass it as an axiom rather than embedding inside the
-    // implication so the SMT-LIB2 cert has a clean shape. (Embedding
-    // works equivalently; the ax form mirrors how `recovers_to`
-    // discharges its requires-precondition.)
-    //
-    // RES-1194: same tautology-only path as the base case — the
-    // `return` below discards every non-`Some(true)` verdict
-    // identically.
-    let (step_proven, step_cert, _timed) = prove(&goal, &step_bindings, &[], timeout_ms);
-    if !step_proven || (tc.captures_proofs() && step_cert.is_none()) {
+    let Node::Block { stmts, .. } = body else {
         return;
+    };
+    let mut state: HashMap<String, Node> = step_bindings
+        .iter()
+        .map(|(name, value)| (name.clone(), integer_node(*value)))
+        .collect();
+    let mut evaluated = Vec::new();
+    for statement in stmts {
+        match statement {
+            Node::Assignment { name, value, .. } => {
+                let Some(value) = finite_state_expression(value, &state) else {
+                    return;
+                };
+                evaluated.push(value.clone());
+                state.insert(name.clone(), value);
+            }
+            Node::InvariantStatement { .. } => {}
+            _ => return,
+        }
     }
-
+    let steps = if let Some(step_cert) = crate::verifier_z3::prove_loop_machine(
+        &wp,
+        &step_bindings,
+        integers,
+        Some((invariant, condition)),
+        &evaluated,
+        timeout_ms,
+    ) {
+        vec![step_cert]
+    } else {
+        let Some(steps) =
+            finite_while_trace(invariant, condition, body, bindings, integers, timeout_ms)
+        else {
+            return;
+        };
+        steps
+    };
     let idx = *next_idx;
     *next_idx += 1;
     tc.push_loop_invariant_certificates(
         idx,
-        base_cert.map_or_else(String::new, |cert| cert.smt2),
-        step_cert.into_iter().map(|cert| cert.smt2).collect(),
+        base_cert,
+        if tc.captures_proofs() {
+            steps
+        } else {
+            Vec::new()
+        },
     );
 
     let inv_span = invariant_span(invariant).unwrap_or(loop_span);
     if verbose {
         eprintln!(
-            "-- invariant proven, runtime check elided at {}:{}",
+            "-- invariant proven, runtime check retained at {}:{}",
             inv_span.start.line, inv_span.start.column
         );
     }
+}
+
+/// A concrete terminating trace can establish an invariant that is too weak
+/// for induction over arbitrary states. Every entry, branch and executed RHS
+/// is checked; reaching the expansion bound never grants proof credit.
+#[cfg(feature = "z3")]
+fn finite_while_trace(
+    invariant: &Node,
+    condition: &Node,
+    body: &Node,
+    bindings: &HashMap<String, i64>,
+    integers: &HashSet<String>,
+    timeout_ms: u32,
+) -> Option<Vec<String>> {
+    let Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut state: HashMap<String, Node> = bindings
+        .iter()
+        .map(|(name, value)| (name.clone(), integer_node(*value)))
+        .collect();
+    let no_bindings = HashMap::new();
+    let mut steps = Vec::new();
+    let conjunction = |left: Node, right: Node| Node::InfixExpression {
+        left: Box::new(left),
+        operator: "&&",
+        right: Box::new(right),
+        span: Span::default(),
+    };
+    for index in 0..=128 {
+        let entry = finite_state_expression(invariant, &state)?;
+        let condition = finite_state_expression(condition, &state)?;
+        let exit = Node::PrefixExpression {
+            operator: "!",
+            right: Box::new(condition.clone()),
+            span: Span::default(),
+        };
+        if let Some(cert) = crate::verifier_z3::prove_loop_machine(
+            &conjunction(entry.clone(), exit),
+            &no_bindings,
+            integers,
+            None,
+            &[],
+            timeout_ms,
+        ) {
+            steps.push(format!("; loop-proof-method: finite-while-trace\n{cert}"));
+            return Some(steps);
+        }
+        if index == 128 {
+            return None;
+        }
+        crate::verifier_z3::prove_loop_machine(
+            &condition,
+            &no_bindings,
+            integers,
+            None,
+            &[],
+            timeout_ms,
+        )?;
+        let mut evaluated = Vec::new();
+        for statement in stmts {
+            match statement {
+                Node::Assignment { name, value, .. } => {
+                    let value = finite_state_expression(value, &state)?;
+                    evaluated.push(value.clone());
+                    state.insert(name.clone(), value);
+                }
+                Node::InvariantStatement { .. } => {}
+                _ => return None,
+            }
+        }
+        let next = finite_state_expression(invariant, &state)?;
+        let goal = conjunction(conjunction(entry, condition), next);
+        let cert = crate::verifier_z3::prove_loop_machine(
+            &goal,
+            &no_bindings,
+            integers,
+            None,
+            &evaluated,
+            timeout_ms,
+        )?;
+        steps.push(format!("; loop-proof-method: finite-while-trace\n{cert}"));
+    }
+    None
 }
 
 /// Symbolically execute a finite literal array from the known entry state.
@@ -385,6 +645,7 @@ fn try_prove_for_in_invariant(
     body: &Node,
     elements: &[i64],
     bindings: &HashMap<String, i64>,
+    integers: &HashSet<String>,
     loop_span: &Span,
     next_idx: &mut usize,
     timeout_ms: u32,
@@ -406,27 +667,30 @@ fn try_prove_for_in_invariant(
     let Some(first_entry) = finite_state_expression(invariant, &state) else {
         return;
     };
-    let prove = if tc.captures_proofs() {
-        crate::verifier_z3::prove_tautology_with_certificate
-    } else {
-        crate::verifier_z3::prove_tautology_with_axioms_and_timeout
-    };
     // State expressions already capture entry constants. Passing the outer
     // bindings again would reintroduce a shadowed iteration name.
     let no_bindings = HashMap::new();
-    let (base_proven, base_cert, _) = prove(&first_entry, &no_bindings, &[], timeout_ms);
-    if !base_proven || (tc.captures_proofs() && base_cert.is_none()) {
+    let Some(base_cert) = crate::verifier_z3::prove_loop_machine(
+        &first_entry,
+        &no_bindings,
+        integers,
+        None,
+        &[],
+        timeout_ms,
+    ) else {
         return;
-    }
+    };
     let mut current_entry = first_entry;
     let mut step_certs = Vec::with_capacity(elements.len());
     for index in 0..elements.len() {
+        let mut evaluated = Vec::new();
         for stmt in stmts {
             match stmt {
                 Node::Assignment { name, value, .. } => {
                     let Some(value) = finite_state_expression(value, &state) else {
                         return;
                     };
+                    evaluated.push(value.clone());
                     state.insert(name.clone(), value);
                 }
                 Node::InvariantStatement { .. } => {}
@@ -453,28 +717,28 @@ fn try_prove_for_in_invariant(
             },
             None => current_entry.clone(),
         };
-        let (proven, cert, _) = prove(&goal, &no_bindings, &[], timeout_ms);
-        if !proven || (tc.captures_proofs() && cert.is_none()) {
+        let Some(cert) = crate::verifier_z3::prove_loop_machine(
+            &goal,
+            &no_bindings,
+            integers,
+            None,
+            &evaluated,
+            timeout_ms,
+        ) else {
             return;
-        }
-        if let Some(cert) = cert {
-            step_certs.push(cert.smt2);
-        }
+        };
+        step_certs.push(cert);
         if let Some(entry) = next_entry {
             current_entry = entry;
         }
     }
     let idx = *next_idx;
     *next_idx += 1;
-    tc.push_loop_invariant_certificates(
-        idx,
-        base_cert.map_or_else(String::new, |cert| cert.smt2),
-        step_certs,
-    );
+    tc.push_loop_invariant_certificates(idx, base_cert, step_certs);
     let inv_span = invariant_span(invariant).unwrap_or(loop_span);
     if verbose {
         eprintln!(
-            "-- invariant proven, runtime check elided at {}:{}",
+            "-- invariant proven, runtime check retained at {}:{}",
             inv_span.start.line, inv_span.start.column
         );
     }
@@ -668,29 +932,6 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
             span: *span,
         },
         _ => node.clone(),
-    }
-}
-
-/// Build the implication `(P /\ cond) => Q` as an AST that the Z3
-/// translator understands: `(! (P && cond)) || Q`.
-#[cfg(feature = "z3")]
-fn build_implication(p: &Node, cond: &Node, q: &Node) -> Node {
-    let p_and_cond = Node::InfixExpression {
-        left: Box::new(p.clone()),
-        operator: "&&",
-        right: Box::new(cond.clone()),
-        span: Span::default(),
-    };
-    let neg_p_and_cond = Node::PrefixExpression {
-        operator: "!",
-        right: Box::new(p_and_cond),
-        span: Span::default(),
-    };
-    Node::InfixExpression {
-        left: Box::new(neg_p_and_cond),
-        operator: "||",
-        right: Box::new(q.clone()),
-        span: Span::default(),
     }
 }
 

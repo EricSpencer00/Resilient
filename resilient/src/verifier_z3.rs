@@ -1534,6 +1534,7 @@ pub fn prove_tautology_with_axioms_and_timeout(
 }
 
 /// Certificate consumers need the query, even for a cached or constant verdict.
+#[cfg(test)]
 pub(crate) fn prove_tautology_with_certificate(
     expr: &Node,
     bindings: &HashMap<String, i64>,
@@ -1905,6 +1906,21 @@ pub(crate) struct MachineQuery {
     pub verdict: Option<bool>,
     pub query: String,
     pub counterexample: Option<String>,
+}
+
+mod loop_machine;
+
+pub(crate) fn prove_loop_machine(
+    goal: &Node,
+    bindings: &HashMap<String, i64>,
+    integers: &std::collections::HashSet<String>,
+    entry: Option<(&Node, &Node)>,
+    evaluated: &[Node],
+    timeout_ms: u32,
+) -> Option<String> {
+    Z3_CTX.with(|ctx| {
+        loop_machine::prove(ctx, goal, bindings, integers, entry, evaluated, timeout_ms)
+    })
 }
 
 pub(crate) fn machine_query(
