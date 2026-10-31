@@ -1,0 +1,209 @@
+//! Declaration-owned loop limits, separate from executable guards and source proofs.
+use crate::{Node, loop_bound::LoopBoundSpec, span::Span};
+use std::{cell::RefCell, collections::HashMap};
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct Declaration {
+    pub name: String,
+    span: Span,
+}
+pub(crate) type DeclarationPath = Vec<Declaration>;
+pub(crate) type Bounds = HashMap<DeclarationPath, Option<LoopBoundSpec>>;
+type Captured = HashMap<(usize, Declaration), LoopBoundSpec>;
+
+thread_local! {
+    static CURRENT: RefCell<Option<Bounds>> = const { RefCell::new(None) };
+    static CAPTURE: RefCell<Option<Captured>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn declaration(node: &Node) -> Option<Declaration> {
+    match node {
+        Node::Function { name, span, .. } => Some(Declaration {
+            name: name.clone(),
+            span: *span,
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) struct Invocation(Option<Bounds>);
+impl Invocation {
+    pub(crate) fn enter() -> Self {
+        Self(CURRENT.with(|slot| slot.replace(Some(Bounds::new()))))
+    }
+}
+impl Drop for Invocation {
+    fn drop(&mut self) {
+        CURRENT.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+
+pub(crate) fn snapshot() -> Option<Bounds> {
+    CURRENT.with(|slot| slot.borrow().clone())
+}
+pub(crate) fn install(bounds: Bounds) {
+    CURRENT.with(|slot| {
+        if let Some(current) = slot.borrow_mut().as_mut() {
+            *current = bounds;
+        }
+    });
+}
+
+pub(crate) struct ParseCapture(Option<Captured>);
+impl ParseCapture {
+    pub(crate) fn enter() -> Self {
+        Self(CAPTURE.with(|slot| slot.replace(Some(Captured::new()))))
+    }
+    pub(crate) fn finish(self, program: &Node) {
+        let mut bounds = Bounds::new();
+        CAPTURE.with(|slot| {
+            let captured = slot.borrow();
+            walk(program, &mut Vec::new(), &mut |node, path| {
+                if let Some(key) = capture_key(node) {
+                    let bound = captured.as_ref().and_then(|items| items.get(&key)).copied();
+                    bounds.insert(path.clone(), bound);
+                }
+            });
+        });
+        install(bounds);
+    }
+}
+impl Drop for ParseCapture {
+    fn drop(&mut self) {
+        CAPTURE.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+
+fn capture_key(node: &Node) -> Option<(usize, Declaration)> {
+    let Node::Function { body, .. } = node else {
+        return None;
+    };
+    // Addresses are compared only while this parser owns the still-live AST.
+    // The persisted key uses lexical paths and spans, so clones need no pointers.
+    Some((body.as_ref() as *const Node as usize, declaration(node)?))
+}
+
+pub(crate) fn record(node: &Node, raw: &str) {
+    let Some(key) = capture_key(node) else { return };
+    let Ok(bound) = raw.trim().parse::<u32>() else {
+        return;
+    };
+    if bound == 0 {
+        return;
+    }
+    CAPTURE.with(|slot| {
+        if let Some(captured) = slot.borrow_mut().as_mut() {
+            captured.insert(key, LoopBoundSpec { bound });
+        }
+    });
+}
+
+pub(crate) fn walk(
+    node: &Node,
+    path: &mut DeclarationPath,
+    visit: &mut impl FnMut(&Node, &DeclarationPath),
+) {
+    let own = declaration(node);
+    if let Some(own) = &own {
+        path.push(own.clone());
+    }
+    visit(node, path);
+    crate::uniqueness_walk::children(node, &mut |child| walk(child, path, visit));
+    if own.is_some() {
+        path.pop();
+    }
+}
+
+pub(crate) fn top_level() -> Option<HashMap<String, LoopBoundSpec>> {
+    snapshot().map(|bounds| {
+        bounds
+            .into_iter()
+            .filter_map(|(path, bound)| {
+                if path.len() == 1 {
+                    bound.map(|bound| (path[0].name.clone(), bound))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    })
+}
+
+pub(crate) fn for_function(
+    node: &Node,
+    legacy: &HashMap<String, LoopBoundSpec>,
+) -> Option<LoopBoundSpec> {
+    let key = declaration(node)?;
+    CURRENT.with(|slot| match slot.borrow().as_ref() {
+        Some(bounds) => bounds.get(&vec![key]).copied().flatten(),
+        None => legacy.get(&key.name).copied(),
+    })
+}
+
+/// Transfer only declarations retained by the import's visibility/selector rules.
+pub(crate) fn transfer(
+    node: &Node,
+    source: &Bounds,
+    target: &mut Bounds,
+    namespace: Option<&str>,
+) -> Result<(), String> {
+    let renamed = declaration(node).zip(namespace);
+    let mut error = None;
+    walk(node, &mut Vec::new(), &mut |candidate, path| {
+        if declaration(candidate).is_none() {
+            return;
+        }
+        let Some(bound) = source.get(path) else {
+            return;
+        };
+        let mut destination = path.clone();
+        if let Some((root, namespace)) = &renamed
+            && destination.first() == Some(root)
+        {
+            destination[0].name = format!("{namespace}::{}", root.name);
+        }
+        if let Some(previous) = target.get(&destination)
+            && previous != bound
+        {
+            error = Some(format!(
+                "ambiguous loop-bound ownership for declaration `{}`",
+                destination[0].name
+            ));
+            return;
+        }
+        target.insert(destination, *bound);
+    });
+    match error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[cfg(all(test, feature = "z3"))]
+mod tests {
+    #[test]
+    fn static_bound_check_uses_the_actual_function_body() {
+        let _lock = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let _invocation = super::Invocation::enter();
+        let (program, errors) = crate::parse(
+            "@require_contracts(strict)\n#[loop_bound(1)] fn f(int n)->int requires n>=0 ensures result>=0 {let i=0;while i<1 {i=i+1;}return i;}\n#[loop_bound(1)] fn f(int n)->int requires n>=0 ensures result>=0 {let i=0;while i<2 {i=i+1;}return i;}",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let result = crate::loop_bound::check(&program, "<declaration-test>");
+        crate::feature_attrs::reset();
+        assert!(
+            result.is_err(),
+            "the second declaration exceeds its own bound"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("may exceed its declared bound")
+        );
+    }
+}

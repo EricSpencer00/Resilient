@@ -1,0 +1,238 @@
+[
+  {
+    "name": "plain",
+    "files": {
+      "entry.rz": "use \"dep.rz\"; f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "alias",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; dep::f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "same_name_small",
+    "files": {
+      "entry.rz": "use \"a.rz\" as a; use \"b.rz\" as b; a::f();",
+      "a.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}",
+      "b.rz": "#[loop_bound(3)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "same_name_reverse",
+    "files": {
+      "entry.rz": "use \"b.rz\" as b; use \"a.rz\" as a; a::f();",
+      "a.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}",
+      "b.rz": "#[loop_bound(3)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "same_name_large",
+    "files": {
+      "entry.rz": "use \"a.rz\" as a; use \"b.rz\" as b; b::f();",
+      "a.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}",
+      "b.rz": "#[loop_bound(3)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "unannotated_sibling",
+    "files": {
+      "entry.rz": "use \"a.rz\" as a; use \"b.rz\" as b; b::f(); a::f();",
+      "a.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}",
+      "b.rz": "fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0\n1\n0",
+    "success": false
+  },
+  {
+    "name": "local_not_imported",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; fn f(){let i=0;while i<2 {println(i);i=i+1;}} f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "selector_not_borrowed",
+    "files": {
+      "entry.rz": "use \"dep.rz\" { kept }; fn f(){let i=0;while i<2 {println(i);i=i+1;}} f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}} fn kept(){}"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "private_not_borrowed",
+    "files": {
+      "entry.rz": "use \"dep.rz\"; fn f(){let i=0;while i<2 {println(i);i=i+1;}} f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}} pub fn kept(){}"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "selected_bound",
+    "files": {
+      "entry.rz": "use \"dep.rz\" { f }; f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}} fn unused(){}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "reexport_alias",
+    "files": {
+      "entry.rz": "use \"middle.rz\" as mid; mid::f();",
+      "middle.rz": "pub use \"leaf.rz\" { f };",
+      "leaf.rz": "#[loop_bound(1)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}} pub fn other(){}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "nested_namespaces",
+    "files": {
+      "entry.rz": "use \"middle.rz\" as mid; mid::bridge();",
+      "middle.rz": "pub use \"leaf.rz\" as leaf; pub fn bridge(){leaf::f();}",
+      "leaf.rz": "#[loop_bound(1)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "generic_alias",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; dep::f(7);",
+      "dep.rz": "#[loop_bound(1)] fn f<T>(T value)->T {let i=0;while i<2 {println(i);i=i+1;}return value;}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "nested_ownership",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; dep::left();",
+      "dep.rz": "fn left(){#[loop_bound(1)] fn g(){let i=0;while i<2 {println(i);i=i+1;}} g();} fn right(){#[loop_bound(3)] fn g(){let i=0;while i<2 {println(i);i=i+1;}} g();}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "nested_positive",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; dep::right();",
+      "dep.rz": "fn left(){#[loop_bound(1)] fn g(){let i=0;while i<2 {println(i);i=i+1;}} g();} fn right(){#[loop_bound(3)] fn g(){let i=0;while i<2 {println(i);i=i+1;}} g();}"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "nested_override",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; dep::f();",
+      "dep.rz": "#[loop_bound(1)] fn f(){#[loop_bound(2)] fn g(){let i=0;while i<3 {println(i);i=i+1;}} g();}"
+    },
+    "stdout": "0\n1",
+    "success": false
+  },
+  {
+    "name": "package_namespace",
+    "files": {
+      "entry.rz": "use lib::ops; lib::f();",
+      "resilient.toml": "[package]\nname=\"loop-check\"\nversion=\"0.1.0\"\n[dependencies]\nlib={path=\"lib\"}\n",
+      "lib/resilient.toml": "[package]\nname=\"lib\"\nversion=\"0.1.0\"\n",
+      "lib/src/ops.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "package_alias",
+    "files": {
+      "entry.rz": "use lib::ops as renamed; renamed::f();",
+      "resilient.toml": "[package]\nname=\"loop-check\"\nversion=\"0.1.0\"\n[dependencies]\nlib={path=\"lib\"}\n",
+      "lib/resilient.toml": "[package]\nname=\"lib\"\nversion=\"0.1.0\"\n",
+      "lib/src/ops.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "cfg_filtered_not_borrowed",
+    "files": {
+      "entry.rz": "#[cfg(feature=\"never_enabled_loop_fixture\")] #[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}} fn f(){let i=0;while i<2 {println(i);i=i+1;}} f();"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "strict_execution",
+    "files": {
+      "entry.rz": "@require_contracts(strict)\nuse \"dep.rz\" as dep; dep::f(0);",
+      "dep.rz": "#[loop_bound(1)] fn f(int n)->int requires n>=0 ensures result>=0 {let i=0;while i<2 {println(i);i=i+1;}return i;}"
+    },
+    "stdout": "0",
+    "success": false,
+    "flags": [
+      "--typecheck-strict"
+    ]
+  },
+  {
+    "name": "ambiguous_alias",
+    "files": {
+      "entry.rz": "use \"a.rz\" as same; use \"b.rz\" as same; same::f();",
+      "a.rz": "#[loop_bound(1)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}",
+      "b.rz": "#[loop_bound(2)] fn f(){let i=0;while i<2 {println(i);i=i+1;}}"
+    },
+    "stdout": "",
+    "success": false,
+    "error": "ambiguous loop-bound ownership"
+  },
+  {
+    "name": "inline_module",
+    "files": {
+      "entry.rz": "mod a {#[loop_bound(1)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} mod b {#[loop_bound(3)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} a::f();"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "inline_positive",
+    "files": {
+      "entry.rz": "mod a {#[loop_bound(1)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} mod b {#[loop_bound(3)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} b::f();"
+    },
+    "stdout": "0\n1",
+    "success": true
+  },
+  {
+    "name": "inline_glob",
+    "files": {
+      "entry.rz": "mod a {#[loop_bound(1)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} mod b {#[loop_bound(3)] pub fn f(){let i=0;while i<2 {println(i);i=i+1;}}} use a::*; f();"
+    },
+    "stdout": "0",
+    "success": false
+  },
+  {
+    "name": "same_file_two_aliases",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as a; use \"dep.rz\" as b; a::f(1); b::f(2);",
+      "dep.rz": "#[loop_bound(1)] fn f(int n){let i=0;while i<n {println(i);i=i+1;}}"
+    },
+    "stdout": "0\n0",
+    "success": false
+  }
+]

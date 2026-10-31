@@ -187,7 +187,6 @@ pub fn reset() {
 /// three.
 #[cfg(test)]
 pub fn record(item_name: &str, record: AttrRecord) {
-    crate::loop_bound_runtime::record_scoped(item_name, &record);
     TEST_REGISTRY.with(|registry| {
         let mut reg = registry.borrow_mut();
         match reg.by_item.get_mut(item_name) {
@@ -210,7 +209,6 @@ pub fn record(item_name: &str, record: AttrRecord) {
 
 #[cfg(not(test))]
 pub fn record(item_name: &str, record: AttrRecord) {
-    crate::loop_bound_runtime::record_scoped(item_name, &record);
     if let Ok(mut g) = ATTR_REGISTRY.write() {
         let reg = g.get_or_insert_with(Registry::default);
 

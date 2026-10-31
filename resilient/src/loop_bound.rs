@@ -24,7 +24,7 @@
 use crate::Node;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoopBoundSpec {
     // Only read behind `#[cfg(feature = "z3")]`; the syntactic (non-z3)
     // enforcement path only needs presence in the map, not the value.
@@ -34,7 +34,7 @@ pub struct LoopBoundSpec {
 
 /// Collect all `#[loop_bound(N)]` attributes from the feature registry.
 pub fn collect() -> HashMap<String, LoopBoundSpec> {
-    if let Some(bounds) = crate::loop_bound_runtime::scoped_bounds() {
+    if let Some(bounds) = crate::loop_bound_metadata::top_level() {
         return bounds;
     }
     let attrs = crate::feature_attrs::find_kind("loop_bound");
@@ -85,7 +85,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 if has_while_loop(body) {
                     let line = span.start.line;
                     // It has a while-loop, so it must have a #[loop_bound]
-                    if !bounds.contains_key(name) {
+                    let spec = crate::loop_bound_metadata::for_function(&stmt.node, &bounds);
+                    if spec.is_none() {
                         return Err(diagnostic(
                             source_path,
                             line,
@@ -97,8 +98,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                     // If z3 feature is enabled, verify the bound
                     #[cfg(feature = "z3")]
                     {
-                        if let Some(spec) = bounds.get(name) {
-                            verify_loop_bounds(program, name, spec.bound, source_path)?;
+                        if let Some(spec) = spec {
+                            verify_loop_bounds(program, &stmt.node, spec.bound, source_path)?;
                         }
                     }
                 }
@@ -112,42 +113,34 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 #[cfg(feature = "z3")]
 fn verify_loop_bounds(
     program: &Node,
-    fn_name: &str,
+    function: &Node,
     declared_bound: u32,
     source_path: &str,
 ) -> Result<(), String> {
-    if let Node::Program(stmts) = program {
-        for stmt in stmts {
-            if let Node::Function {
-                name,
-                body,
-                requires,
-                parameters,
-                ..
-            } = &stmt.node
-            {
-                if name == fn_name {
-                    if !static_fragment(program, body, requires, parameters) {
-                        eprintln!(
-                            "{source_path}: warning[loop_bound]: `{fn_name}` is outside the static integer-counter fragment; will rely on runtime check"
-                        );
-                        return Ok(());
-                    }
-                    let initial_values = HashMap::new();
-                    verify_while_loops_in_node(
-                        body,
-                        declared_bound,
-                        source_path,
-                        fn_name,
-                        requires,
-                        &initial_values,
-                    )?;
-                    return Ok(());
-                }
-            }
-        }
+    let Node::Function {
+        name,
+        body,
+        requires,
+        parameters,
+        ..
+    } = function
+    else {
+        return Ok(());
+    };
+    if !static_fragment(program, body, requires, parameters) {
+        eprintln!(
+            "{source_path}: warning[loop_bound]: `{name}` is outside the static integer-counter fragment; will rely on runtime check"
+        );
+        return Ok(());
     }
-    Ok(())
+    verify_while_loops_in_node(
+        body,
+        declared_bound,
+        source_path,
+        name,
+        requires,
+        &HashMap::new(),
+    )
 }
 
 #[cfg(feature = "z3")]

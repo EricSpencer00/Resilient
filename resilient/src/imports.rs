@@ -202,6 +202,8 @@ fn expand_recursive(
             .unwrap_or_default());
     }
 
+    let own_bounds = crate::loop_bound_metadata::snapshot().unwrap_or_default();
+    let mut expanded_bounds = crate::loop_bound_metadata::Bounds::new();
     let mut expanded_origins = Vec::new();
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
@@ -246,6 +248,7 @@ fn expand_recursive(
                 if alias.is_none() && !loaded.insert(canon.clone()) {
                     continue;
                 }
+                let metadata_scope = crate::loop_bound_metadata::Invocation::enter();
                 let mut imported = load_and_parse_traced(&resolved.path, trace)?;
                 let dir = resolved.path.parent().unwrap_or_else(|| Path::new("."));
                 in_flight.push(canon);
@@ -261,16 +264,20 @@ fn expand_recursive(
                     origin.map(|_| resolved.path.as_path()),
                 )?;
                 in_flight.pop();
+                let imported_bounds = crate::loop_bound_metadata::snapshot().unwrap_or_default();
+                drop(metadata_scope);
                 if let Node::Program(stmts) = imported {
                     append_imported_stmts(
                         stmts,
                         &imported_origins,
                         &mut expanded_origins,
                         &mut expanded,
+                        &imported_bounds,
+                        &mut expanded_bounds,
                         selectors.as_deref(),
                         is_pub,
                         alias.as_deref().or(resolved.namespace.as_deref()),
-                    );
+                    )?;
                 }
                 continue;
             }
@@ -294,6 +301,7 @@ fn expand_recursive(
                 } else if alias.is_none() {
                     continue;
                 }
+                let metadata_scope = crate::loop_bound_metadata::Invocation::enter();
                 let imported_program = load_and_parse_traced(&dep_path, trace)?;
                 let imported_dir = dep_path
                     .parent()
@@ -313,6 +321,8 @@ fn expand_recursive(
                     origin.map(|_| dep_path.as_path()),
                 )?;
                 in_flight.pop();
+                let imported_bounds = crate::loop_bound_metadata::snapshot().unwrap_or_default();
+                drop(metadata_scope);
                 if let Node::Program(imported_stmts) = imported_program {
                     let ns = alias.as_deref().unwrap_or(dep_name);
                     append_imported_stmts(
@@ -320,10 +330,12 @@ fn expand_recursive(
                         &imported_origins,
                         &mut expanded_origins,
                         &mut expanded,
+                        &imported_bounds,
+                        &mut expanded_bounds,
                         selectors.as_deref(),
                         is_pub,
                         Some(ns),
-                    );
+                    )?;
                 }
                 continue;
             }
@@ -357,6 +369,7 @@ fn expand_recursive(
                 loaded.insert(canon.clone());
             }
 
+            let metadata_scope = crate::loop_bound_metadata::Invocation::enter();
             let imported_program = load_and_parse_traced(&target, trace)?;
             let imported_dir = target
                 .parent()
@@ -377,6 +390,8 @@ fn expand_recursive(
                 origin.map(|_| target.as_path()),
             )?;
             in_flight.pop();
+            let imported_bounds = crate::loop_bound_metadata::snapshot().unwrap_or_default();
+            drop(metadata_scope);
 
             if let Node::Program(imported_stmts) = imported_program {
                 append_imported_stmts(
@@ -384,12 +399,20 @@ fn expand_recursive(
                     &imported_origins,
                     &mut expanded_origins,
                     &mut expanded,
+                    &imported_bounds,
+                    &mut expanded_bounds,
                     selectors.as_deref(),
                     is_pub,
                     alias.as_deref(),
-                );
+                )?;
             }
         } else {
+            crate::loop_bound_metadata::transfer(
+                &stmt.node,
+                &own_bounds,
+                &mut expanded_bounds,
+                None,
+            )?;
             expanded.push(stmt);
             if let Some(path) = origin {
                 expanded_origins.push(Some(path.display().to_string()));
@@ -397,6 +420,7 @@ fn expand_recursive(
         }
     }
     *stmts = expanded;
+    crate::loop_bound_metadata::install(expanded_bounds);
     Ok(expanded_origins)
 }
 
@@ -862,10 +886,12 @@ fn append_imported_stmts(
     origins: &[Option<String>],
     expanded_origins: &mut Vec<Option<String>>,
     expanded: &mut Vec<Spanned<Node>>,
+    source_bounds: &crate::loop_bound_metadata::Bounds,
+    expanded_bounds: &mut crate::loop_bound_metadata::Bounds,
     selectors: Option<&[String]>,
     make_pub: bool,
     namespace: Option<&str>,
-) {
+) -> Result<(), String> {
     let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
     let imported_names: HashSet<String> = imported_stmts
         .iter()
@@ -894,6 +920,7 @@ fn append_imported_stmts(
             }
         }
 
+        crate::loop_bound_metadata::transfer(&s.node, source_bounds, expanded_bounds, namespace)?;
         if let Some(ns) = namespace {
             rewrite_namespaced_calls(&mut s.node, ns, &imported_names, &HashSet::new());
             s = rename_decl(s, ns);
@@ -906,6 +933,7 @@ fn append_imported_stmts(
             expanded_origins.push(origins.get(index).cloned().flatten());
         }
     }
+    Ok(())
 }
 
 /// RES-4115: gate for attaching the `E0015` registry code to the

@@ -679,6 +679,7 @@ mod contract_inference;
 // `@require_contracts` directive and the shared enrolment predicate.
 mod contract_policy;
 mod loop_bound;
+mod loop_bound_metadata;
 mod loop_bound_runtime;
 // RES-3779 Phase A: routes declared + inferred contract clauses
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
@@ -3927,6 +3928,7 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> Node {
+        let loop_metadata = crate::loop_bound_metadata::ParseCapture::enter();
         // RES-1812: pre-size to 16 — typical programs declare 5-50
         // top-level statements (fns, structs, type aliases, impls).
         // Saves the 0→4→8→16 doubling chain on every parse, paid
@@ -3979,7 +3981,9 @@ impl Parser {
             }
         }
 
-        Node::Program(program)
+        let program = Node::Program(program);
+        loop_metadata.finish(&program);
+        program
     }
 
     fn parse_statement(&mut self) -> Option<Node> {
@@ -31787,6 +31791,7 @@ fn execute_file(
     // without the verbose status lines that `--typecheck` prints.
     type_strict: bool,
 ) -> RResult<()> {
+    let _loop_bounds = crate::loop_bound_metadata::Invocation::enter();
     #[cfg(not(feature = "z3"))]
     if emit_cert_dir.is_some() {
         return Err(backend_limited_feature_message(
@@ -35162,6 +35167,7 @@ fn dispatch_stack_usage_subcommand(args: &[String]) -> Option<i32> {
 /// WASM consumers use `run_program` instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_cli() {
+    let _loop_bounds = crate::loop_bound_metadata::Invocation::enter();
     // Get command line arguments
     let mut args: Vec<String> = env::args().collect();
     let deny_unproven_invariants = match strict_loop_cli::validate(&mut args) {

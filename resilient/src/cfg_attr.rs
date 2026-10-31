@@ -503,6 +503,9 @@ fn parse_feature_attribute(
             node_item_name(node)
         }
     {
+        if name == "loop_bound" {
+            crate::loop_bound_metadata::record(node, &args);
+        }
         crate::feature_attrs::record(
             item_name,
             crate::feature_attrs::AttrRecord {

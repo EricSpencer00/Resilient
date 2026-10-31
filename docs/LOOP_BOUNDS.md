@@ -52,6 +52,9 @@ separate analysis. Contract enrolment requires the annotation regardless of
 whether `@ai_generated` is attached.
 
 
-Import namespace aliases currently do not preserve loop-bound attribute identity.
-Imported aliases therefore require a separate metadata-propagation fix before
-their declared budgets can be relied on.
+Bounds belong to parsed declarations, including their lexical parent functions
+and source positions. Imports carry the metadata of selected declarations through
+namespace aliases and reexports. Private, unselected, or conditionally excluded
+declarations cannot give a bound to an unrelated function with the same name.
+Each imported source is collected in a separate scope; explicit inner-function
+bounds retain their ownership through cloning and generic specialization.
