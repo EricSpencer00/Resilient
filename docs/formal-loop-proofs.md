@@ -26,6 +26,6 @@ Successful queries declare `QF_BV`, include the selected overflow policy, and re
 
 Integer symbols must have a tracked signed-integer domain; floating-point and unknown values are not silently encoded as integers. Function parameters and lexical shadowing are accounted for.
 
-The supported expression model includes signed integer literals and identifiers, arithmetic, signed comparisons, Boolean connectives, and integer bitwise AND/OR/XOR. Unsupported constructs receive no static proof. Query size, expression depth, and solver time are bounded; unknown or timed-out results do not count as proofs.
+The supported expression model includes signed integer literals and identifiers, arithmetic, signed comparisons, Boolean connectives, and integer bitwise AND/OR/XOR. Unsupported constructs receive no static proof. Query size, expression depth, and solver time are bounded; unknown or timed-out results do not count as proofs. Symbolic substitution charges a shared 32,768-node expansion budget before allocating copies, with a depth limit of 128. Finite traces share their budget across assignments and iterations. Exhausting it declines static proof credit while preserving runtime guards.
 
 These certificates establish the emitted obligations within this restricted model. They do not prove arbitrary compiler correctness, program termination in general, every program safety property, or certification to a safety standard. Runtime guards remain part of the executable behavior.

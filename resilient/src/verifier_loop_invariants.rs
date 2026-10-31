@@ -493,6 +493,7 @@ fn try_prove_invariant(
     let Node::Block { stmts, .. } = body else {
         return;
     };
+    let mut expansion_budget = 32_768;
     let mut state: HashMap<String, Node> = step_bindings
         .iter()
         .map(|(name, value)| (name.clone(), integer_node(*value)))
@@ -501,7 +502,8 @@ fn try_prove_invariant(
     for statement in stmts {
         match statement {
             Node::Assignment { name, value, .. } => {
-                let Some(value) = finite_state_expression(value, &state) else {
+                let Some(value) = finite_state_expression(value, &state, &mut expansion_budget)
+                else {
                     return;
                 };
                 evaluated.push(value.clone());
@@ -564,6 +566,7 @@ fn finite_while_trace(
     let Node::Block { stmts, .. } = body else {
         return None;
     };
+    let mut expansion_budget = 32_768;
     let mut state: HashMap<String, Node> = bindings
         .iter()
         .map(|(name, value)| (name.clone(), integer_node(*value)))
@@ -577,8 +580,8 @@ fn finite_while_trace(
         span: Span::default(),
     };
     for index in 0..=128 {
-        let entry = finite_state_expression(invariant, &state)?;
-        let condition = finite_state_expression(condition, &state)?;
+        let entry = finite_state_expression(invariant, &state, &mut expansion_budget)?;
+        let condition = finite_state_expression(condition, &state, &mut expansion_budget)?;
         let exit = Node::PrefixExpression {
             operator: "!",
             right: Box::new(condition.clone()),
@@ -610,7 +613,7 @@ fn finite_while_trace(
         for statement in stmts {
             match statement {
                 Node::Assignment { name, value, .. } => {
-                    let value = finite_state_expression(value, &state)?;
+                    let value = finite_state_expression(value, &state, &mut expansion_budget)?;
                     evaluated.push(value.clone());
                     state.insert(name.clone(), value);
                 }
@@ -618,7 +621,7 @@ fn finite_while_trace(
                 _ => return None,
             }
         }
-        let next = finite_state_expression(invariant, &state)?;
+        let next = finite_state_expression(invariant, &state, &mut expansion_budget)?;
         let goal = conjunction(conjunction(entry, condition), next);
         let cert = crate::verifier_z3::prove_loop_machine(
             &goal,
@@ -662,12 +665,14 @@ fn try_prove_for_in_invariant(
     let Node::Block { stmts, .. } = body else {
         return;
     };
+    let mut expansion_budget = 32_768;
     let mut state: HashMap<String, Node> = bindings
         .iter()
         .map(|(name, value)| (name.clone(), integer_node(*value)))
         .collect();
     state.insert(loop_name.to_string(), integer_node(elements[0]));
-    let Some(first_entry) = finite_state_expression(invariant, &state) else {
+    let Some(first_entry) = finite_state_expression(invariant, &state, &mut expansion_budget)
+    else {
         return;
     };
     // State expressions already capture entry constants. Passing the outer
@@ -690,7 +695,8 @@ fn try_prove_for_in_invariant(
         for stmt in stmts {
             match stmt {
                 Node::Assignment { name, value, .. } => {
-                    let Some(value) = finite_state_expression(value, &state) else {
+                    let Some(value) = finite_state_expression(value, &state, &mut expansion_budget)
+                    else {
                         return;
                     };
                     evaluated.push(value.clone());
@@ -704,7 +710,8 @@ fn try_prove_for_in_invariant(
             // A write to the iteration variable belongs to this iteration;
             // the next actual element replaces it before the next check.
             state.insert(loop_name.to_string(), integer_node(*element));
-            let Some(entry) = finite_state_expression(invariant, &state) else {
+            let Some(entry) = finite_state_expression(invariant, &state, &mut expansion_budget)
+            else {
                 return;
             };
             Some(entry)
@@ -758,19 +765,56 @@ fn integer_node(value: i64) -> Node {
 /// Substitute a snapshot simultaneously: stored expressions refer to the
 /// original entry state and must never be rebound by a later assignment.
 #[cfg(feature = "z3")]
-fn finite_state_expression(node: &Node, state: &HashMap<String, Node>) -> Option<Node> {
-    let expression = match node {
-        Node::Identifier { name, .. } => state.get(name).unwrap_or(node).clone(),
-        Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => node.clone(),
+fn finite_state_expression(
+    node: &Node,
+    state: &HashMap<String, Node>,
+    remaining: &mut usize,
+) -> Option<Node> {
+    bounded_expression(node, &|name| state.get(name), remaining, 0, true)
+}
+
+#[cfg(feature = "z3")]
+fn bounded_expression<'a>(
+    node: &'a Node,
+    lookup: &impl Fn(&str) -> Option<&'a Node>,
+    remaining: &mut usize,
+    depth: usize,
+    replace: bool,
+) -> Option<Node> {
+    if depth > 128 || *remaining == 0 {
+        return None;
+    }
+    // Charge before allocation, including every node copied from a snapshot.
+    *remaining -= 1;
+    Some(match node {
+        Node::Identifier { name, .. } if replace => match lookup(name) {
+            Some(value) => bounded_expression(value, lookup, remaining, depth, false)?,
+            None => node.clone(),
+        },
+        Node::Identifier { .. } | Node::IntegerLiteral { .. } | Node::BooleanLiteral { .. } => {
+            node.clone()
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             span,
         } => Node::InfixExpression {
-            left: Box::new(finite_state_expression(left, state)?),
+            left: Box::new(bounded_expression(
+                left,
+                lookup,
+                remaining,
+                depth + 1,
+                replace,
+            )?),
             operator,
-            right: Box::new(finite_state_expression(right, state)?),
+            right: Box::new(bounded_expression(
+                right,
+                lookup,
+                remaining,
+                depth + 1,
+                replace,
+            )?),
             span: *span,
         },
         Node::PrefixExpression {
@@ -779,14 +823,17 @@ fn finite_state_expression(node: &Node, state: &HashMap<String, Node>) -> Option
             span,
         } => Node::PrefixExpression {
             operator,
-            right: Box::new(finite_state_expression(right, state)?),
+            right: Box::new(bounded_expression(
+                right,
+                lookup,
+                remaining,
+                depth + 1,
+                replace,
+            )?),
             span: *span,
         },
         _ => return None,
-    };
-    let mut nodes = 0;
-    crate::uniqueness_walk::visit(&expression, &mut |_| nodes += 1);
-    (nodes <= 32_768).then_some(expression)
+    })
 }
 
 /// `let NAME = INT_LITERAL` — extract the literal value.
@@ -859,29 +906,30 @@ fn collect_assigned_names<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
 /// statements (assignments + invariant no-ops); anything else
 /// returns `None` so the caller treats this loop as unprovable.
 ///
-/// RES-2280: fast-reject assignments whose LHS is not referenced in
-/// the current postcondition. `substitute` is otherwise forced to
-/// walk the whole AST and clone every node it visits — for a body
-/// of S assignments and a postcondition of P nodes, that's O(S*P)
-/// deep clones even when most assignments target variables the
-/// postcondition never mentions. Probing with `contains_ident`
-/// (a non-allocating walker) lets the unreferenced-name case skip
-/// the clone storm entirely; the referenced-name path still pays
-/// the full substitute cost.
+/// Unreferenced assignments need no substitution. Referenced assignments
+/// share an allocation budget so repeated duplication cannot expand the
+/// postcondition exponentially before the solver sees it.
 #[cfg(feature = "z3")]
 fn weakest_precondition(body: &Node, post: &Node) -> Option<Node> {
     let stmts = match body {
         Node::Block { stmts, .. } => stmts,
         _ => return None,
     };
-    let mut current = post.clone();
+    let mut remaining = 32_768;
+    let mut current = bounded_expression(post, &|_| None, &mut remaining, 0, false)?;
     for stmt in stmts.iter().rev() {
         match stmt {
             Node::Assignment { name, value, .. } => {
                 if !contains_ident(&current, name) {
                     continue;
                 }
-                current = substitute(&current, name, value);
+                current = bounded_expression(
+                    &current,
+                    &|candidate| (candidate == name).then_some(value.as_ref()),
+                    &mut remaining,
+                    0,
+                    true,
+                )?;
             }
             Node::InvariantStatement { .. } => {
                 // No state change; pass through.
@@ -902,40 +950,6 @@ fn contains_ident(node: &Node, name: &str) -> bool {
         node,
         |n| matches!(n, Node::Identifier { name: n_name, .. } if n_name == name),
     )
-}
-
-/// Substitute every free occurrence of `name` in `node` with a clone
-/// of `replacement`. Walks the integer/boolean expression subset that
-/// `verifier_z3::translate_bool` can encode — anything richer is
-/// passed through unchanged, which keeps WP sound when the invariant
-/// references opaque sub-expressions (the prover will then bail
-/// during translation).
-#[cfg(feature = "z3")]
-fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
-    match node {
-        Node::Identifier { name: n, .. } if n == name => replacement.clone(),
-        Node::InfixExpression {
-            left,
-            operator,
-            right,
-            span,
-        } => Node::InfixExpression {
-            left: Box::new(substitute(left, name, replacement)),
-            operator,
-            right: Box::new(substitute(right, name, replacement)),
-            span: *span,
-        },
-        Node::PrefixExpression {
-            operator,
-            right,
-            span,
-        } => Node::PrefixExpression {
-            operator,
-            right: Box::new(substitute(right, name, replacement)),
-            span: *span,
-        },
-        _ => node.clone(),
-    }
 }
 
 /// Best-effort span of an invariant expression, for the verbose
