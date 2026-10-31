@@ -14,10 +14,18 @@ enum ScopeKind {
     Module,
 }
 pub(crate) type DeclarationPath = Vec<Declaration>;
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Attributes {
     pub loop_bound: Option<LoopBoundSpec>,
     pub overflow_checked: bool,
+    pub refinement: Option<Refinement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Refinement {
+    pub spec: String,
+    pub action: String,
+    pub line: usize,
 }
 pub(crate) type Bounds = HashMap<DeclarationPath, Attributes>;
 type Captured = HashMap<(usize, Declaration), Attributes>;
@@ -88,7 +96,7 @@ impl ParseCapture {
                     let bound = captured
                         .as_ref()
                         .and_then(|items| items.get(&key))
-                        .copied()
+                        .cloned()
                         .unwrap_or_default();
                     bounds.insert(path.clone(), bound);
                 }
@@ -137,6 +145,73 @@ pub(crate) fn record_overflow(node: &Node) {
             captured.entry(key).or_default().overflow_checked = true;
         }
     });
+}
+
+pub(crate) fn record_refinement(node: &Node, spec: &str, action: &str, line: usize) {
+    let Some(key) = capture_key(node) else { return };
+    CAPTURE.with(|slot| {
+        if let Some(captured) = slot.borrow_mut().as_mut() {
+            captured.entry(key).or_default().refinement = Some(Refinement {
+                spec: spec.to_string(),
+                action: action.to_string(),
+                line,
+            });
+        }
+    });
+}
+
+pub(crate) fn scoped_refinements() -> Option<Vec<(bool, String, Refinement)>> {
+    CURRENT.with(|slot| {
+        slot.borrow().as_ref().map(|items| {
+            let mut records: Vec<_> = items
+                .iter()
+                .filter_map(|(path, attributes)| {
+                    attributes.refinement.clone().map(|mapping| {
+                        (
+                            path.len() == 1,
+                            path.iter()
+                                .map(|part| part.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("::"),
+                            mapping,
+                        )
+                    })
+                })
+                .collect();
+            records.sort_by(|a, b| (a.2.line, &a.1, &a.2.spec).cmp(&(b.2.line, &b.1, &b.2.spec)));
+            records
+        })
+    })
+}
+
+pub(crate) fn resolve_refinement_paths(base_dir: &std::path::Path) -> Result<(), String> {
+    CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let Some(items) = current.as_mut() else {
+            return Ok(());
+        };
+        for attributes in items.values_mut() {
+            if let Some(mapping) = attributes.refinement.as_mut()
+                && !std::path::Path::new(&mapping.spec).is_absolute()
+            {
+                let base = if base_dir.is_absolute() {
+                    base_dir.to_path_buf()
+                } else {
+                    std::env::current_dir()
+                        .map_err(|error| {
+                            format!("cannot resolve @refines source directory: {error}")
+                        })?
+                        .join(base_dir)
+                };
+                mapping.spec = base
+                    .join(&mapping.spec)
+                    .to_str()
+                    .ok_or("@refines source directory is not valid UTF-8")?
+                    .to_string();
+            }
+        }
+        Ok(())
+    })
 }
 
 #[cfg(feature = "z3")]
@@ -220,7 +295,7 @@ pub(crate) fn project_inline_glob(module: &str, items: &[&Node]) -> Result<(), S
         }
         let destination = path[modules.len()..].to_vec();
         if exported.contains(&destination) {
-            additions.push((destination, *attributes));
+            additions.push((destination, attributes.clone()));
         }
     }
     CURRENT.with(|slot| {
@@ -270,8 +345,10 @@ pub(crate) fn transfer(
         {
             let kind = if previous.loop_bound != bound.loop_bound {
                 "loop-bound"
-            } else {
+            } else if previous.overflow_checked != bound.overflow_checked {
                 "overflow-check"
+            } else {
+                "refinement"
             };
             error = Some(format!(
                 "ambiguous {kind} ownership for declaration `{}`",
@@ -279,7 +356,7 @@ pub(crate) fn transfer(
             ));
             return;
         }
-        target.insert(destination, *bound);
+        target.insert(destination, bound.clone());
     });
     match error {
         Some(error) => Err(error),

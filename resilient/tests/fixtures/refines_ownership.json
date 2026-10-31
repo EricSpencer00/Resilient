@@ -1,0 +1,161 @@
+[
+  {
+    "name": "direct_extern_guard",
+    "files": {
+      "entry.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int;};",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "error[refinement]"
+  },
+  {
+    "name": "aliased_extern_guard",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep;",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int;};",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "error[refinement]"
+  },
+  {
+    "name": "unrelated_local_cannot_take_mapping",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep;fn f(int value){return value;}",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int;};",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "error[refinement]"
+  },
+  {
+    "name": "reexport_guard",
+    "files": {
+      "entry.rz": "use \"middle.rz\" as mid;",
+      "middle.rz": "pub use \"dep.rz\";",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int;};",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "error[refinement]"
+  },
+  {
+    "name": "same_file_two_aliases",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as a;use \"dep.rz\" as b;",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": null
+  },
+  {
+    "name": "contracted_alias",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep;",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int requires value>=0 ensures result>=0;};",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": null
+  },
+  {
+    "name": "private_mapping_does_not_leak",
+    "files": {
+      "entry.rz": "use \"dep.rz\";fn f(int value){return value;}",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;} pub fn kept(){}"
+    },
+    "error": null
+  },
+  {
+    "name": "selected_mapping_does_not_leak",
+    "files": {
+      "entry.rz": "use \"dep.rz\" { kept };fn f(int value){return value;}",
+      "dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;} fn kept(){}"
+    },
+    "error": null
+  },
+  {
+    "name": "cfg_mapping_does_not_leak",
+    "files": {
+      "entry.rz": "#[cfg(feature=\"disabled_refines_test\")] @refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;} fn f(int value){return value;}"
+    },
+    "error": null
+  },
+  {
+    "name": "spec_uses_declaration_directory",
+    "files": {
+      "entry.rz": "use \"lib/dep.rz\";",
+      "lib/dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "lib/counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": null
+  },
+  {
+    "name": "missing_spec_cannot_use_importer_decoy",
+    "files": {
+      "entry.rz": "use \"lib/dep.rz\";",
+      "lib/dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "was not found"
+  },
+  {
+    "name": "wrong_action_cannot_use_importer_decoy",
+    "files": {
+      "entry.rz": "use \"lib/dep.rz\";",
+      "lib/dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "lib/counter.tla": "---- MODULE counter ----\nOther == TRUE\n====\n",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "does not define action"
+  },
+  {
+    "name": "spec_reexport_origin",
+    "files": {
+      "entry.rz": "use \"bridge/middle.rz\" as mid;",
+      "bridge/middle.rz": "pub use \"../lib/dep.rz\";",
+      "lib/dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "lib/counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n",
+      "bridge/counter.tla": "---- MODULE counter ----\nOther == TRUE\n====\n",
+      "counter.tla": "---- MODULE counter ----\nOther == TRUE\n====\n"
+    },
+    "error": null
+  },
+  {
+    "name": "same_name_independent_specs",
+    "files": {
+      "entry.rz": "use \"a/dep.rz\" as a;use \"b/dep.rz\" as b;",
+      "a/dep.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "a/counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n",
+      "b/dep.rz": "@refines(spec=\"counter.tla\", action=\"Other\") fn f(int value){return value;}",
+      "b/counter.tla": "---- MODULE counter ----\nOther == TRUE\n====\n"
+    },
+    "error": null
+  },
+  {
+    "name": "nested_mapping_cannot_take_root_name",
+    "files": {
+      "entry.rz": "fn outer(){@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}} fn f(int value){return value;}",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "not a top-level function"
+  },
+  {
+    "name": "inline_mapping_is_not_root",
+    "files": {
+      "entry.rz": "mod m {@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}} fn f(int value){return value;}",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": "not a top-level function"
+  },
+  {
+    "name": "unmapped_foreign_control",
+    "files": {
+      "entry.rz": "fn f(int value){return foreign(value);} extern \"counter\" {fn foreign(value: Int)->Int;};"
+    },
+    "error": null
+  },
+  {
+    "name": "direct_safe",
+    "files": {
+      "entry.rz": "@refines(spec=\"counter.tla\", action=\"Inc\") fn f(int value){return value;}",
+      "counter.tla": "---- MODULE counter ----\nInc == TRUE\n====\n"
+    },
+    "error": null
+  }
+]

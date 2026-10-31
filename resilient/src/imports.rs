@@ -186,6 +186,7 @@ fn expand_recursive(
     origin: Option<&Path>,
 ) -> Result<Vec<Option<String>>, String> {
     trace.depth(in_flight.len())?;
+    crate::loop_bound_metadata::resolve_refinement_paths(base_dir)?;
     // RES-4110: resolve inline-module globs before file/dependency imports.
     // This pass removes only `use mod::*` nodes, leaving the existing file
     // import resolver and its visibility rules unchanged.
