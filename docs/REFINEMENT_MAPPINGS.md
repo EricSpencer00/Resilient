@@ -8,8 +8,10 @@ fn step(int state) { return state; }
 ```
 
 The compiler checks that the specification exists, that it defines the named
-action, and that reachable extern functions declare both `requires` and `ensures`.
-It does **not** prove that the function implements the TLA+ action.
+action, and that extern functions found by its call analysis declare both
+`requires` and `ensures`. The current analysis follows direct calls and identifier
+aliases; array, tuple and conditional callees are not fully covered. It does
+**not** prove that the function implements the TLA+ action.
 
 The mapping belongs to the annotated declaration. Import aliases and reexports
 preserve that ownership. Private, unselected and cfg-excluded functions do not
