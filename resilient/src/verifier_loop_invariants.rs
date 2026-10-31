@@ -906,15 +906,9 @@ fn collect_assigned_names<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
 /// statements (assignments + invariant no-ops); anything else
 /// returns `None` so the caller treats this loop as unprovable.
 ///
-/// RES-2280: fast-reject assignments whose LHS is not referenced in
-/// the current postcondition. `substitute` is otherwise forced to
-/// walk the whole AST and clone every node it visits — for a body
-/// of S assignments and a postcondition of P nodes, that's O(S*P)
-/// deep clones even when most assignments target variables the
-/// postcondition never mentions. Probing with `contains_ident`
-/// (a non-allocating walker) lets the unreferenced-name case skip
-/// the clone storm entirely; the referenced-name path still pays
-/// the full substitute cost.
+/// Unreferenced assignments need no substitution. Referenced assignments
+/// share an allocation budget so repeated duplication cannot expand the
+/// postcondition exponentially before the solver sees it.
 #[cfg(feature = "z3")]
 fn weakest_precondition(body: &Node, post: &Node) -> Option<Node> {
     let stmts = match body {
@@ -956,40 +950,6 @@ fn contains_ident(node: &Node, name: &str) -> bool {
         node,
         |n| matches!(n, Node::Identifier { name: n_name, .. } if n_name == name),
     )
-}
-
-/// Substitute every free occurrence of `name` in `node` with a clone
-/// of `replacement`. Walks the integer/boolean expression subset that
-/// `verifier_z3::translate_bool` can encode — anything richer is
-/// passed through unchanged, which keeps WP sound when the invariant
-/// references opaque sub-expressions (the prover will then bail
-/// during translation).
-#[cfg(all(test, feature = "z3"))]
-fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
-    match node {
-        Node::Identifier { name: n, .. } if n == name => replacement.clone(),
-        Node::InfixExpression {
-            left,
-            operator,
-            right,
-            span,
-        } => Node::InfixExpression {
-            left: Box::new(substitute(left, name, replacement)),
-            operator,
-            right: Box::new(substitute(right, name, replacement)),
-            span: *span,
-        },
-        Node::PrefixExpression {
-            operator,
-            right,
-            span,
-        } => Node::PrefixExpression {
-            operator,
-            right: Box::new(substitute(right, name, replacement)),
-            span: *span,
-        },
-        _ => node.clone(),
-    }
 }
 
 /// Best-effort span of an invariant expression, for the verbose
