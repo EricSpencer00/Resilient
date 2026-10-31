@@ -237,6 +237,10 @@ fn invoked_callback_params(parameters: &[(String, String)], body: &Node) -> Hash
 /// blocks/branches/loops are all visited.
 fn collect_invoked<'a>(node: &'a Node, candidates: &HashSet<&str>, out: &mut HashSet<&'a str>) {
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            collect_invoked(expr, candidates, out);
+        }
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -268,12 +272,28 @@ fn collect_invoked<'a>(node: &'a Node, candidates: &HashSet<&str>, out: &mut Has
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                collect_invoked(invariant, candidates, out);
+            }
+
             collect_invoked(condition, candidates, out);
             collect_invoked(body, candidates, out);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                collect_invoked(invariant, candidates, out);
+            }
+
             collect_invoked(iterable, candidates, out);
             collect_invoked(body, candidates, out);
         }
@@ -421,6 +441,10 @@ fn find_hof_call_violations(
         return;
     }
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            find_hof_call_violations(expr, hof_name, idx, fn_effects, caller_body, violation);
+        }
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -468,12 +492,42 @@ fn find_hof_call_violations(
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                find_hof_call_violations(
+                    invariant,
+                    hof_name,
+                    idx,
+                    fn_effects,
+                    caller_body,
+                    violation,
+                );
+            }
+
             find_hof_call_violations(condition, hof_name, idx, fn_effects, caller_body, violation);
             find_hof_call_violations(body, hof_name, idx, fn_effects, caller_body, violation);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                find_hof_call_violations(
+                    invariant,
+                    hof_name,
+                    idx,
+                    fn_effects,
+                    caller_body,
+                    violation,
+                );
+            }
+
             find_hof_call_violations(iterable, hof_name, idx, fn_effects, caller_body, violation);
             find_hof_call_violations(body, hof_name, idx, fn_effects, caller_body, violation);
         }
@@ -784,6 +838,10 @@ fn collect_local_bindings(
     reassigned: &mut bool,
 ) {
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            collect_local_bindings(expr, var, bindings, reassigned);
+        }
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -824,12 +882,28 @@ fn collect_local_bindings(
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                collect_local_bindings(invariant, var, bindings, reassigned);
+            }
+
             collect_local_bindings(condition, var, bindings, reassigned);
             collect_local_bindings(body, var, bindings, reassigned);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                collect_local_bindings(invariant, var, bindings, reassigned);
+            }
+
             collect_local_bindings(iterable, var, bindings, reassigned);
             collect_local_bindings(body, var, bindings, reassigned);
         }
@@ -1078,6 +1152,10 @@ fn collect_hof_call_sites<'a>(
     out: &mut Vec<(crate::span::Span, &'a [Node])>,
 ) {
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            collect_hof_call_sites(expr, hof_name, out);
+        }
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -1111,12 +1189,28 @@ fn collect_hof_call_sites<'a>(
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                collect_hof_call_sites(invariant, hof_name, out);
+            }
+
             collect_hof_call_sites(condition, hof_name, out);
             collect_hof_call_sites(body, hof_name, out);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                collect_hof_call_sites(invariant, hof_name, out);
+            }
+
             collect_hof_call_sites(iterable, hof_name, out);
             collect_hof_call_sites(body, hof_name, out);
         }
@@ -1268,6 +1362,10 @@ fn body_pure_modulo(
     fn_params: &[(String, String)],
 ) -> bool {
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            body_pure_modulo(expr, deferred, fn_effects, fn_params)
+        }
+
         Node::TryCatch { body, handlers, .. } => body
             .iter()
             .chain(handlers.iter().flat_map(|(_, statements)| statements))
@@ -1296,13 +1394,27 @@ fn body_pure_modulo(
                     .is_none_or(|a| body_pure_modulo(a, deferred, fn_effects, fn_params))
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
-            body_pure_modulo(condition, deferred, fn_effects, fn_params)
+            invariants
+                .iter()
+                .all(|invariant| body_pure_modulo(invariant, deferred, fn_effects, fn_params))
+                && body_pure_modulo(condition, deferred, fn_effects, fn_params)
                 && body_pure_modulo(body, deferred, fn_effects, fn_params)
         }
-        Node::ForInStatement { iterable, body, .. } => {
-            body_pure_modulo(iterable, deferred, fn_effects, fn_params)
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            invariants
+                .iter()
+                .all(|invariant| body_pure_modulo(invariant, deferred, fn_effects, fn_params))
+                && body_pure_modulo(iterable, deferred, fn_effects, fn_params)
                 && body_pure_modulo(body, deferred, fn_effects, fn_params)
         }
         Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
