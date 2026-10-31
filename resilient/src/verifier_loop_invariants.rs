@@ -571,6 +571,19 @@ fn invalidate_mutations(
                 sorts.remove(name);
             }
         }
+        // Destructuring binds new values, so neither the old constant nor its sort survives.
+        Node::LetTupleDestructure { names, .. } => {
+            for name in names {
+                bindings.remove(name);
+                sorts.remove(name);
+            }
+        }
+        Node::LetDestructureStruct { fields, .. } => {
+            for (_, local_name) in fields {
+                bindings.remove(local_name);
+                sorts.remove(local_name);
+            }
+        }
         // Calls may mutate captured or global state beyond this local model.
         Node::CallExpression { .. } => {
             bindings.clear();
