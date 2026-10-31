@@ -679,6 +679,7 @@ mod contract_inference;
 // `@require_contracts` directive and the shared enrolment predicate.
 mod contract_policy;
 mod loop_bound;
+mod loop_bound_runtime;
 // RES-3779 Phase A: routes declared + inferred contract clauses
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
 // with proof certificates.
@@ -28313,6 +28314,8 @@ impl Interpreter {
     }
 
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
+        let guarded = crate::loop_bound_runtime::lower_statements(statements);
+        let statements = guarded.as_deref().unwrap_or(statements);
         // RES-361: evaluate all `const` declarations first, before any
         // function hoisting or statement execution.
         self.const_eval_program(statements)?;
@@ -34992,6 +34995,7 @@ pub struct RunOptions {
 
 /// Execute only after the requested verification gates succeed.
 pub fn run_program_with_options(src: &str, options: RunOptions) -> RunResult {
+    let _loop_bounds = crate::loop_bound_runtime::Invocation::enter();
     let (program, parse_errors) = parse(src);
     if !parse_errors.is_empty() {
         return RunResult {

@@ -281,6 +281,8 @@ fn prescan_stmt_slots(node: &Node, globals: &mut HashMap<String, u16>, slot: &mu
 /// unreachable and harmless; otherwise it terminates the VM with
 /// `Value::Void`.
 pub fn compile(program: &Node) -> Result<Program, CompileError> {
+    let guarded = crate::loop_bound_runtime::lower(program);
+    let program = guarded.as_ref().unwrap_or(program);
     // RES-3992: the tree-walker resolves top-level `const NAME = expr;`
     // declarations into a `self.consts` table that every identifier
     // lookup checks *before* locals (`Interpreter::eval_program` /
