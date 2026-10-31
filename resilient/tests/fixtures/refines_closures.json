@@ -236,5 +236,35 @@
     "name": "builtin_captured_callback_contracted",
     "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let result=[value].map(wrap(foreign));return result[0];}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
     "reject": false
+  },
+  {
+    "name": "capture_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;let closure=fn(int x) -> int {call=foreign;return call(x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;let closure=fn(int x) -> int {call=foreign;return call(x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_array_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let closure=fn(int x) -> int {calls[0]=foreign;return calls[0](x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_array_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let closure=fn(int x) -> int {calls[0]=foreign;return calls[0](x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_array_alias_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let closure=fn(int x) -> int {let alias=calls;alias[0]=foreign;return calls[0](x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_array_alias_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let closure=fn(int x) -> int {let alias=calls;alias[0]=foreign;return calls[0](x);};return closure(value);}\nfn safe(int x) -> int {return x;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
   }
 ]

@@ -263,6 +263,15 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                                 &binding,
                                 targets.clone(),
                             );
+                        } else if captures
+                            .get(&name)
+                            .is_some_and(|env| env.contains_key(&binding))
+                        {
+                            changed |= extend(
+                                captures.entry(name.clone()).or_default(),
+                                &binding,
+                                targets.clone(),
+                            );
                         } else if globals.contains_key(&binding) {
                             changed |= extend(&mut globals, &binding, targets.clone());
                         }
@@ -273,6 +282,12 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     if locals[&name].contains_key(binding) {
                         changed |=
                             extend(locals.entry(name.clone()).or_default(), binding, targets);
+                    } else if captures
+                        .get(&name)
+                        .is_some_and(|env| env.contains_key(binding))
+                    {
+                        changed |=
+                            extend(captures.entry(name.clone()).or_default(), binding, targets);
                     } else {
                         changed |= extend(&mut globals, binding, targets);
                     }
