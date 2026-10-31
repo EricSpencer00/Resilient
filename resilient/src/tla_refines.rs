@@ -91,8 +91,32 @@ fn diagnostic(source_path: &str, line: usize, message: &str) -> String {
 
 /// Validate the parser-preserved mappings against the current top-level AST.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
-    let records = crate::feature_attrs::find_kind(ATTRIBUTE);
-    if records.is_empty() {
+    let mut mappings = Vec::new();
+    if let Some(records) = crate::loop_bound_metadata::scoped_refinements() {
+        for (top_level, function, record) in records {
+            if !top_level {
+                return Err(diagnostic(
+                    source_path,
+                    record.line,
+                    &format!("@refines target `{function}` is not a top-level function"),
+                ));
+            }
+            mappings.push(RefinesMapping {
+                function,
+                spec: record.spec,
+                action: record.action,
+                line: record.line,
+            });
+        }
+    } else {
+        for (function, record) in crate::feature_attrs::find_kind(ATTRIBUTE) {
+            mappings.push(
+                parse_record(function, &record)
+                    .map_err(|message| diagnostic(source_path, record.line, &message))?,
+            );
+        }
+    }
+    if mappings.is_empty() {
         return Ok(());
     }
 
@@ -107,11 +131,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         _ => HashSet::new(),
     };
 
-    let mut seen = HashSet::with_capacity(records.len());
-    let mut mappings = Vec::with_capacity(records.len());
-    for (function, record) in records {
-        let mapping = parse_record(function, &record)
-            .map_err(|message| diagnostic(source_path, record.line, &message))?;
+    let mut seen = HashSet::with_capacity(mappings.len());
+    for mapping in &mappings {
         if !functions.contains(mapping.function.as_str()) {
             return Err(diagnostic(
                 source_path,
@@ -132,7 +153,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 ),
             ));
         }
-        mappings.push(mapping);
     }
 
     check_external_targets(source_path, &mappings)?;

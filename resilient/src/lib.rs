@@ -4807,6 +4807,7 @@ impl Parser {
         if valid
             && let (Some(spec), Some(action), Node::Function { name, .. }) = (spec, action, &node)
         {
+            crate::loop_bound_metadata::record_refinement(&node, &spec, &action, attr_line);
             crate::feature_attrs::record(
                 name,
                 crate::feature_attrs::AttrRecord {
