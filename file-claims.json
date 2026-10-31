@@ -195,6 +195,22 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-5150-refinement-declaration-ownership",
+      "claimed_at": "2026-10-31T10:06:09Z"
+    },
+    "resilient/src/loop_bound_metadata.rs": {
+      "branch": "res-5150-refinement-declaration-ownership",
+      "claimed_at": "2026-10-31T10:06:09Z"
+    },
+    "resilient/src/imports.rs": {
+      "branch": "res-5150-refinement-declaration-ownership",
+      "claimed_at": "2026-10-31T10:06:09Z"
+    },
+    "resilient/src/tla_refines.rs": {
+      "branch": "res-5150-refinement-declaration-ownership",
+      "claimed_at": "2026-10-31T10:06:09Z"
     }
   }
 }
