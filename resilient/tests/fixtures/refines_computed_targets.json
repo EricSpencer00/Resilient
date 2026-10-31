@@ -188,5 +188,20 @@
     "name": "mixed_aggregate_contracted",
     "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe,foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
     "reject": false
+  },
+  {
+    "name": "global_local_write",
+    "source": "fn safe(int value) -> int {return value;}\nlet calls=[safe];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){replace();return calls[0](value);}\nfn replace(){let call=foreign;calls[0]=call;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "global_local_write_contracted",
+    "source": "fn safe(int value) -> int {return value;}\nlet calls=[safe];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){replace();return calls[0](value);}\nfn replace(){let call=foreign;calls[0]=call;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "global_local_container_write",
+    "source": "fn safe(int value) -> int {return value;}\nlet calls=[safe];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){replace();return calls[0](value);}\nfn replace(){let call=foreign;let alias=calls;alias[0]=call;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
   }
 ]

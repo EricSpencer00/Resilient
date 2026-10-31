@@ -131,17 +131,18 @@ pub(super) fn globals(program: &Node) -> Aliases {
         }
     }
     let names: BTreeSet<_> = aliases.keys().cloned().collect();
-    // A helper can reassign a global callable before another function calls
-    // it. Keep every known target rather than depending on execution order.
-    crate::uniqueness_walk::visit(program, &mut |node| {
-        if let Node::Assignment { name, .. } = node
-            && names.contains(name)
-        {
-            record(&mut aliases, node);
-        }
-    });
+    // A helper can store a locally aliased callable into a global. Resolve
+    // through its bindings before exporting only the global roots, otherwise
+    // the local name disappears from the caller's graph.
+    crate::uniqueness_walk::visit(program, &mut |node| record(&mut aliases, node));
     mutations(&mut aliases, program);
-    aliases
+    names
+        .into_iter()
+        .map(|name| {
+            let reachable = targets(&name, &aliases);
+            (name, reachable)
+        })
+        .collect()
 }
 
 fn targets(name: &str, aliases: &Aliases) -> BTreeSet<String> {
