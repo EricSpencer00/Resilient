@@ -52,10 +52,6 @@
       "branch": "res-4657-hof-array-budget",
       "claimed_at": "2026-09-20T18:02:00Z"
     },
-    "resilient/src/jit_backend.rs": {
-      "branch": "res-4659-jit-pattern-fail-closed",
-      "claimed_at": "2026-09-20T18:04:28Z"
-    },
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-4665-row-match",
       "claimed_at": "2026-09-20T18:31:39Z"
@@ -199,10 +195,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-5138-hoisted-constant-proofs",
-      "claimed_at": "2026-10-31T07:47:59Z"
     }
   }
 }
