@@ -237,6 +237,15 @@ fn invoked_callback_params(parameters: &[(String, String)], body: &Node) -> Hash
 /// blocks/branches/loops are all visited.
 fn collect_invoked<'a>(node: &'a Node, candidates: &HashSet<&str>, out: &mut HashSet<&'a str>) {
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                collect_invoked(statement, candidates, out);
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 collect_invoked(s, candidates, out);
@@ -412,6 +421,22 @@ fn find_hof_call_violations(
         return;
     }
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                find_hof_call_violations(
+                    statement,
+                    hof_name,
+                    idx,
+                    fn_effects,
+                    caller_body,
+                    violation,
+                );
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 find_hof_call_violations(s, hof_name, idx, fn_effects, caller_body, violation);
@@ -759,6 +784,15 @@ fn collect_local_bindings(
     reassigned: &mut bool,
 ) {
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                collect_local_bindings(statement, var, bindings, reassigned);
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 collect_local_bindings(s, var, bindings, reassigned);
@@ -1044,6 +1078,15 @@ fn collect_hof_call_sites<'a>(
     out: &mut Vec<(crate::span::Span, &'a [Node])>,
 ) {
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                collect_hof_call_sites(statement, hof_name, out);
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 collect_hof_call_sites(s, hof_name, out);
@@ -1225,6 +1268,11 @@ fn body_pure_modulo(
     fn_params: &[(String, String)],
 ) -> bool {
     match node {
+        Node::TryCatch { body, handlers, .. } => body
+            .iter()
+            .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            .all(|statement| body_pure_modulo(statement, deferred, fn_effects, fn_params)),
+
         Node::Block { stmts, .. } => stmts
             .iter()
             .all(|s| body_pure_modulo(s, deferred, fn_effects, fn_params)),

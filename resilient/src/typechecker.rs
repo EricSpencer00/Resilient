@@ -13161,6 +13161,15 @@ fn check_body_purity(
     pure_fns: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                check_body_purity(statement, fn_name, pure_fns)?;
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 check_body_purity(s, fn_name, pure_fns)?;
@@ -14545,6 +14554,21 @@ fn check_body_effects(
     caller_body: &Node,
 ) -> Result<(), String> {
     match node {
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body
+                .iter()
+                .chain(handlers.iter().flat_map(|(_, statements)| statements))
+            {
+                check_body_effects(
+                    statement,
+                    fn_effects,
+                    linear_params,
+                    statements,
+                    caller_body,
+                )?;
+            }
+        }
+
         Node::Block { stmts, .. } => {
             for s in stmts {
                 check_body_effects(s, fn_effects, linear_params, statements, caller_body)?;
