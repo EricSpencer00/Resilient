@@ -13161,6 +13161,8 @@ fn check_body_purity(
     pure_fns: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
     match node {
+        Node::InvariantStatement { expr, .. } => check_body_purity(expr, fn_name, pure_fns)?,
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -13197,12 +13199,28 @@ fn check_body_purity(
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                check_body_purity(invariant, fn_name, pure_fns)?;
+            }
+
             check_body_purity(condition, fn_name, pure_fns)?;
             check_body_purity(body, fn_name, pure_fns)?;
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                check_body_purity(invariant, fn_name, pure_fns)?;
+            }
+
             check_body_purity(iterable, fn_name, pure_fns)?;
             check_body_purity(body, fn_name, pure_fns)?;
         }
@@ -14554,6 +14572,10 @@ fn check_body_effects(
     caller_body: &Node,
 ) -> Result<(), String> {
     match node {
+        Node::InvariantStatement { expr, .. } => {
+            check_body_effects(expr, fn_effects, linear_params, statements, caller_body)?
+        }
+
         Node::TryCatch { body, handlers, .. } => {
             for statement in body
                 .iter()
@@ -14606,8 +14628,21 @@ fn check_body_effects(
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
+            for invariant in invariants {
+                check_body_effects(
+                    invariant,
+                    fn_effects,
+                    linear_params,
+                    statements,
+                    caller_body,
+                )?;
+            }
+
             check_body_effects(
                 condition,
                 fn_effects,
@@ -14617,7 +14652,22 @@ fn check_body_effects(
             )?;
             check_body_effects(body, fn_effects, linear_params, statements, caller_body)?;
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            for invariant in invariants {
+                check_body_effects(
+                    invariant,
+                    fn_effects,
+                    linear_params,
+                    statements,
+                    caller_body,
+                )?;
+            }
+
             check_body_effects(iterable, fn_effects, linear_params, statements, caller_body)?;
             check_body_effects(body, fn_effects, linear_params, statements, caller_body)?;
         }
