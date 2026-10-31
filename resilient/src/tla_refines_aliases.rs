@@ -6,6 +6,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Aliases = BTreeMap<String, BTreeSet<String>>;
 
+fn visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
+    f(node);
+    // Creating a closure does not execute its body. Reachable closure calls
+    // and captures are resolved by the callable-flow analysis instead.
+    if !matches!(node, Node::FunctionLiteral { .. }) {
+        crate::uniqueness_walk::children(node, &mut |child| visit(child, f));
+    }
+}
+
 fn binding(node: &Node) -> Option<(&str, &Node)> {
     match node {
         Node::LetStatement { name, value, .. }
@@ -93,7 +102,7 @@ fn record(aliases: &mut Aliases, node: &Node) {
 
 fn mutations(aliases: &mut Aliases, body: &Node) {
     let mut writes = Vec::new();
-    crate::uniqueness_walk::visit(body, &mut |node| {
+    visit(body, &mut |node| {
         if let Node::IndexAssignment { target, value, .. }
         | Node::FieldAssignment { target, value, .. } = node
         {
@@ -134,7 +143,7 @@ pub(super) fn globals(program: &Node) -> Aliases {
     // A helper can store a locally aliased callable into a global. Resolve
     // through its bindings before exporting only the global roots, otherwise
     // the local name disappears from the caller's graph.
-    crate::uniqueness_walk::visit(program, &mut |node| record(&mut aliases, node));
+    visit(program, &mut |node| record(&mut aliases, node));
     mutations(&mut aliases, program);
     names
         .into_iter()
@@ -161,11 +170,11 @@ fn targets(name: &str, aliases: &Aliases) -> BTreeSet<String> {
 
 pub(super) fn calls(body: &Node, globals: &Aliases) -> Vec<CallSite> {
     let mut aliases = globals.clone();
-    crate::uniqueness_walk::visit(body, &mut |node| record(&mut aliases, node));
+    visit(body, &mut |node| record(&mut aliases, node));
     mutations(&mut aliases, body);
     let mut resolved = BTreeMap::new();
     let mut calls = Vec::new();
-    crate::uniqueness_walk::visit(body, &mut |node| {
+    visit(body, &mut |node| {
         if let Node::CallExpression { function, span, .. } = node {
             let mut callees = BTreeSet::new();
             for name in references(function) {
