@@ -366,17 +366,18 @@ struct GlobalValues {
     captured_arrays: BTreeMap<String, Targets>,
 }
 
-pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
+pub(super) fn calls(program: &Node, root: &str, scopes: &BTreeSet<*const Node>) -> Vec<CallSite> {
     // Initialization supplies values and captures, not mapped-root call obligations
     // or helper parameter summaries from unrelated startup invocations.
-    let (_, initialized) = analyze(program, None, GlobalValues::default());
-    analyze(program, Some(root), initialized).0
+    let (_, initialized) = analyze(program, None, GlobalValues::default(), scopes);
+    analyze(program, Some(root), initialized, scopes).0
 }
 
 fn analyze(
     program: &Node,
     root: Option<&str>,
     initial: GlobalValues,
+    scopes: &BTreeSet<*const Node>,
 ) -> (Vec<CallSite>, GlobalValues) {
     let Node::Program(statements) = program else {
         return (Vec::new(), initial);
@@ -419,6 +420,10 @@ fn analyze(
         }
         _ => {}
     });
+    let transparent: Targets = scopes
+        .iter()
+        .filter_map(|node| literals.get(node).cloned())
+        .collect();
     let initializer_parameters = Vec::new();
     if root.is_none() {
         functions.insert(
@@ -476,6 +481,7 @@ fn analyze(
             break;
         }
     }
+    let mut writes = BTreeMap::<String, Env>::new();
     let mut returns = Env::new();
     let mut reachable = BTreeSet::from([root.unwrap_or("$initializers").to_string()]);
     let mut sites = BTreeSet::new();
@@ -560,6 +566,13 @@ fn analyze(
                                 &binding,
                                 targets.clone(),
                             );
+                            if transparent.contains(&name) {
+                                changed |= extend(
+                                    writes.entry(name.clone()).or_default(),
+                                    &binding,
+                                    targets.clone(),
+                                );
+                            }
                         } else if globals.contains_key(&binding) {
                             changed |= extend(&mut globals, &binding, targets.clone());
                         }
@@ -574,8 +587,15 @@ fn analyze(
                         .get(&name)
                         .is_some_and(|env| env.contains_key(binding))
                     {
-                        changed |=
-                            extend(captures.entry(name.clone()).or_default(), binding, targets);
+                        changed |= extend(
+                            captures.entry(name.clone()).or_default(),
+                            binding,
+                            targets.clone(),
+                        );
+                        if transparent.contains(&name) {
+                            changed |=
+                                extend(writes.entry(name.clone()).or_default(), binding, targets);
+                        }
                     } else {
                         changed |= extend(&mut globals, binding, targets);
                     }
@@ -655,6 +675,35 @@ fn analyze(
                         }
                     }
                     for callee in callees {
+                        // Synthetic match scopes share their enclosing storage;
+                        // ordinary function/closure calls retain their own rules.
+                        for (binding, targets) in writes.get(&callee).cloned().unwrap_or_default() {
+                            if locals[&name].contains_key(&binding) {
+                                changed |= extend(
+                                    locals.entry(name.clone()).or_default(),
+                                    &binding,
+                                    targets,
+                                );
+                            } else if captures
+                                .get(&name)
+                                .is_some_and(|env| env.contains_key(&binding))
+                            {
+                                changed |= extend(
+                                    captures.entry(name.clone()).or_default(),
+                                    &binding,
+                                    targets.clone(),
+                                );
+                                if transparent.contains(&name) {
+                                    changed |= extend(
+                                        writes.entry(name.clone()).or_default(),
+                                        &binding,
+                                        targets,
+                                    );
+                                }
+                            } else {
+                                changed |= extend(&mut globals, &binding, targets);
+                            }
+                        }
                         sites.insert((callee.clone(), span.start.line, span.start.column));
                         changed |= reachable.insert(callee.clone());
                         if let Some((params, _)) = functions.get(&callee) {

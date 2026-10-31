@@ -48,7 +48,7 @@ fn returns_from_arm(node: &Node) -> bool {
     found
 }
 
-pub(super) fn scoped(program: &Node) -> Node {
+pub(super) fn scoped(program: &Node) -> (Box<Node>, BTreeSet<*const Node>) {
     fn rewrite(node: &mut Node) {
         crate::uniqueness_walk::children_mut(node, &mut rewrite);
         let Node::Match {
@@ -72,10 +72,11 @@ pub(super) fn scoped(program: &Node) -> Node {
                     span,
                 })
                 .collect();
-            let parameters = names
+            let mut parameters: Vec<_> = names
                 .into_iter()
                 .map(|name| ("any".to_string(), name))
                 .collect();
+            parameters.push(("any".to_string(), "$match_scope".to_string()));
             let mut stmts = Vec::new();
             if let Some(guard) = guard {
                 stmts.push(Node::ExpressionStatement {
@@ -117,7 +118,10 @@ pub(super) fn scoped(program: &Node) -> Node {
         // without duplicating a large scrutinee once per pattern binding.
         result = Node::CallExpression {
             function: Box::new(Node::FunctionLiteral {
-                parameters: vec![("any".to_string(), "$match_value".to_string())],
+                parameters: vec![
+                    ("any".to_string(), "$match_value".to_string()),
+                    ("any".to_string(), "$match_scope".to_string()),
+                ],
                 body: Box::new(Node::Block {
                     stmts: vec![Node::ReturnStatement {
                         value: Some(Box::new(result)),
@@ -144,7 +148,21 @@ pub(super) fn scoped(program: &Node) -> Node {
             result
         };
     }
-    let mut result = program.clone();
+    fn collect_scopes(node: &mut Node, scopes: &mut BTreeSet<*const Node>) {
+        let identity = node as *const Node;
+        if let Node::FunctionLiteral { parameters, .. } = node
+            && parameters
+                .last()
+                .is_some_and(|(_, name)| name == "$match_scope")
+        {
+            parameters.pop();
+            scopes.insert(identity);
+        }
+        crate::uniqueness_walk::children_mut(node, &mut |child| collect_scopes(child, scopes));
+    }
+    let mut result = Box::new(program.clone());
     rewrite(&mut result);
-    result
+    let mut scopes = BTreeSet::new();
+    collect_scopes(&mut result, &mut scopes);
+    (result, scopes)
 }

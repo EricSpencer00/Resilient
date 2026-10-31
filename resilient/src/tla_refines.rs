@@ -315,11 +315,11 @@ fn check_reachable_extern_contracts(
     source_path: &str,
     mappings: &[RefinesMapping],
 ) -> Result<(), String> {
-    let scoped = matches::scoped(program);
+    let (scoped, scopes) = matches::scoped(program);
     let program = &scoped;
     let (functions, externs) = collect_summaries(program);
     for mapping in mappings {
-        let extra_calls = flow::calls(program, &mapping.function);
+        let extra_calls = flow::calls(program, &mapping.function, &scopes);
         let mut visited = HashSet::new();
         let mut work = vec![mapping.function.clone()];
         while let Some(function_name) = work.pop() {

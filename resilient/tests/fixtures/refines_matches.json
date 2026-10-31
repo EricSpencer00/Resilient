@@ -228,5 +228,75 @@
     "name": "safe_option_payload",
     "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=helper;return match Some(safe) {Some(call)=>call(value),None=>0};}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
     "reject": false
+  },
+  {
+    "name": "outer_assignment",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match value {_=>{call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "outer_assignment_contracted",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match value {_=>{call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "outer_array_write",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];match value {_=>{calls[0]=helper;0}};return calls[0](value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "outer_array_write_contracted",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];match value {_=>{calls[0]=helper;0}};return calls[0](value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "nested_outer_assignment",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match value {_=>{match value {_=>{call=helper;0}};0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "nested_outer_assignment_contracted",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match value {_=>{match value {_=>{call=helper;0}};0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "outer_alias_write",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];match value {_=>{let alias=calls;alias[0]=helper;0}};return calls[0](value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "outer_alias_write_contracted",
+    "source": "\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];match value {_=>{let alias=calls;alias[0]=helper;0}};return calls[0](value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "global_assignment",
+    "source": "let call=safe;\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){match value {_=>{call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "global_assignment_contracted",
+    "source": "let call=safe;\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){match value {_=>{call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "initializer_match_write",
+    "source": "let call=safe;match 0 {_=>{call=helper;0}};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "initializer_match_write_contracted",
+    "source": "let call=safe;match 0 {_=>{call=helper;0}};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "pattern_assignment_stays_local",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match safe {call=>{call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "arm_declaration_stays_local",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=safe;match value {_=>{let call=helper;0}};return call(value);}\nfn helper(int value)->int{return foreign(value);}\nfn safe(int value)->int{return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
   }
 ]

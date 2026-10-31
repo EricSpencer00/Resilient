@@ -34,7 +34,9 @@ patterns and closures that capture a binding. Aggregate bindings conservatively
 join their possible elements; builtin `Some`, `Ok` and `Err` preserve payload
 provenance. Guards and pattern feasibility do not prune the possible call paths.
 The analysis uses scoped synthetic calls on a private tree; compilation and
-runtime matching continue to use the original program.
+runtime matching continue to use the original program. Writes to enclosing
+bindings propagate through these synthetic scopes; pattern-bound and arm-local
+names remain local.
 
 Global initialization is analyzed before each mapped root. Callable values from
 initializer factories, forwarded arguments, collection operations and closures
