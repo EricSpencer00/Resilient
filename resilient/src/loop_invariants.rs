@@ -199,7 +199,7 @@ fn evaluate_one(
     Ok(())
 }
 
-fn node_span(node: &Node) -> Option<&Span> {
+pub(crate) fn node_span(node: &Node) -> Option<&Span> {
     match node {
         Node::InfixExpression { span, .. }
         | Node::PrefixExpression { span, .. }
