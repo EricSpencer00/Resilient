@@ -211,6 +211,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-5132-strict-loop-proofs",
       "claimed_at": "2026-10-31T06:52:05Z"
+    },
+    "resilient/src/strict_loop_cli.rs": {
+      "branch": "res-5132-strict-loop-proofs",
+      "claimed_at": "2026-10-31T07:01:59Z"
     }
   }
 }
