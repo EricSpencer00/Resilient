@@ -12,7 +12,10 @@ pub(crate) fn needs_guard(program: &Node) -> bool {
     crate::loop_bound_metadata::walk(program, &mut Vec::new(), &mut |node, path| {
         needed |= match node {
             Node::Function { name, .. } => match &declarations {
-                Some(declarations) => declarations.get(path).copied().flatten().is_some(),
+                Some(declarations) => declarations
+                    .get(path)
+                    .and_then(|attributes| attributes.loop_bound)
+                    .is_some(),
                 None => bounds.contains_key(name),
             },
             Node::Identifier { name, .. } => name.starts_with(PREFIX),
@@ -33,9 +36,11 @@ pub(crate) fn lower(program: &Node) -> Option<Node> {
     let bounds = crate::loop_bound::collect();
     let declarations = crate::loop_bound_metadata::snapshot();
     if bounds.is_empty()
-        && !declarations
-            .as_ref()
-            .is_some_and(|items| items.values().any(Option::is_some))
+        && !declarations.as_ref().is_some_and(|items| {
+            items
+                .values()
+                .any(|attributes| attributes.loop_bound.is_some())
+        })
     {
         return None;
     }
@@ -66,13 +71,15 @@ fn lower_node(
     {
         return;
     }
-    let own = crate::loop_bound_metadata::declaration(node);
+    let own = crate::loop_bound_metadata::scope(node);
     if let Some(own) = &own {
         path.push(own.clone());
     }
     let bound = match node {
         Node::Function { name, .. } => match declarations {
-            Some(declarations) => declarations.get(path).copied().flatten(),
+            Some(declarations) => declarations
+                .get(path)
+                .and_then(|attributes| attributes.loop_bound),
             None => bounds.get(name).copied(),
         }
         .map(|s| s.bound)

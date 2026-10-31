@@ -1948,6 +1948,8 @@ pub struct TypeChecker {
     /// Original declaration name for an explicitly qualified module check.
     /// Attribute policy still uses the parser's original item identity.
     module_function_origin: Option<(String, String)>,
+    #[cfg(feature = "z3")]
+    verification_declaration_path: crate::loop_bound_metadata::DeclarationPath,
     /// RES-4067: concrete associated-type implementations keyed by
     /// (trait, implementing struct, associated type). Values remain raw
     /// annotations until a call site has enough context to parse them.
@@ -5905,6 +5907,8 @@ impl TypeChecker {
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             module_function_origin: None,
+            #[cfg(feature = "z3")]
+            verification_declaration_path: Vec::new(),
             assoc_type_bindings: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
@@ -8359,7 +8363,20 @@ impl TypeChecker {
                 MAX_CHECK_DEPTH
             ));
         }
+        #[cfg(feature = "z3")]
+        let own = crate::loop_bound_metadata::scope(node).map(|mut declaration| {
+            if let Some((qualified, original)) = &self.module_function_origin
+                && declaration.name == *qualified
+            {
+                declaration.name.clone_from(original);
+            }
+            self.verification_declaration_path.push(declaration);
+        });
         let result = self.check_node_inner(node);
+        #[cfg(feature = "z3")]
+        if own.is_some() {
+            self.verification_declaration_path.pop();
+        }
         self.check_depth -= 1;
         result
     }
@@ -8569,7 +8586,10 @@ impl TypeChecker {
                 // regress compile time / false-timeout rate before the
                 // false-positive rate has been measured (see #4112).
                 #[cfg(feature = "z3")]
-                let overflow_checked = {
+                let overflow_checked = crate::loop_bound_metadata::overflow_checked(
+                    &self.verification_declaration_path,
+                )
+                .unwrap_or_else(|| {
                     // Preserve the attribute policy of this exact declaration;
                     // never infer an origin from a generic qualified basename.
                     let attribute_name = self
@@ -8581,7 +8601,7 @@ impl TypeChecker {
                     crate::feature_attrs::find_kind("overflow_checked")
                         .iter()
                         .any(|(item_name, _)| item_name == attribute_name)
-                };
+                });
                 for (decl_idx, clause) in requires.iter().chain(ensures.iter()).enumerate() {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.

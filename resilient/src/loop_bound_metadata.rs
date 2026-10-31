@@ -1,4 +1,4 @@
-//! Declaration-owned loop limits, separate from executable guards and source proofs.
+//! Declaration-owned verification attributes, separate from executable guards and source proofs.
 use crate::{Node, loop_bound::LoopBoundSpec, span::Span};
 use std::{cell::RefCell, collections::HashMap};
 
@@ -6,10 +6,21 @@ use std::{cell::RefCell, collections::HashMap};
 pub(crate) struct Declaration {
     pub name: String,
     span: Span,
+    kind: ScopeKind,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+enum ScopeKind {
+    Function,
+    Module,
 }
 pub(crate) type DeclarationPath = Vec<Declaration>;
-pub(crate) type Bounds = HashMap<DeclarationPath, Option<LoopBoundSpec>>;
-type Captured = HashMap<(usize, Declaration), LoopBoundSpec>;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Attributes {
+    pub loop_bound: Option<LoopBoundSpec>,
+    pub overflow_checked: bool,
+}
+pub(crate) type Bounds = HashMap<DeclarationPath, Attributes>;
+type Captured = HashMap<(usize, Declaration), Attributes>;
 
 thread_local! {
     static CURRENT: RefCell<Option<Bounds>> = const { RefCell::new(None) };
@@ -21,8 +32,20 @@ pub(crate) fn declaration(node: &Node) -> Option<Declaration> {
         Node::Function { name, span, .. } => Some(Declaration {
             name: name.clone(),
             span: *span,
+            kind: ScopeKind::Function,
         }),
         _ => None,
+    }
+}
+
+pub(crate) fn scope(node: &Node) -> Option<Declaration> {
+    match node {
+        Node::ModuleDecl { name, span, .. } => Some(Declaration {
+            name: name.clone(),
+            span: *span,
+            kind: ScopeKind::Module,
+        }),
+        _ => declaration(node),
     }
 }
 
@@ -62,7 +85,11 @@ impl ParseCapture {
             let captured = slot.borrow();
             walk(program, &mut Vec::new(), &mut |node, path| {
                 if let Some(key) = capture_key(node) {
-                    let bound = captured.as_ref().and_then(|items| items.get(&key)).copied();
+                    let bound = captured
+                        .as_ref()
+                        .and_then(|items| items.get(&key))
+                        .copied()
+                        .unwrap_or_default();
                     bounds.insert(path.clone(), bound);
                 }
             });
@@ -93,12 +120,33 @@ pub(crate) fn record(node: &Node, bound: u32) -> bool {
     };
     CAPTURE.with(|slot| {
         if let Some(captured) = slot.borrow_mut().as_mut() {
-            if let Some(previous) = captured.get(&key) {
+            let attributes = captured.entry(key).or_default();
+            if let Some(previous) = attributes.loop_bound {
                 return previous.bound == bound;
             }
-            captured.insert(key, LoopBoundSpec { bound });
+            attributes.loop_bound = Some(LoopBoundSpec { bound });
         }
         true
+    })
+}
+
+pub(crate) fn record_overflow(node: &Node) {
+    let Some(key) = capture_key(node) else { return };
+    CAPTURE.with(|slot| {
+        if let Some(captured) = slot.borrow_mut().as_mut() {
+            captured.entry(key).or_default().overflow_checked = true;
+        }
+    });
+}
+
+#[cfg(feature = "z3")]
+pub(crate) fn overflow_checked(path: &DeclarationPath) -> Option<bool> {
+    CURRENT.with(|slot| {
+        slot.borrow().as_ref().map(|items| {
+            items
+                .get(path)
+                .is_some_and(|attributes| attributes.overflow_checked)
+        })
     })
 }
 
@@ -107,7 +155,7 @@ pub(crate) fn walk(
     path: &mut DeclarationPath,
     visit: &mut impl FnMut(&Node, &DeclarationPath),
 ) {
-    let own = declaration(node);
+    let own = scope(node);
     if let Some(own) = &own {
         path.push(own.clone());
     }
@@ -124,7 +172,7 @@ pub(crate) fn top_level() -> Option<HashMap<String, LoopBoundSpec>> {
             .into_iter()
             .filter_map(|(path, bound)| {
                 if path.len() == 1 {
-                    bound.map(|bound| (path[0].name.clone(), bound))
+                    bound.loop_bound.map(|bound| (path[0].name.clone(), bound))
                 } else {
                     None
                 }
@@ -139,8 +187,59 @@ pub(crate) fn for_function(
 ) -> Option<LoopBoundSpec> {
     let key = declaration(node)?;
     CURRENT.with(|slot| match slot.borrow().as_ref() {
-        Some(bounds) => bounds.get(&vec![key]).copied().flatten(),
+        Some(bounds) => bounds
+            .get(&vec![key])
+            .and_then(|attributes| attributes.loop_bound),
         None => legacy.get(&key.name).copied(),
+    })
+}
+
+/// Inline globs clone declarations out of their module scope before checking.
+pub(crate) fn project_inline_glob(module: &str, items: &[&Node]) -> Result<(), String> {
+    let Some(source) = snapshot() else {
+        return Ok(());
+    };
+    let modules: Vec<_> = module.split("::").collect();
+    let mut exported = std::collections::HashSet::new();
+    for item in items {
+        walk(item, &mut Vec::new(), &mut |node, path| {
+            if declaration(node).is_some() {
+                exported.insert(path.clone());
+            }
+        });
+    }
+    let mut additions = Vec::new();
+    for (path, attributes) in &source {
+        if path.len() <= modules.len()
+            || !path
+                .iter()
+                .zip(&modules)
+                .all(|(scope, name)| scope.kind == ScopeKind::Module && scope.name == *name)
+        {
+            continue;
+        }
+        let destination = path[modules.len()..].to_vec();
+        if exported.contains(&destination) {
+            additions.push((destination, *attributes));
+        }
+    }
+    CURRENT.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let Some(target) = current.as_mut() else {
+            return Ok(());
+        };
+        for (path, attributes) in additions {
+            if target
+                .get(&path)
+                .is_some_and(|previous| *previous != attributes)
+            {
+                return Err(format!(
+                    "ambiguous verification attributes in inline glob `{module}`"
+                ));
+            }
+            target.insert(path, attributes);
+        }
+        Ok(())
     })
 }
 
@@ -169,8 +268,13 @@ pub(crate) fn transfer(
         if let Some(previous) = target.get(&destination)
             && previous != bound
         {
+            let kind = if previous.loop_bound != bound.loop_bound {
+                "loop-bound"
+            } else {
+                "overflow-check"
+            };
             error = Some(format!(
-                "ambiguous loop-bound ownership for declaration `{}`",
+                "ambiguous {kind} ownership for declaration `{}`",
                 destination[0].name
             ));
             return;
