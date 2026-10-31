@@ -507,6 +507,9 @@ fn parse_feature_attribute(
             node_item_name(node)
         }
     {
+        if name == "overflow_checked" {
+            crate::loop_bound_metadata::record_overflow(node);
+        }
         crate::feature_attrs::record(
             item_name,
             crate::feature_attrs::AttrRecord {

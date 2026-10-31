@@ -1,0 +1,123 @@
+[
+  {
+    "name": "direct_bad",
+    "files": {
+      "entry.rz": "#[overflow_checked] fn f(int x) ensures x+1>x {return x;} println(77);"
+    },
+    "reject": true
+  },
+  {
+    "name": "alias_bad",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+1>x {return x;}"
+    },
+    "reject": true
+  },
+  {
+    "name": "plain_bad",
+    "files": {
+      "entry.rz": "use \"dep.rz\"; println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+1>x {return x;}"
+    },
+    "reject": true
+  },
+  {
+    "name": "reexport_bad",
+    "files": {
+      "entry.rz": "use \"bridge.rz\" as bridge; println(77);",
+      "bridge.rz": "pub use \"dep.rz\";",
+      "dep.rz": "#[overflow_checked] pub fn f(int x) ensures x+1>x {return x;}"
+    },
+    "reject": true
+  },
+  {
+    "name": "two_aliases_bad",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as a; use \"dep.rz\" as b; println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+1>x {return x;}"
+    },
+    "reject": true
+  },
+  {
+    "name": "local_does_not_inherit",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; fn f(int x) ensures x+1>x {return x;} println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+0==x {return x;}"
+    },
+    "reject": false
+  },
+  {
+    "name": "private_does_not_leak",
+    "files": {
+      "entry.rz": "use \"dep.rz\"; fn f(int x) ensures x+1>x {return x;} println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+0==x {return x;} pub fn kept(){}"
+    },
+    "reject": false
+  },
+  {
+    "name": "selector_does_not_leak",
+    "files": {
+      "entry.rz": "use \"dep.rz\" { kept }; fn f(int x) ensures x+1>x {return x;} println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+0==x {return x;} fn kept(){}"
+    },
+    "reject": false
+  },
+  {
+    "name": "cfg_does_not_leak",
+    "files": {
+      "entry.rz": "#[cfg(feature=\"unused_overflow_flag\")] #[overflow_checked] fn f(int x) ensures x+0==x {return x;} fn f(int x) ensures x+1>x {return x;} println(77);"
+    },
+    "reject": false
+  },
+  {
+    "name": "nested_bad",
+    "files": {
+      "entry.rz": "fn outer(){#[overflow_checked] fn f(int x) ensures x+1>x {return x;}} println(77);"
+    },
+    "reject": true
+  },
+  {
+    "name": "nested_sibling_does_not_inherit",
+    "files": {
+      "entry.rz": "fn left(){#[overflow_checked] fn f(int x) ensures x+0==x {return x;}} fn right(){fn f(int x) ensures x+1>x {return x;}} println(77);"
+    },
+    "reject": false
+  },
+  {
+    "name": "inline_bad",
+    "files": {
+      "entry.rz": "mod m {#[overflow_checked] pub fn f(int x) ensures x+1>x {return x;}} println(77);"
+    },
+    "reject": true
+  },
+  {
+    "name": "inline_sibling_does_not_inherit",
+    "files": {
+      "entry.rz": "mod a {#[overflow_checked] pub fn f(int x) ensures x+0==x {return x;}} mod b {pub fn f(int x) ensures x+1>x {return x;}} println(77);"
+    },
+    "reject": false
+  },
+  {
+    "name": "safe_alias",
+    "files": {
+      "entry.rz": "use \"dep.rz\" as dep; println(77);",
+      "dep.rz": "#[overflow_checked] fn f(int x) ensures x+0==x {return x;}"
+    },
+    "reject": false
+  },
+  {
+    "name": "coexists_with_bound",
+    "files": {
+      "entry.rz": "#[loop_bound(1)] #[overflow_checked] fn f(int x) ensures x+0==x {return x;} println(77);"
+    },
+    "reject": false
+  },
+  {
+    "name": "coexists_reverse",
+    "files": {
+      "entry.rz": "#[overflow_checked] #[loop_bound(1)] fn f(int x) ensures x+0==x {return x;} println(77);"
+    },
+    "reject": false
+  }
+]
