@@ -226,6 +226,8 @@ mod vm;
 // authoritative until RES-109 benchmarks land.
 #[cfg(feature = "logos-lexer")]
 mod lexer_logos;
+
+mod integer_literal_diagnostics;
 // RES-121: Hindley-Milner unification + occurs check. Unconditionally
 // compiled; consumed by the inference walker when RES-120 lands.
 mod unify;
@@ -3891,6 +3893,18 @@ impl Parser {
         } else {
             (self.lexer.next_token(), None)
         };
+        if matches!(new_token, Token::IntLiteral(0))
+            && self.errors.len() < parser_recovery::MAX_PARSE_ERRORS
+            && let Some(error) = integer_literal_diagnostics::recovered_overflow(
+                &self.lexer.input,
+                self.lexer.last_token_offset,
+                self.lexer.position,
+                self.lexer.last_token_line,
+                self.lexer.last_token_column,
+            )
+        {
+            self.errors.push(error);
+        }
         self.current_origin_span = self.peek_origin_span;
         self.peek_origin_span = new_span;
         self.peek_line = self.lexer.last_token_line;
