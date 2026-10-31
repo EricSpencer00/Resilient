@@ -7,17 +7,22 @@ const PREFIX: &str = "$loop_bound$";
 #[cfg(feature = "jit")]
 pub(crate) fn needs_guard(program: &Node) -> bool {
     let bounds = crate::loop_bound::collect();
-    crate::uniqueness_walk::any_node(program, |node| match node {
-        Node::Function { name, .. } => bounds.contains_key(name),
-        Node::Identifier { name, .. } => name.starts_with(PREFIX),
-        _ => false,
-    })
+    let declarations = crate::loop_bound_metadata::snapshot();
+    let mut needed = false;
+    crate::loop_bound_metadata::walk(program, &mut Vec::new(), &mut |node, path| {
+        needed |= match node {
+            Node::Function { name, .. } => match &declarations {
+                Some(declarations) => declarations.get(path).copied().flatten().is_some(),
+                None => bounds.contains_key(name),
+            },
+            Node::Identifier { name, .. } => name.starts_with(PREFIX),
+            _ => false,
+        };
+    });
+    needed
 }
 
 pub(crate) fn lower_statements(statements: &[Spanned<Node>]) -> Option<Vec<Spanned<Node>>> {
-    if crate::loop_bound::collect().is_empty() {
-        return None;
-    }
     match lower(&Node::Program(statements.to_vec()))? {
         Node::Program(statements) => Some(statements),
         _ => None,
@@ -26,12 +31,24 @@ pub(crate) fn lower_statements(statements: &[Spanned<Node>]) -> Option<Vec<Spann
 
 pub(crate) fn lower(program: &Node) -> Option<Node> {
     let bounds = crate::loop_bound::collect();
-    if bounds.is_empty() {
+    let declarations = crate::loop_bound_metadata::snapshot();
+    if bounds.is_empty()
+        && !declarations
+            .as_ref()
+            .is_some_and(|items| items.values().any(Option::is_some))
+    {
         return None;
     }
     let mut result = program.clone();
     let mut serial = 0;
-    lower_node(&mut result, None, &bounds, &mut serial);
+    lower_node(
+        &mut result,
+        None,
+        &bounds,
+        &declarations,
+        &mut Vec::new(),
+        &mut serial,
+    );
     Some(result)
 }
 
@@ -39,6 +56,8 @@ fn lower_node(
     node: &mut Node,
     inherited: Option<u32>,
     bounds: &HashMap<String, crate::loop_bound::LoopBoundSpec>,
+    declarations: &Option<crate::loop_bound_metadata::Bounds>,
+    path: &mut crate::loop_bound_metadata::DeclarationPath,
     serial: &mut usize,
 ) {
     // A generated wrapper is already executable, including all its descendants.
@@ -47,13 +66,25 @@ fn lower_node(
     {
         return;
     }
+    let own = crate::loop_bound_metadata::declaration(node);
+    if let Some(own) = &own {
+        path.push(own.clone());
+    }
     let bound = match node {
-        Node::Function { name, .. } => bounds.get(name).map(|s| s.bound).or(inherited),
+        Node::Function { name, .. } => match declarations {
+            Some(declarations) => declarations.get(path).copied().flatten(),
+            None => bounds.get(name).copied(),
+        }
+        .map(|s| s.bound)
+        .or(inherited),
         _ => inherited,
     };
     crate::uniqueness_walk::children_mut(node, &mut |child| {
-        lower_node(child, bound, bounds, serial)
+        lower_node(child, bound, bounds, declarations, path, serial)
     });
+    if own.is_some() {
+        path.pop();
+    }
     let Some(limit) = bound else { return };
     let Node::WhileStatement { body, span, .. } = node else {
         return;
@@ -122,42 +153,4 @@ fn lower_node(
     };
 }
 
-// Public in-memory invocations must not consume another invocation's attributes.
-thread_local! {
-    static INVOCATION: std::cell::RefCell<Option<HashMap<String, crate::loop_bound::LoopBoundSpec>>> = const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) struct Invocation(Option<HashMap<String, crate::loop_bound::LoopBoundSpec>>);
-impl Invocation {
-    pub(crate) fn enter() -> Self {
-        Self(INVOCATION.with(|slot| slot.replace(Some(HashMap::new()))))
-    }
-}
-impl Drop for Invocation {
-    fn drop(&mut self) {
-        INVOCATION.with(|slot| {
-            slot.replace(self.0.take());
-        });
-    }
-}
-
-pub(crate) fn scoped_bounds() -> Option<HashMap<String, crate::loop_bound::LoopBoundSpec>> {
-    INVOCATION.with(|slot| slot.borrow().clone())
-}
-
-pub(crate) fn record_scoped(name: &str, record: &crate::feature_attrs::AttrRecord) {
-    if record.name != "loop_bound" {
-        return;
-    }
-    let Ok(bound) = record.args.trim().parse::<u32>() else {
-        return;
-    };
-    if bound == 0 {
-        return;
-    }
-    INVOCATION.with(|slot| {
-        if let Some(bounds) = slot.borrow_mut().as_mut() {
-            bounds.insert(name.to_owned(), crate::loop_bound::LoopBoundSpec { bound });
-        }
-    });
-}
+pub(crate) use crate::loop_bound_metadata::Invocation;

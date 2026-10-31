@@ -38,19 +38,24 @@ pub(crate) fn visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
 
 /// Apply `f` to each direct child of `node`, recursively descending.
 pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
+    children(node, &mut |child| visit(child, f));
+}
+
+/// Visit each direct child, leaving recursive policy to the caller.
+pub(crate) fn children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     match node {
         Node::Program(items) => {
             for s in items {
-                visit(&s.node, f);
+                f(&s.node);
             }
         }
         Node::Extern { decls, .. } => {
             for decl in decls {
                 for clause in &decl.requires {
-                    visit(clause, f);
+                    f(clause);
                 }
                 for clause in &decl.ensures {
-                    visit(clause, f);
+                    f(clause);
                 }
             }
         }
@@ -63,27 +68,27 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             ..
         } => {
             for default in defaults.iter().flatten() {
-                visit(default, f);
+                f(default);
             }
             for clause in requires {
-                visit(clause, f);
+                f(clause);
             }
-            visit(body, f);
+            f(body);
             for clause in ensures {
-                visit(clause, f);
+                f(clause);
             }
             if let Some(clause) = recovers_to {
-                visit(clause, f);
+                f(clause);
             }
         }
         Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
             for method in methods {
-                visit(method, f);
+                f(method);
             }
         }
         Node::ModuleDecl { body, .. } => {
             for item in body {
-                visit(item, f);
+                f(item);
             }
         }
         Node::Actor {
@@ -92,15 +97,15 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             handlers,
             ..
         } => {
-            visit(state_init, f);
+            f(state_init);
             for clause in concurrent_ensures {
-                visit(clause, f);
+                f(clause);
             }
             for handler in handlers {
                 for clause in &handler.ensures {
-                    visit(clause, f);
+                    f(clause);
                 }
-                visit(&handler.body, f);
+                f(&handler.body);
             }
         }
         Node::ActorDecl {
@@ -112,55 +117,55 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             ..
         } => {
             for (_, _, initializer) in state_fields {
-                visit(initializer, f);
+                f(initializer);
             }
             for clause in always_clauses {
-                visit(clause, f);
+                f(clause);
             }
             for clause in eventually_clauses {
-                visit(&clause.post, f);
+                f(&clause.post);
             }
             for handler in receive_handlers {
                 for clause in &handler.requires {
-                    visit(clause, f);
+                    f(clause);
                 }
                 for clause in &handler.ensures {
-                    visit(clause, f);
+                    f(clause);
                 }
-                visit(&handler.body, f);
+                f(&handler.body);
             }
             for handler in handlers {
                 for clause in &handler.ensures {
-                    visit(clause, f);
+                    f(clause);
                 }
-                visit(&handler.body, f);
+                f(&handler.body);
             }
         }
         Node::ClusterDecl { invariants, .. } => {
             for invariant in invariants {
-                visit(invariant, f);
+                f(invariant);
             }
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                visit(s, f);
+                f(s);
             }
         }
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
         | Node::Const { value, .. }
-        | Node::Assignment { value, .. } => visit(value, f),
-        Node::ReturnStatement { value: Some(v), .. } => visit(v, f),
+        | Node::Assignment { value, .. } => f(value),
+        Node::ReturnStatement { value: Some(v), .. } => f(v),
         Node::IfStatement {
             condition,
             consequence,
             alternative,
             ..
         } => {
-            visit(condition, f);
-            visit(consequence, f);
+            f(condition);
+            f(consequence);
             if let Some(alt) = alternative {
-                visit(alt, f);
+                f(alt);
             }
         }
         Node::WhileStatement {
@@ -169,11 +174,11 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             invariants,
             ..
         } => {
-            visit(condition, f);
+            f(condition);
             for invariant in invariants {
-                visit(invariant, f);
+                f(invariant);
             }
-            visit(body, f);
+            f(body);
         }
         Node::ForInStatement {
             iterable,
@@ -181,51 +186,51 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             invariants,
             ..
         } => {
-            visit(iterable, f);
+            f(iterable);
             for invariant in invariants {
-                visit(invariant, f);
+                f(invariant);
             }
-            visit(body, f);
+            f(body);
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            visit(function, f);
+            f(function);
             for a in arguments {
-                visit(a, f);
+                f(a);
             }
         }
-        Node::FieldAccess { target, .. } => visit(target, f),
+        Node::FieldAccess { target, .. } => f(target),
         Node::FieldAssignment { target, value, .. } => {
-            visit(target, f);
-            visit(value, f);
+            f(target);
+            f(value);
         }
         Node::IndexExpression { target, index, .. } => {
-            visit(target, f);
-            visit(index, f);
+            f(target);
+            f(index);
         }
         Node::InfixExpression { left, right, .. } => {
-            visit(left, f);
-            visit(right, f);
+            f(left);
+            f(right);
         }
-        Node::PrefixExpression { right, .. } => visit(right, f),
+        Node::PrefixExpression { right, .. } => f(right),
         Node::ArrayLiteral { items, .. } => {
             for i in items {
-                visit(i, f);
+                f(i);
             }
         }
-        Node::ExpressionStatement { expr, .. } => visit(expr, f),
+        Node::ExpressionStatement { expr, .. } => f(expr),
         Node::Match {
             scrutinee, arms, ..
         } => {
-            visit(scrutinee, f);
+            f(scrutinee);
             for (_, guard, body) in arms {
                 if let Some(g) = guard {
-                    visit(g, f);
+                    f(g);
                 }
-                visit(body, f);
+                f(body);
             }
         }
         // RES-2510: the following were missing, causing visitors to
@@ -238,14 +243,14 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             ..
         } => {
             for clause in requires {
-                visit(clause, f);
+                f(clause);
             }
-            visit(body, f);
+            f(body);
             for clause in ensures {
-                visit(clause, f);
+                f(clause);
             }
             if let Some(clause) = recovers_to {
-                visit(clause, f);
+                f(clause);
             }
         }
         Node::Assert {
@@ -254,9 +259,9 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
         | Node::Assume {
             condition, message, ..
         } => {
-            visit(condition, f);
+            f(condition);
             if let Some(m) = message {
-                visit(m, f);
+                f(m);
             }
         }
         Node::IndexAssignment {
@@ -265,70 +270,70 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             value,
             ..
         } => {
-            visit(target, f);
-            visit(index, f);
-            visit(value, f);
+            f(target);
+            f(index);
+            f(value);
         }
         Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
-            visit(value, f);
+            f(value);
         }
         Node::MapLiteral { entries, .. } => {
             for (k, v) in entries {
-                visit(k, f);
-                visit(v, f);
+                f(k);
+                f(v);
             }
         }
         Node::SetLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
             for i in items {
-                visit(i, f);
+                f(i);
             }
         }
         Node::StructLiteral { fields, base, .. } => {
             if let Some(b) = base {
-                visit(b, f);
+                f(b);
             }
             for (_, v) in fields {
-                visit(v, f);
+                f(v);
             }
         }
         Node::Slice { target, lo, hi, .. } => {
-            visit(target, f);
+            f(target);
             if let Some(l) = lo {
-                visit(l, f);
+                f(l);
             }
             if let Some(h) = hi {
-                visit(h, f);
+                f(h);
             }
         }
         Node::Range { lo, hi, .. } => {
-            visit(lo, f);
-            visit(hi, f);
+            f(lo);
+            f(hi);
         }
-        Node::TupleIndex { tuple, .. } => visit(tuple, f),
+        Node::TupleIndex { tuple, .. } => f(tuple),
         Node::InterpolatedString { parts, .. } => {
             for part in parts {
                 if let crate::string_interp::StringPart::Expr(expr) = part {
-                    visit(expr, f);
+                    f(expr);
                 }
             }
         }
         Node::TryCatch { body, handlers, .. } => {
             for s in body {
-                visit(s, f);
+                f(s);
             }
             for (_, handler_body) in handlers {
                 for s in handler_body {
-                    visit(s, f);
+                    f(s);
                 }
             }
         }
-        Node::TryExpression { expr, .. } => visit(expr, f),
-        Node::NewtypeConstruct { value, .. } | Node::NamedArg { value, .. } => visit(value, f),
+        Node::TryExpression { expr, .. } => f(expr),
+        Node::NewtypeConstruct { value, .. } | Node::NamedArg { value, .. } => f(value),
         Node::OptionalChain { object, access, .. } => {
-            visit(object, f);
+            f(object);
             if let crate::ChainAccess::Method(_, args) = access {
                 for a in args {
-                    visit(a, f);
+                    f(a);
                 }
             }
         }
@@ -338,29 +343,29 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             timeout,
             ..
         } => {
-            visit(body, f);
+            f(body);
             for inv in invariants {
-                visit(inv, f);
+                f(inv);
             }
             if let Some(timeout) = timeout {
-                visit(timeout, f);
+                f(timeout);
             }
         }
         Node::Quantifier { range, body, .. } => {
             match range {
                 crate::quantifiers::QuantRange::Range { lo, hi } => {
-                    visit(lo, f);
-                    visit(hi, f);
+                    f(lo);
+                    f(hi);
                 }
-                crate::quantifiers::QuantRange::Iterable(iterable) => visit(iterable, f),
+                crate::quantifiers::QuantRange::Iterable(iterable) => f(iterable),
             }
-            visit(body, f);
+            f(body);
         }
         Node::InvariantStatement { expr, .. }
         | Node::BreakWith { value: expr, .. }
-        | Node::DeferStatement { expr, .. } => visit(expr, f),
-        Node::StaticAssert { condition, .. } => visit(condition, f),
-        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => visit(body, f),
+        | Node::DeferStatement { expr, .. } => f(expr),
+        Node::StaticAssert { condition, .. } => f(condition),
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => f(body),
         // Leaf nodes and declarations without expression children.
         _ => {}
     }
