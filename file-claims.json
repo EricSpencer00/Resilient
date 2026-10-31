@@ -203,6 +203,18 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4902-vm-loop-invariants",
+      "claimed_at": "2026-10-31T05:18:00Z"
+    },
+    "resilient/src/loop_invariants.rs": {
+      "branch": "res-4902-vm-loop-invariants",
+      "claimed_at": "2026-10-31T05:18:00Z"
+    },
+    "resilient/src/compiler/loop_invariants.rs": {
+      "branch": "res-4902-vm-loop-invariants",
+      "claimed_at": "2026-10-31T05:18:00Z"
     }
   }
 }
