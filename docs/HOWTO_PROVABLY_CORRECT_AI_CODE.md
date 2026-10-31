@@ -158,25 +158,9 @@ monotonic-counter shape (`while (i < n) { i = i + step; }`-style). A
 bound the prover can't statically match falls back to a runtime check
 instead of a hard compile error — you get a warning, not a failure.
 
-The interpreter and bytecode engines enforce resolved `#[loop_bound(N)]`
-attributes even without contract enrolment or Z3. Each activation of each
-`while` loop has its own budget. The condition is evaluated normally; if it
-would enter body iteration `N + 1`, execution fails with `loop bound exceeded`
-before that body's side effects. `continue` consumes an iteration; a normal
-exit or `break` after exactly `N` iterations succeeds. CLI JIT execution falls
-back to the guarded bytecode path before running a bounded function.
-
-Static estimates require integer bounds, stable precondition variables and a
-single unconditional positive counter update whose arithmetic cannot overflow.
-Inclusive comparisons account for the extra iteration. Conditional updates,
-overwritten counters and other unsupported shapes emit a warning and retain
-the runtime guard. Generated guards are installed after source verification;
-they do not establish source invariants.
-
-This is a per-loop body budget, not a whole-program termination or timing
-proof. Recursion, condition evaluation and repeated loop activations need
-separate analysis. Contract enrolment requires the annotation regardless of
-whether `@ai_generated` is attached.
+`#[loop_bound(N)]` is unaffected by provenance: it fires purely off
+`@require_contracts` enrolment plus the presence of a `while` loop,
+regardless of whether `@ai_generated` is attached.
 
 ## Step 4 — Make violations fatal: `--typecheck-strict`
 
