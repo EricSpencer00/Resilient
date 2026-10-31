@@ -1,4 +1,4 @@
-//! Conservative identifier-alias targets for the refinement extern guard.
+//! Conservative callable-value targets for the refinement extern guard.
 
 use super::CallSite;
 use crate::Node;
@@ -16,36 +16,133 @@ fn binding(node: &Node) -> Option<(&str, &Node)> {
     }
 }
 
+// Values retain all possible targets: branches and aggregate elements are
+// intentionally joined rather than assuming one execution path or index.
+fn references(node: &Node) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut work = vec![node];
+    while let Some(node) = work.pop() {
+        match node {
+            Node::Identifier { name, .. } => {
+                found.insert(name.clone());
+            }
+            Node::ArrayLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+                work.extend(items)
+            }
+            Node::IndexExpression { target, .. }
+            | Node::FieldAccess { target, .. }
+            | Node::Slice { target, .. } => work.push(target),
+            Node::TupleIndex { tuple, .. } => work.push(tuple),
+            Node::ExpressionStatement { expr, .. } => work.push(expr),
+            Node::ReturnStatement {
+                value: Some(value), ..
+            } => work.push(value),
+            Node::IfStatement {
+                consequence,
+                alternative,
+                ..
+            } => {
+                work.push(consequence);
+                if let Some(alternative) = alternative {
+                    work.push(alternative);
+                }
+            }
+            Node::Block { stmts, .. } => {
+                if let Some(last) = stmts.last() {
+                    work.push(last);
+                }
+            }
+            Node::StructLiteral { fields, base, .. } => {
+                work.extend(fields.iter().map(|(_, value)| value));
+                if let Some(base) = base {
+                    work.push(base);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 fn record(aliases: &mut Aliases, node: &Node) {
-    if let Some((name, Node::Identifier { name: target, .. })) = binding(node) {
+    if let Some((name, value)) = binding(node) {
         aliases
             .entry(name.to_string())
             .or_default()
-            .insert(target.clone());
+            .extend(references(value));
+    }
+    match node {
+        Node::LetTupleDestructure { names, value, .. } => {
+            let refs = references(value);
+            for name in names {
+                aliases
+                    .entry(name.clone())
+                    .or_default()
+                    .extend(refs.clone());
+            }
+        }
+        Node::ForInStatement { name, iterable, .. } => {
+            aliases
+                .entry(name.clone())
+                .or_default()
+                .extend(references(iterable));
+        }
+        _ => {}
+    }
+}
+
+fn mutations(aliases: &mut Aliases, body: &Node) {
+    let mut writes = Vec::new();
+    crate::uniqueness_walk::visit(body, &mut |node| {
+        if let Node::IndexAssignment { target, value, .. }
+        | Node::FieldAssignment { target, value, .. } = node
+        {
+            writes.push((references(target), references(value)));
+        }
+    });
+    // An aggregate alias can be mutated after it is copied to another binding.
+    // Follow its original targets too, independent of source execution order.
+    loop {
+        let mut changed = false;
+        for (roots, values) in &writes {
+            for root in roots {
+                for target in targets(root, aliases) {
+                    if !aliases.contains_key(&target) {
+                        continue;
+                    }
+                    let entry = aliases.entry(target).or_default();
+                    let before = entry.len();
+                    entry.extend(values.iter().cloned());
+                    changed |= before != entry.len();
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 
 pub(super) fn globals(program: &Node) -> Aliases {
     let mut aliases = Aliases::new();
-    let mut names = BTreeSet::new();
     if let Node::Program(statements) = program {
         for statement in statements {
-            if let Some((name, _)) = binding(&statement.node) {
-                names.insert(name.to_string());
-                record(&mut aliases, &statement.node);
-            }
+            record(&mut aliases, &statement.node);
         }
     }
-    // A helper can reassign a global callable before another function calls
-    // it. Keep every known target rather than depending on execution order.
-    crate::uniqueness_walk::visit(program, &mut |node| {
-        if let Node::Assignment { name, .. } = node
-            && names.contains(name)
-        {
-            record(&mut aliases, node);
-        }
-    });
-    aliases
+    let names: BTreeSet<_> = aliases.keys().cloned().collect();
+    // A helper can store a locally aliased callable into a global. Resolve
+    // through its bindings before exporting only the global roots, otherwise
+    // the local name disappears from the caller's graph.
+    crate::uniqueness_walk::visit(program, &mut |node| record(&mut aliases, node));
+    mutations(&mut aliases, program);
+    names
+        .into_iter()
+        .map(|name| {
+            let reachable = targets(&name, &aliases);
+            (name, reachable)
+        })
+        .collect()
 }
 
 fn targets(name: &str, aliases: &Aliases) -> BTreeSet<String> {
@@ -65,18 +162,24 @@ fn targets(name: &str, aliases: &Aliases) -> BTreeSet<String> {
 pub(super) fn calls(body: &Node, globals: &Aliases) -> Vec<CallSite> {
     let mut aliases = globals.clone();
     crate::uniqueness_walk::visit(body, &mut |node| record(&mut aliases, node));
+    mutations(&mut aliases, body);
     let mut resolved = BTreeMap::new();
     let mut calls = Vec::new();
     crate::uniqueness_walk::visit(body, &mut |node| {
-        if let Node::CallExpression { function, span, .. } = node
-            && let Node::Identifier { name, .. } = function.as_ref()
-        {
-            let callees = resolved
-                .entry(name.clone())
-                .or_insert_with(|| targets(name, &aliases));
-            for callee in callees.iter() {
+        if let Node::CallExpression { function, span, .. } = node {
+            let mut callees = BTreeSet::new();
+            for name in references(function) {
+                callees.extend(
+                    resolved
+                        .entry(name.clone())
+                        .or_insert_with(|| targets(&name, &aliases))
+                        .iter()
+                        .cloned(),
+                );
+            }
+            for callee in callees {
                 calls.push(CallSite {
-                    callee: callee.clone(),
+                    callee,
                     line: span.start.line,
                     column: span.start.column,
                 });
