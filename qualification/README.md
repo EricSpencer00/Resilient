@@ -99,3 +99,11 @@ includes both source-binding suites with the seven earlier suites and records
 raw test output, compiler version and resolved dynamic-library identities.
 
 The [source-bound 1.2 host dossier](host-cli-source-binding-2026-10/README.md) records the retained debug binary and all 57 passes across nine suites from hosted run40060158827. It preserves the earlier baseline and leaves project classification, independent review and external acceptance pending.
+
+The [controlled-requirements pipeline](requirements-pipeline/README.md) generates a
+bounded finite-state TLA+ model and executable transition function, checks the
+actual model transition relation, and compares every table cell with interpreter
+and both VM outputs. It retains per-requirement observations and rejects altered
+bundles, contradictory properties, wrong implementations and incomplete runs.
+Its finite-instance evidence does not establish general compiler refinement or
+replace requirements review.

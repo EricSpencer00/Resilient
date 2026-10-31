@@ -1,0 +1,15 @@
+States: off, ready, tripped.
+Events: arm, fault, reset.
+Initial: off.
+R01: When state is off and event is arm, next state shall be ready.
+R02: When state is off and event is fault, next state shall be tripped.
+R03: When state is off and event is reset, next state shall be off.
+R04: When state is ready and event is arm, next state shall be ready.
+R05: When state is ready and event is fault, next state shall be tripped.
+R06: When state is ready and event is reset, next state shall be off.
+R07: When state is tripped and event is arm, next state shall be tripped.
+R08: When state is tripped and event is fault, next state shall be tripped.
+R09: When state is tripped and event is reset, next state shall be off.
+S01: After event fault, state shall be tripped.
+S02: From state tripped, event arm shall lead to state tripped.
+L01: Assuming fair event fault, state tripped shall eventually be reached.
