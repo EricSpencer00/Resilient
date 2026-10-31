@@ -31905,6 +31905,14 @@ fn execute_file(
         &program,
         Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
     );
+    let mut loop_source_origins = if deny_unproven_invariants {
+        match &program {
+            Node::Program(statements) => Some(vec![Some(filename.to_string()); statements.len()]),
+            _ => Some(Vec::new()),
+        }
+    } else {
+        None
+    };
     let mut std_bindings = Vec::new();
     if has_use {
         let base_dir = Path::new(filename)
@@ -31916,22 +31924,49 @@ fn execute_file(
             loaded.insert(canon);
         }
         let mut std_imports = Vec::new();
-        #[cfg(feature = "z3")]
-        let expanded = if let Some(capture) = source_capture.as_mut() {
-            imports::expand_uses_traced(
+        let expanded = if deny_unproven_invariants {
+            #[cfg(feature = "z3")]
+            let trace = source_capture
+                .as_mut()
+                .map(|capture| capture as &mut dyn imports::ImportTrace);
+            #[cfg(not(feature = "z3"))]
+            let trace = None;
+            imports::expand_uses_with_origins(
                 &mut program,
                 Path::new(filename),
                 &mut loaded,
                 &mut std_imports,
-                capture,
-                true,
+                trace,
             )
+            .map(|origins| loop_source_origins = Some(origins))
         } else {
-            imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports)
+            #[cfg(feature = "z3")]
+            let expanded = if let Some(capture) = source_capture.as_mut() {
+                imports::expand_uses_traced(
+                    &mut program,
+                    Path::new(filename),
+                    &mut loaded,
+                    &mut std_imports,
+                    capture,
+                    true,
+                )
+            } else {
+                imports::expand_uses_with_std(
+                    &mut program,
+                    &base_dir,
+                    &mut loaded,
+                    &mut std_imports,
+                )
+            };
+            #[cfg(not(feature = "z3"))]
+            let expanded = imports::expand_uses_with_std(
+                &mut program,
+                &base_dir,
+                &mut loaded,
+                &mut std_imports,
+            );
+            expanded
         };
-        #[cfg(not(feature = "z3"))]
-        let expanded =
-            imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports);
         if let Err(e) = expanded {
             return Err(format!("Import error: {}", e));
         }
@@ -31957,10 +31992,33 @@ fn execute_file(
     crate::default_params::lower_program(&mut program);
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
+    // Textual macro re-parsing loses physical positions; do not label generated annotations as source.
+    if let (Some(origins), Node::Program(statements)) = (&mut loop_source_origins, &program) {
+        let macro_names: HashSet<_> = crate::macros::collect()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        for (statement, origin) in statements.iter().zip(origins.iter_mut()) {
+            crate::uniqueness_walk::visit(&statement.node, &mut |node| {
+                if let Node::CallExpression { function, .. } = node
+                    && let Node::Identifier { name, .. } = function.as_ref()
+                    && (macro_names.contains(name) || crate::macros::expand(name, &[]).is_some())
+                {
+                    *origin = None;
+                }
+            });
+        }
+    }
     // Expand textual macros declared with `#[macro(...)]`.
     crate::macros::lower_program(&mut program);
     // RES-2685: synthesize concrete ImplBlocks from BlanketImpl nodes.
     crate::blanket_impl::lower_program(&mut program);
+    // Synthetic impls splice into the statement list; an unaligned map cannot label any site.
+    if let (Some(origins), Node::Program(statements)) = (&mut loop_source_origins, &program)
+        && origins.len() != statements.len()
+    {
+        origins.clear();
+    }
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
@@ -32070,6 +32128,8 @@ fn execute_file(
         let mut tc = tc_base.with_z3_theory(z3_theory);
         #[cfg(not(feature = "z3"))]
         let mut tc = tc_base;
+        // Missing origins remain explicit instead of borrowing the entry filename.
+        tc.loop_source_origins = loop_source_origins;
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
@@ -32084,7 +32144,9 @@ fn execute_file(
                 // RES-117: add a caret diagnostic beneath the
                 // ANSI-red header so the offending source position
                 // is visually underlined.
-                eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
+                if !e.contains("unproven-loop-invariant:") {
+                    eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
+                }
                 if typecheck_strict {
                     if let Some(path) = emit_contract_cert {
                         let diagnostic = contract_certificate::emit_diagnostic(

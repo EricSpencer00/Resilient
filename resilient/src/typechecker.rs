@@ -1903,6 +1903,7 @@ pub struct TypeChecker {
     /// regular build is silent; the driver flips it on for `--verbose`.
     verbose_loop_invariants: bool,
     pub(crate) deny_unproven_invariants: bool,
+    pub(crate) loop_source_origins: Option<Vec<Option<String>>>,
     /// RES-1322: gate the post-typecheck `infer_fn_effects` fixpoint
     /// on opt-in. The result populates `self.stats.fn_effects`, which
     /// is only read by the `--audit` and `--explain-effects` CLI
@@ -5883,6 +5884,7 @@ impl TypeChecker {
             // by default. The driver flips it on via `--verbose`.
             verbose_loop_invariants: false,
             deny_unproven_invariants: false,
+            loop_source_origins: None,
             // RES-1322: opt-in. Audit + explain-effects drivers set
             // this; default-mode runs (every non-audit CLI invocation,
             // the LSP/REPL, every `cargo test` typecheck) skip the

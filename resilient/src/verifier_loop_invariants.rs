@@ -44,37 +44,58 @@ use std::collections::{HashMap, HashSet};
 // Expanded imports can share spans; AST identity keeps their annotations distinct.
 // These identities are used only while checking the same immutable program.
 pub(crate) struct ProofCoverage {
-    sites: HashMap<usize, Span>,
+    sites: HashMap<usize, (Span, Option<String>)>,
     proven: HashSet<usize>,
 }
 impl ProofCoverage {
-    fn new(program: &Node, enabled: bool) -> Self {
+    fn new(program: &Node, enabled: bool, origins: Option<&[Option<String>]>) -> Self {
         let mut result = Self {
             sites: HashMap::new(),
             proven: HashSet::new(),
         };
         if enabled {
-            crate::uniqueness_walk::visit(program, &mut |node| match node {
-                Node::WhileStatement {
-                    invariants, span, ..
-                }
-                | Node::ForInStatement {
-                    invariants, span, ..
-                } => {
-                    for invariant in invariants {
+            let mut collect = |program: &Node, origin: Option<String>| {
+                crate::uniqueness_walk::visit(program, &mut |node| match node {
+                    Node::WhileStatement {
+                        invariants, span, ..
+                    }
+                    | Node::ForInStatement {
+                        invariants, span, ..
+                    } => {
+                        for invariant in invariants {
+                            result.sites.insert(
+                                invariant as *const Node as usize,
+                                (
+                                    invariant_span(invariant).copied().unwrap_or(*span),
+                                    origin.clone(),
+                                ),
+                            );
+                        }
+                    }
+                    Node::InvariantStatement { expr, span } => {
                         result.sites.insert(
-                            invariant as *const Node as usize,
-                            invariant_span(invariant).copied().unwrap_or(*span),
+                            expr.as_ref() as *const Node as usize,
+                            (*span, origin.clone()),
                         );
                     }
+                    _ => {}
+                });
+            };
+            if let (Some(origins), Node::Program(statements)) = (origins, program) {
+                for (index, statement) in statements.iter().enumerate() {
+                    collect(
+                        &statement.node,
+                        Some(
+                            origins
+                                .get(index)
+                                .and_then(|s| s.clone())
+                                .unwrap_or_else(|| "<unknown origin>".to_string()),
+                        ),
+                    );
                 }
-                Node::InvariantStatement { expr, span } => {
-                    result
-                        .sites
-                        .insert(expr.as_ref() as *const Node as usize, *span);
-                }
-                _ => {}
-            });
+            } else {
+                collect(program, None);
+            }
         }
         result
     }
@@ -90,16 +111,16 @@ impl ProofCoverage {
             .sites
             .iter()
             .filter(|(identity, _)| !self.proven.contains(identity))
-            .map(|(_, span)| *span)
+            .map(|(_, (span, origin))| (*span, origin.as_deref().unwrap_or(source)))
             .collect();
-        unresolved.sort_by_key(|span| (span.start.line, span.start.column));
+        unresolved.sort_by_key(|(span, source)| (*source, span.start.line, span.start.column));
         if unresolved.is_empty() {
             return Ok(());
         }
         let mut errors: Vec<_> = unresolved
             .iter()
             .take(32)
-            .map(|span| {
+            .map(|(span, source)| {
                 format!(
                     "{}:{}:{}: unproven-loop-invariant: static proof required for this annotation",
                     source, span.start.line, span.start.column
@@ -181,7 +202,11 @@ pub(crate) fn verify_and_capture(
     tc: &mut crate::typechecker::TypeChecker,
     program: &Node,
 ) -> ProofCoverage {
-    let mut coverage = ProofCoverage::new(program, tc.deny_unproven_invariants);
+    let mut coverage = ProofCoverage::new(
+        program,
+        tc.deny_unproven_invariants,
+        tc.loop_source_origins.as_deref(),
+    );
     // RES-1297 / RES-1917: the typechecker gates this call behind
     // statement-form, while, or finite-loop invariant markers,
     // so the program is guaranteed to contain at least one invariant.
@@ -226,7 +251,11 @@ pub(crate) fn verify_and_capture(
     tc: &mut crate::typechecker::TypeChecker,
     program: &Node,
 ) -> ProofCoverage {
-    ProofCoverage::new(program, tc.deny_unproven_invariants)
+    ProofCoverage::new(
+        program,
+        tc.deny_unproven_invariants,
+        tc.loop_source_origins.as_deref(),
+    )
 }
 
 /// Recursive walk of the program AST. Tracks the lexically-visible
@@ -1263,3 +1292,30 @@ mod tests {
 
 #[cfg(all(test, feature = "z3"))]
 mod binding_soundness_tests;
+
+#[cfg(test)]
+mod origin_coverage_tests {
+    use super::ProofCoverage;
+    use crate::{Lexer, Parser};
+
+    #[test]
+    fn missing_tracked_origin_never_uses_entry_filename() {
+        let program = Parser::new(Lexer::new("while false invariant false {}")).parse_program();
+        for origins in [vec![], vec![None]] {
+            let error = ProofCoverage::new(&program, true, Some(&origins))
+                .enforce("entry.rz")
+                .unwrap_err();
+            assert!(error.contains("<unknown origin>:1:"), "{error}");
+            assert!(!error.contains("entry.rz"), "{error}");
+        }
+    }
+
+    #[test]
+    fn untracked_library_program_uses_supplied_source() {
+        let program = Parser::new(Lexer::new("while false invariant false {}")).parse_program();
+        let error = ProofCoverage::new(&program, true, None)
+            .enforce("memory.rz")
+            .unwrap_err();
+        assert!(error.contains("memory.rz:1:"), "{error}");
+    }
+}
