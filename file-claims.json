@@ -195,6 +195,30 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/jit_backend.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/loop_bound.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/uniqueness_walk.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/monomorph.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:18:45Z"
     }
   }
 }
