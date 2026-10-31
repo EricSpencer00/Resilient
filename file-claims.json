@@ -207,6 +207,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-5126-machine-loop-proofs",
       "claimed_at": "2026-10-31T05:58:22Z"
+    },
+    "resilient/src/verifier_z3/loop_machine.rs": {
+      "branch": "res-5126-machine-loop-proofs",
+      "claimed_at": "2026-10-31T06:01:30Z"
     }
   }
 }
