@@ -679,6 +679,7 @@ mod contract_inference;
 // `@require_contracts` directive and the shared enrolment predicate.
 mod contract_policy;
 mod loop_bound;
+mod loop_bound_attribute;
 mod loop_bound_metadata;
 mod loop_bound_runtime;
 // RES-3779 Phase A: routes declared + inferred contract clauses
@@ -3745,10 +3746,14 @@ impl Parser {
     /// messages are appended — this guards against pathological
     /// input producing unbounded diagnostic memory.
     fn record_error(&mut self, msg: String) {
+        self.record_error_at(self.current_line, self.current_column, msg);
+    }
+
+    fn record_error_at(&mut self, line: usize, column: usize, msg: String) {
         if self.errors.len() >= parser_recovery::MAX_PARSE_ERRORS {
             return;
         }
-        let full = format!("{}:{}: {}", self.current_line, self.current_column, msg);
+        let full = format!("{line}:{column}: {msg}");
         if self.emit_errors {
             eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
         }
