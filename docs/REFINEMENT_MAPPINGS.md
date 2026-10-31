@@ -33,7 +33,9 @@ initializer factories, forwarded arguments, collection operations and closures
 are retained in global bindings and captures. Initializer-only calls do not become
 calls of the mapped function; helper parameter and return summaries are recomputed
 for that root so unrelated startup arguments do not contaminate its obligations.
-Global values and captures still conservatively join their possible targets.
+Global captures also track subsequent writes by mapped calls. Bindings shadowed
+by an enclosing local or parameter retain their own captured values. Global values
+and captures still conservatively join their possible targets.
 
 Collection callback flow covers `map`, `filter`, `reduce`, `flat_map`,
 `for_each`, `find`, `any`, and `all`. Known named or anonymous callbacks are

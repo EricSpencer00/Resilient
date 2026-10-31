@@ -455,6 +455,25 @@ fn analyze(
         });
         locals.insert(name.clone(), env);
     }
+    let mut capture_shadows = BTreeMap::<String, Targets>::new();
+    loop {
+        let mut changed = false;
+        for (name, (_, body)) in &functions {
+            let mut shadowed = capture_shadows.get(name).cloned().unwrap_or_default();
+            shadowed.extend(locals[name].keys().cloned());
+            visit(body, &mut |node| {
+                if let Some(closure) = literals.get(&(node as *const Node)) {
+                    let entry = capture_shadows.entry(closure.clone()).or_default();
+                    let before = entry.len();
+                    entry.extend(shadowed.iter().cloned());
+                    changed |= before != entry.len();
+                }
+            });
+        }
+        if !changed {
+            break;
+        }
+    }
     let mut returns = Env::new();
     let mut reachable = BTreeSet::from([root.unwrap_or("$initializers").to_string()]);
     let mut sites = BTreeSet::new();
@@ -463,6 +482,18 @@ fn analyze(
     // forwarding converges without a depth cutoff that could hide a target.
     loop {
         let mut changed = false;
+        // Global captures remain live across initialization and mapped calls.
+        // Lexical ancestors' bindings must retain their own captured values.
+        for (closure, captured) in &mut captures {
+            for (binding, targets) in &globals {
+                if !capture_shadows
+                    .get(closure)
+                    .is_some_and(|shadowed| shadowed.contains(binding))
+                {
+                    changed |= extend(captured, binding, targets.clone());
+                }
+            }
+        }
         for name in reachable.clone() {
             let Some((parameters, body)) = functions.get(&name) else {
                 continue;

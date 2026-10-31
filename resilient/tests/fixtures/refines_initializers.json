@@ -193,5 +193,55 @@
     "name": "root_call_does_not_reinitialize_globals",
     "source": "let handler=identity(safe);\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=identity(helper);return handler(value);}\nfn select()->fn(int)->int{return helper;}\nfn identity(fn(int)->int call)->fn(int)->int{return call;}\nfn make(fn(int)->int call)->fn(int)->int{return fn(int value)->int{return call(value);};}\nfn pick(int value)->fn(int)->int{return helper;}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
     "reject": false
+  },
+  {
+    "name": "live_global_capture",
+    "source": "let handler=safe;let call=fn(int value)->int{return handler(value);};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "live_global_capture_contracted",
+    "source": "let handler=safe;let call=fn(int value)->int{return handler(value);};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "factory_global_capture",
+    "source": "let handler=safe;let call=make();fn make()->fn(int)->int{return fn(int value)->int{return handler(value);};}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "factory_global_capture_contracted",
+    "source": "let handler=safe;let call=make();fn make()->fn(int)->int{return fn(int value)->int{return handler(value);};}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "nested_global_capture",
+    "source": "let handler=safe;let call=make()();fn make()->fn()->fn(int)->int{return fn()->fn(int)->int{return fn(int value)->int{return handler(value);};};}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "nested_global_capture_contracted",
+    "source": "let handler=safe;let call=make()();fn make()->fn()->fn(int)->int{return fn()->fn(int)->int{return fn(int value)->int{return handler(value);};};}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){handler=helper;return call(value);}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "parameter_shadow",
+    "source": "let handler=helper;let call=make(safe);\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn make(fn(int)->int handler)->fn(int)->int{return fn(int value)->int{return handler(value);};}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "nested_parameter_shadow",
+    "source": "let handler=helper;let call=make(safe);\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn make(fn(int)->int handler)->fn(int)->int{let create=fn()->fn(int)->int{return fn(int value)->int{return handler(value);};};return create();}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "local_shadow",
+    "source": "let handler=helper;let call=make();\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn make()->fn(int)->int{let handler=safe;return fn(int value)->int{return handler(value);};}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "nested_local_shadow",
+    "source": "let handler=helper;let call=make();\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return call(value);}\nfn make()->fn(int)->int{let handler=safe;let create=fn()->fn(int)->int{return fn(int value)->int{return handler(value);};};return create();}\nfn safe(int value)->int{return value;}\nfn helper(int value)->int{return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
   }
 ]
