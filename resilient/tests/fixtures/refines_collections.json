@@ -288,5 +288,40 @@
     "name": "implicit_reduce_extern_contracted",
     "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value,value].reduce(foreign);}\n\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int requires value>=0 ensures result==result;};",
     "reject": false
+  },
+  {
+    "name": "ignored_callable_elements",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select);return calls.map(ignore);}\nfn select(int value)->fn(int)->int{return foreign;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "ignored_literal_elements",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [foreign].map(ignore);}\nfn select(int value)->fn(int)->int{return foreign;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "ignored_chained_elements",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(select).map(ignore);}\nfn select(int value)->fn(int)->int{return foreign;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "ignored_captured_elements",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select);let callback=fn(int x){return calls.map(ignore);};return callback(value);}\nfn select(int value)->fn(int)->int{return foreign;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "unused_mapped_closure",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=[value].map(fn(int x){return fn(int y)->int{return foreign(y);};});return value;}\nfn select(int value)->fn(int)->int{return foreign;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "field_receiver_shadow",
+    "source": "struct Dispatch {any map,}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let dispatch=new Dispatch {map:foreign};if value>0 {let dispatch=[safe];let unused=dispatch.map(ignore);}return dispatch.map(value);}\nfn safe(int x)->int{return x;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "field_receiver_shadow_contracted",
+    "source": "struct Dispatch {any map,}\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let dispatch=new Dispatch {map:foreign};if value>0 {let dispatch=[safe];let unused=dispatch.map(ignore);}return dispatch.map(value);}\nfn safe(int x)->int{return x;}\nfn ignore(fn(int)->int call)->int{return 0;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
   }
 ]

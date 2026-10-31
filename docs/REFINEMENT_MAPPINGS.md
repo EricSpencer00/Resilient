@@ -33,7 +33,9 @@ Collection callback flow covers `map`, `filter`, `reduce`, `flat_map`,
 checked, element/accumulator targets flow into their parameters, and possible
 callable results flow out of transformations and reductions. Element-preserving
 chains and builtin `unwrap` retain this provenance. Both reduction forms are
-supported. This analysis joins possible elements, accumulators and return values;
+supported. Lexical array-shape facts distinguish callable elements from the
+callback itself, preserving ignored-element cases. Unknown receiver shapes retain
+conservative field-call analysis. This analysis joins possible elements, accumulators and return values;
 it does not prove collection sizes or predicate outcomes.
 
 This is conservative value provenance, not complete higher-order verification.
