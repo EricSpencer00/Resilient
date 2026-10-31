@@ -8364,7 +8364,7 @@ impl TypeChecker {
             ));
         }
         #[cfg(feature = "z3")]
-        let own = crate::loop_bound_metadata::declaration(node).map(|mut declaration| {
+        let own = crate::loop_bound_metadata::scope(node).map(|mut declaration| {
             if let Some((qualified, original)) = &self.module_function_origin
                 && declaration.name == *qualified
             {

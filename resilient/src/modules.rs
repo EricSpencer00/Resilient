@@ -149,6 +149,7 @@ pub(crate) fn expand_inline_globs(program: &mut Node) -> Result<(), String> {
             ));
         };
 
+        let mut exported = Vec::new();
         for item in body {
             let Some(name) = glob_export_name(item) else {
                 continue;
@@ -158,8 +159,10 @@ pub(crate) fn expand_inline_globs(program: &mut Node) -> Result<(), String> {
                     "ambiguous inline module glob import for `{name}` from `{module_name}`"
                 ));
             }
+            exported.push(item);
             expanded.push(crate::span::Spanned::new(item.clone(), *span));
         }
+        crate::loop_bound_metadata::project_inline_glob(module_name, &exported)?;
     }
 
     *stmts = expanded;

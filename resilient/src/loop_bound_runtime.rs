@@ -71,7 +71,7 @@ fn lower_node(
     {
         return;
     }
-    let own = crate::loop_bound_metadata::declaration(node);
+    let own = crate::loop_bound_metadata::scope(node);
     if let Some(own) = &own {
         path.push(own.clone());
     }

@@ -119,5 +119,35 @@
       "entry.rz": "#[overflow_checked] #[loop_bound(1)] fn f(int x) ensures x+0==x {return x;} println(77);"
     },
     "reject": false
+  },
+  {
+    "name": "imported_module_coordinates_do_not_collide",
+    "files": {
+      "entry.rz": "use \"a.rz\";use \"b.rz\";println(77);",
+      "a.rz": "mod a {#[overflow_checked] pub fn f(int x) ensures x+0==x {return x;}}",
+      "b.rz": "mod b {                    pub fn f(int x) ensures x+0==x {return x;}}"
+    },
+    "reject": false
+  },
+  {
+    "name": "inline_glob_bad",
+    "files": {
+      "entry.rz": "mod a {#[overflow_checked] pub fn f(int x) ensures x+1>x {return x;}} use a::*;println(77);"
+    },
+    "reject": true
+  },
+  {
+    "name": "nested_inline_glob_bad",
+    "files": {
+      "entry.rz": "mod a {mod b {#[overflow_checked] pub fn f(int x) ensures x+1>x {return x;}}} use a::b::*;println(77);"
+    },
+    "reject": true
+  },
+  {
+    "name": "inline_glob_safe",
+    "files": {
+      "entry.rz": "mod a {#[overflow_checked] pub fn f(int x) ensures x+0==x {return x;}} use a::*;println(77);"
+    },
+    "reject": false
   }
 ]
