@@ -211,6 +211,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-5147-overflow-declaration-ownership",
       "claimed_at": "2026-10-31T09:40:57Z"
+    },
+    "resilient/src/modules.rs": {
+      "branch": "res-5147-overflow-declaration-ownership",
+      "claimed_at": "2026-10-31T09:51:30Z"
     }
   }
 }
