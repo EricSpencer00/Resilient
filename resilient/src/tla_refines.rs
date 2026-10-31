@@ -16,6 +16,8 @@ use std::path::Path;
 
 #[path = "tla_refines_aliases.rs"]
 mod aliases;
+#[path = "tla_refines_flow.rs"]
+mod flow;
 
 const ATTRIBUTE: &str = "refines";
 
@@ -313,6 +315,7 @@ fn check_reachable_extern_contracts(
 ) -> Result<(), String> {
     let (functions, externs) = collect_summaries(program);
     for mapping in mappings {
+        let extra_calls = flow::calls(program, &mapping.function);
         let mut visited = HashSet::new();
         let mut work = vec![mapping.function.clone()];
         while let Some(function_name) = work.pop() {
@@ -322,7 +325,12 @@ fn check_reachable_extern_contracts(
             let Some(summary) = functions.get(&function_name) else {
                 continue;
             };
-            for call in &summary.calls {
+            let root_calls = if function_name == mapping.function {
+                extra_calls.as_slice()
+            } else {
+                &[]
+            };
+            for call in summary.calls.iter().chain(root_calls) {
                 if let Some(extern_summary) = externs.get(&call.callee) {
                     if extern_summary.has_requires && extern_summary.has_ensures {
                         continue;

@@ -16,9 +16,17 @@ branches and aggregate elements, so even a constant index into a mixed aggregate
 can require contracts on all its callable elements. Taking an unused reference
 alone does not impose an extern-contract obligation.
 
-This is conservative value provenance, not a complete higher-order analysis:
-callable parameters and values returned by arbitrary function calls are not fully
-resolved. It does **not** prove that the function implements the TLA+ action.
+For each mapped root, a fixed-point analysis also propagates known named callable
+values into reachable helpers' parameters and out of their returns. It follows
+recursive forwarding, conditional returns, and returned values stored in local
+aggregates. Unrelated non-refined callers do not supply parameter targets to
+that root's analysis. A helper's possible targets are joined across its reachable
+calls; the analysis does not distinguish individual invocations.
+
+This is conservative value provenance, not complete higher-order verification.
+Unknown caller-supplied targets, anonymous closures, and interprocedural mutation
+of aliased aggregates are not fully resolved. It does **not** prove that the
+function implements the TLA+ action.
 
 The mapping belongs to the annotated declaration. Import aliases and reexports
 preserve that ownership. Private, unselected and cfg-excluded functions do not
