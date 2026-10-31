@@ -199,6 +199,18 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-5132-strict-loop-proofs",
+      "claimed_at": "2026-10-31T06:52:05Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-5132-strict-loop-proofs",
+      "claimed_at": "2026-10-31T06:52:05Z"
+    },
+    "resilient/src/verifier_loop_invariants.rs": {
+      "branch": "res-5132-strict-loop-proofs",
+      "claimed_at": "2026-10-31T06:52:05Z"
     }
   }
 }
