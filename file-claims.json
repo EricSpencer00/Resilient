@@ -201,8 +201,8 @@
       "claimed_at": "2026-09-21T02:22:28Z"
     },
     "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-5136-destructure-proof-shadow",
-      "claimed_at": "2026-10-31T07:37:01Z"
+      "branch": "res-5138-hoisted-constant-proofs",
+      "claimed_at": "2026-10-31T07:47:59Z"
     }
   }
 }
