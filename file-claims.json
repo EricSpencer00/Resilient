@@ -203,6 +203,14 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-5112-reject-overflow-recovery",
+      "claimed_at": "2026-10-31T00:00:52Z"
+    },
+    "resilient/src/integer_literal_diagnostics.rs": {
+      "branch": "res-5112-reject-overflow-recovery",
+      "claimed_at": "2026-10-31T00:00:52Z"
     }
   }
 }
