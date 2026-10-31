@@ -16,6 +16,7 @@ use crate::{ChainAccess, Node, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+mod loop_invariants;
 mod requires_entry;
 
 thread_local! {
@@ -2906,9 +2907,23 @@ fn compile_control_flow(
             condition,
             body,
             label,
-            ..
+            invariants,
+            span,
         } => {
             let loop_start = chunk.code.len();
+            loop_invariants::compile_loop_invariants(
+                invariants,
+                body,
+                span,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             compile_expr(
                 condition,
                 chunk,
@@ -2952,11 +2967,14 @@ fn compile_control_flow(
             iterable,
             body,
             label,
-            ..
+            invariants,
+            span,
         } => compile_for_in(
             name,
             iterable,
             body,
+            invariants,
+            span,
             label,
             chunk,
             locals,
@@ -4132,9 +4150,14 @@ fn compile_control_flow_in_fn(
             condition,
             body,
             label,
-            ..
+            invariants,
+            span,
         } => {
             let loop_start = chunk.code.len();
+            loop_invariants::compile_loop_invariants(
+                invariants, body, span, chunk, locals, next_local, fn_index, ffi_index,
+                fns, next_fn_idx, line,
+            )?;
             compile_expr(
                 condition,
                 chunk,
@@ -4178,11 +4201,14 @@ fn compile_control_flow_in_fn(
             iterable,
             body,
             label,
-            ..
+            invariants,
+            span,
         } => compile_for_in(
             name,
             iterable,
             body,
+            invariants,
+            span,
             label,
             chunk,
             locals,
@@ -4271,6 +4297,8 @@ fn compile_for_in(
     name: &str,
     iterable: &Node,
     body: &Node,
+    invariants: &[Node],
+    loop_span: &crate::span::Span,
     label: &Option<String>,
     chunk: &mut Chunk,
     locals: &mut HashMap<String, u16>,
@@ -4367,6 +4395,19 @@ fn compile_for_in(
     chunk.emit(Op::LoadLocal(idx_slot), line);
     chunk.emit(Op::LoadIndex, line);
     chunk.emit(Op::StoreLocal(name_slot), line);
+    loop_invariants::compile_loop_invariants(
+        invariants,
+        body,
+        loop_span,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
 
     // 6. Body. Push a LoopState onto the stack so break/continue (including
     //    labeled variants) can find this loop. `continue` in a for-in loop
@@ -6891,16 +6932,33 @@ fn collect_free_vars(
             collect_free_vars(expr, param_names, outer_locals, out, seen);
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
             collect_free_vars(condition, param_names, outer_locals, out, seen);
+            for invariant in invariants {
+                collect_free_vars(invariant, param_names, outer_locals, out, seen);
+            }
             collect_free_vars(body, param_names, outer_locals, out, seen);
         }
         // RES-2506: walk all remaining expression-bearing node types so
         // that outer variables referenced inside them are captured.
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
             collect_free_vars(iterable, param_names, outer_locals, out, seen);
+            for invariant in invariants {
+                collect_free_vars(invariant, param_names, outer_locals, out, seen);
+            }
             collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        Node::InvariantStatement { expr, .. } => {
+            collect_free_vars(expr, param_names, outer_locals, out, seen);
         }
         Node::Assignment { value, .. } => {
             collect_free_vars(value, param_names, outer_locals, out, seen);
