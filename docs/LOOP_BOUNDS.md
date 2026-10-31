@@ -58,3 +58,10 @@ namespace aliases and reexports. Private, unselected, or conditionally excluded
 declarations cannot give a bound to an unrelated function with the same name.
 Each imported source is collected in a separate scope; explicit inner-function
 bounds retain their ownership through cloning and generic specialization.
+
+The argument must be one integer literal from `1` through `4294967295`.
+Zero, negative numbers, floats, expressions, missing arguments, and extra
+arguments are parser errors. The attribute applies to named function
+declarations. Repeating an identical bound is allowed; conflicting bounds on
+one declaration are rejected. These errors stop execution even without strict
+type checking, including when the declaration is imported.

@@ -336,6 +336,7 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
     // `associated_constants`, and now `atomic_types` duplicate
     // detection) report line 0 instead of the real location.
     let attr_line = parser.current_line;
+    let attr_column = parser.current_column;
     parser.next_token(); // consume `#[`
 
     // Expect identifier `cfg`. Anything else is a parse error; recover by
@@ -357,6 +358,9 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
     // gated item is kept (we don't strip — these attributes are
     // declarative metadata, not conditional compilation). The parser
     // walks the attribute body opaquely and stops at the matching `]`.
+    if attr_name == "loop_bound" {
+        return crate::loop_bound_attribute::parse(parser, attr_line, attr_column);
+    }
     if attr_name != "cfg" {
         if crate::feature_attrs::is_known_attribute(&attr_name) {
             return parse_feature_attribute(parser, attr_name, attr_line);
@@ -503,9 +507,6 @@ fn parse_feature_attribute(
             node_item_name(node)
         }
     {
-        if name == "loop_bound" {
-            crate::loop_bound_metadata::record(node, &args);
-        }
         crate::feature_attrs::record(
             item_name,
             crate::feature_attrs::AttrRecord {

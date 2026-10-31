@@ -87,19 +87,19 @@ fn capture_key(node: &Node) -> Option<(usize, Declaration)> {
     Some((body.as_ref() as *const Node as usize, declaration(node)?))
 }
 
-pub(crate) fn record(node: &Node, raw: &str) {
-    let Some(key) = capture_key(node) else { return };
-    let Ok(bound) = raw.trim().parse::<u32>() else {
-        return;
+pub(crate) fn record(node: &Node, bound: u32) -> bool {
+    let Some(key) = capture_key(node) else {
+        return false;
     };
-    if bound == 0 {
-        return;
-    }
     CAPTURE.with(|slot| {
         if let Some(captured) = slot.borrow_mut().as_mut() {
+            if let Some(previous) = captured.get(&key) {
+                return previous.bound == bound;
+            }
             captured.insert(key, LoopBoundSpec { bound });
         }
-    });
+        true
+    })
 }
 
 pub(crate) fn walk(
