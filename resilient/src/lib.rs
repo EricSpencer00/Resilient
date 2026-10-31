@@ -1980,26 +1980,13 @@ impl Lexer {
                 }
             }
         } else {
-            match number_str.parse::<i64>() {
-                Ok(n) => Token::IntLiteral(n),
-                Err(_) => {
-                    eprintln!(
-                        "{}",
-                        format_integer_literal_overflow_error(
-                            self.last_token_line,
-                            self.last_token_column,
-                            &number_str,
-                        )
-                    );
-                    Token::IntLiteral(0)
-                }
-            }
+            Token::IntLiteral(number_str.parse::<i64>().unwrap_or(0))
         }
     }
 
     /// Consume a `0xHH..` or `0bBB..` integer literal. `prefix` is the
     /// two-character start marker already verified by the caller.
-    fn read_radix_number(&mut self, radix: u32, prefix: &str) -> Token {
+    fn read_radix_number(&mut self, radix: u32, _prefix: &str) -> Token {
         // Skip the two-char prefix.
         self.read_char();
         self.read_char();
@@ -2016,21 +2003,7 @@ impl Lexer {
             // they appear in unexpected positions.
             return Token::IntLiteral(0);
         }
-        match i64::from_str_radix(&cleaned, radix) {
-            Ok(n) => Token::IntLiteral(n),
-            Err(_) => {
-                let literal = format!("{prefix}{cleaned}");
-                eprintln!(
-                    "{}",
-                    format_integer_literal_overflow_error(
-                        self.last_token_line,
-                        self.last_token_column,
-                        &literal,
-                    )
-                );
-                Token::IntLiteral(0)
-            }
-        }
+        Token::IntLiteral(i64::from_str_radix(&cleaned, radix).unwrap_or(0))
     }
 
     fn origin_lexical_end(
