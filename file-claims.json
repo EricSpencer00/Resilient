@@ -219,6 +219,10 @@
     "resilient/src/monomorph.rs": {
       "branch": "res-5140-enforced-loop-bounds",
       "claimed_at": "2026-10-31T08:18:45Z"
+    },
+    "resilient/src/feature_attrs.rs": {
+      "branch": "res-5140-enforced-loop-bounds",
+      "claimed_at": "2026-10-31T08:23:06Z"
     }
   }
 }
