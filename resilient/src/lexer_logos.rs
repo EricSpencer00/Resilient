@@ -400,16 +400,7 @@ fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     } else {
         std::borrow::Cow::Borrowed(body)
     };
-    match i64::from_str_radix(&cleaned, 16) {
-        Ok(n) => Some(n),
-        Err(_) => {
-            eprintln!(
-                "{}",
-                crate::format_integer_literal_overflow_error(0, 0, slice)
-            );
-            Some(0)
-        }
-    }
+    Some(i64::from_str_radix(&cleaned, 16).unwrap_or(0))
 }
 
 fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
@@ -420,16 +411,7 @@ fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     } else {
         std::borrow::Cow::Borrowed(body)
     };
-    match i64::from_str_radix(&cleaned, 2) {
-        Ok(n) => Some(n),
-        Err(_) => {
-            eprintln!(
-                "{}",
-                crate::format_integer_literal_overflow_error(0, 0, slice)
-            );
-            Some(0)
-        }
-    }
+    Some(i64::from_str_radix(&cleaned, 2).unwrap_or(0))
 }
 
 fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
@@ -440,16 +422,7 @@ fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     } else {
         std::borrow::Cow::Borrowed(body)
     };
-    match i64::from_str_radix(&cleaned, 8) {
-        Ok(n) => Some(n),
-        Err(_) => {
-            eprintln!(
-                "{}",
-                crate::format_integer_literal_overflow_error(0, 0, slice)
-            );
-            Some(0)
-        }
-    }
+    Some(i64::from_str_radix(&cleaned, 8).unwrap_or(0))
 }
 
 /// RES-909: decimal int literal with optional `_` separators.
@@ -460,16 +433,7 @@ fn int_lit(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     } else {
         std::borrow::Cow::Borrowed(slice)
     };
-    match cleaned.parse::<i64>() {
-        Ok(n) => Some(n),
-        Err(_) => {
-            eprintln!(
-                "{}",
-                crate::format_integer_literal_overflow_error(0, 0, slice)
-            );
-            Some(0)
-        }
-    }
+    Some(cleaned.parse::<i64>().unwrap_or(0))
 }
 
 /// RES-909: float literal with optional `_` separators in mantissa
@@ -1040,7 +1004,7 @@ mod tests {
             .map(|(t, _)| t)
             .collect();
         assert!(
-            tokens.iter().any(|t| *t == Token::Fn),
+            tokens.iter().any(|t| *t == Token::Function),
             "fn keyword: {tokens:?}"
         );
         assert!(
@@ -1064,7 +1028,10 @@ mod tests {
             tokens.iter().any(|t| *t == Token::Minus),
             "minus: {tokens:?}"
         );
-        assert!(tokens.iter().any(|t| *t == Token::Star), "star: {tokens:?}");
+        assert!(
+            tokens.iter().any(|t| *t == Token::Multiply),
+            "star: {tokens:?}"
+        );
     }
 
     #[test]

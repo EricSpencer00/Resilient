@@ -1,3 +1,5 @@
+#![cfg(feature = "vm")]
+
 use resilient_runtime::vm::loader::{LoaderError, load_and_run};
 use resilient_runtime::vm::serde::{self, DecodeError};
 use resilient_runtime::vm::{Instr, Value};

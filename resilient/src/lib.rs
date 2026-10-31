@@ -226,6 +226,8 @@ mod vm;
 // authoritative until RES-109 benchmarks land.
 #[cfg(feature = "logos-lexer")]
 mod lexer_logos;
+
+mod integer_literal_diagnostics;
 // RES-121: Hindley-Milner unification + occurs check. Unconditionally
 // compiled; consumed by the inference walker when RES-120 lands.
 mod unify;
@@ -1978,26 +1980,13 @@ impl Lexer {
                 }
             }
         } else {
-            match number_str.parse::<i64>() {
-                Ok(n) => Token::IntLiteral(n),
-                Err(_) => {
-                    eprintln!(
-                        "{}",
-                        format_integer_literal_overflow_error(
-                            self.last_token_line,
-                            self.last_token_column,
-                            &number_str,
-                        )
-                    );
-                    Token::IntLiteral(0)
-                }
-            }
+            Token::IntLiteral(number_str.parse::<i64>().unwrap_or(0))
         }
     }
 
     /// Consume a `0xHH..` or `0bBB..` integer literal. `prefix` is the
     /// two-character start marker already verified by the caller.
-    fn read_radix_number(&mut self, radix: u32, prefix: &str) -> Token {
+    fn read_radix_number(&mut self, radix: u32, _prefix: &str) -> Token {
         // Skip the two-char prefix.
         self.read_char();
         self.read_char();
@@ -2014,21 +2003,7 @@ impl Lexer {
             // they appear in unexpected positions.
             return Token::IntLiteral(0);
         }
-        match i64::from_str_radix(&cleaned, radix) {
-            Ok(n) => Token::IntLiteral(n),
-            Err(_) => {
-                let literal = format!("{prefix}{cleaned}");
-                eprintln!(
-                    "{}",
-                    format_integer_literal_overflow_error(
-                        self.last_token_line,
-                        self.last_token_column,
-                        &literal,
-                    )
-                );
-                Token::IntLiteral(0)
-            }
-        }
+        Token::IntLiteral(i64::from_str_radix(&cleaned, radix).unwrap_or(0))
     }
 
     fn origin_lexical_end(
@@ -3891,6 +3866,18 @@ impl Parser {
         } else {
             (self.lexer.next_token(), None)
         };
+        if matches!(new_token, Token::IntLiteral(0))
+            && self.errors.len() < parser_recovery::MAX_PARSE_ERRORS
+            && let Some(error) = integer_literal_diagnostics::recovered_overflow(
+                &self.lexer.input,
+                self.lexer.last_token_offset,
+                self.lexer.position,
+                self.lexer.last_token_line,
+                self.lexer.last_token_column,
+            )
+        {
+            self.errors.push(error);
+        }
         self.current_origin_span = self.peek_origin_span;
         self.peek_origin_span = new_span;
         self.peek_line = self.lexer.last_token_line;
@@ -13022,7 +13009,7 @@ pub(crate) fn format_integer_literal_overflow_error(
 ) -> String {
     let prefix = if rich_diag_enabled() { "[E0023] " } else { "" };
     format!(
-        "<input>:{line}:{column}: error: {prefix}integer literal `{literal}` overflows i64 (max {})",
+        "{prefix}<input>:{line}:{column}: error: integer literal `{literal}` overflows i64 (max {})",
         i64::MAX
     )
 }

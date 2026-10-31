@@ -47,8 +47,8 @@ fn overflow_keeps_legacy_text_without_rich_codes() {
     let _ = std::fs::remove_file(path);
 
     assert!(
-        output.status.success(),
-        "overflow fallback should preserve check success; stderr={}",
+        !output.status.success(),
+        "overflow fallback must reject check; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -72,8 +72,8 @@ fn overflow_adds_e0023_in_rich_mode() {
     let _ = std::fs::remove_file(path);
 
     assert!(
-        output.status.success(),
-        "rich overflow check should preserve check success; stderr={}",
+        !output.status.success(),
+        "rich overflow check must reject check; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
