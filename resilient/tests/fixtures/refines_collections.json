@@ -1,0 +1,292 @@
+[
+  {
+    "name": "map_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "map_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "map_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "map_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "filter_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].filter(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "filter_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].filter(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "filter_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].filter(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "filter_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].filter(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].reduce(0,foreign);}\n\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "reduce_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].reduce(0,foreign);}\n\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].reduce(0,helper);}\nfn helper(int value,int other) -> int {return foreign(value,other);}\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "reduce_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].reduce(0,helper);}\nfn helper(int value,int other) -> int {return foreign(value,other);}\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "flat_map_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].flat_map(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "flat_map_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].flat_map(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "flat_map_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].flat_map(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "flat_map_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].flat_map(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "for_each_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].for_each(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "for_each_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].for_each(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "for_each_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].for_each(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "for_each_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].for_each(helper);}\nfn helper(int value) -> int {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "find_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].find(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "find_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].find(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "find_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].find(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "find_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].find(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "any_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].any(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "any_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].any(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "any_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].any(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "any_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].any(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "all_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].all(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "all_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].all(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "all_helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].all(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool;};",
+    "reject": true
+  },
+  {
+    "name": "all_helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].all(helper);}\nfn helper(int value) -> bool {return foreign(value);}\nextern \"counter\" {fn foreign(value:Int)->Bool requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "map_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select);return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "map_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select);return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "flat_map_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].flat_map(select);return calls[0](value);}\nfn select(int value){return [foreign];}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "flat_map_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].flat_map(select);return calls[0](value);}\nfn select(int value){return [foreign];}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "filter_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select).filter(keep);return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn keep(fn(int) -> int call) -> bool {return true;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "filter_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select).filter(keep);return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn keep(fn(int) -> int call) -> bool {return true;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "find_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(select).find(keep).unwrap()(value);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn keep(fn(int) -> int call) -> bool {return true;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "find_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(select).find(keep).unwrap()(value);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn keep(fn(int) -> int call) -> bool {return true;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "collect_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select).collect();return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "collect_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[value].map(select).collect();return calls[0](value);}\nfn select(int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "map_argument",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(select).map(invoke);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn invoke(fn(int) -> int call) -> int {return call(1);}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "map_argument_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(select).map(invoke);}\nfn select(int value) -> fn(int) -> int {return foreign;}fn invoke(fn(int) -> int call) -> int {return call(1);}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=[value].reduce(safe,choose);return call(value);}\nfn safe(int x) -> int {return x;} fn choose(fn(int) -> int acc,int x) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "reduce_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=[value].reduce(safe,choose);return call(value);}\nfn safe(int x) -> int {return x;} fn choose(fn(int) -> int acc,int x) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_implicit_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=[safe,safe].reduce(choose);return call(value);}\nfn safe(int x) -> int {return x;} fn choose(fn(int) -> int acc,fn(int) -> int x) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "reduce_implicit_result_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=[safe,safe].reduce(choose);return call(value);}\nfn safe(int x) -> int {return x;} fn choose(fn(int) -> int acc,fn(int) -> int x) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "unused_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=[value].map(select);return value;}\nfn select(int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "safe_callback",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value].map(safe);}\nfn safe(int x)->int{return x;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "nonrefined",
+    "source": "fn refined(int value){return [value].map(foreign);}\n\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_accumulator_flow",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=[value,value].reduce(safe,step);return value;}\nfn safe(int value)->int{return value;}\nfn step(fn(int) -> int acc,int value) -> fn(int) -> int {acc(value);return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "reduce_accumulator_flow_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=[value,value].reduce(safe,step);return value;}\nfn safe(int value)->int{return value;}\nfn step(fn(int) -> int acc,int value) -> fn(int) -> int {acc(value);return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "reduce_unused_result",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=[value,value].reduce(safe,step);return value;}\nfn safe(int value)->int{return value;}\nfn step(fn(int) -> int acc,int value) -> fn(int) -> int {return foreign;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "aliased_map_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let callback=foreign;return [value].map(callback);}\n\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "aliased_map_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let callback=foreign;return [value].map(callback);}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  },
+  {
+    "name": "implicit_reduce_extern",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value,value].reduce(foreign);}\n\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int;};",
+    "reject": true
+  },
+  {
+    "name": "implicit_reduce_extern_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return [value,value].reduce(foreign);}\n\nextern \"counter\" {fn foreign(value:Int,other:Int)->Int requires value>=0 ensures result==result;};",
+    "reject": false
+  }
+]

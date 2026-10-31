@@ -15,6 +15,39 @@ fn visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     crate::uniqueness_walk::children(node, &mut |child| visit(child, f));
 }
 
+struct CollectionCall<'a> {
+    method: &'a str,
+    receiver: &'a Node,
+    callback: &'a Node,
+    initial: Option<&'a Node>,
+}
+
+fn collection_call(node: &Node) -> Option<CollectionCall<'_>> {
+    let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    let Node::FieldAccess { target, field, .. } = function.as_ref() else {
+        return None;
+    };
+    let (callback, initial) = match (field.as_str(), arguments.as_slice()) {
+        ("map" | "filter" | "flat_map" | "for_each" | "find" | "any" | "all", [callback])
+        | ("reduce", [callback]) => (callback, None),
+        ("reduce", [initial, callback]) => (callback, Some(initial)),
+        _ => return None,
+    };
+    Some(CollectionCall {
+        method: field,
+        receiver: target,
+        callback,
+        initial,
+    })
+}
+
 fn value(node: &Node, env: &Env, returns: &Env, known: &Targets, literals: &Literals) -> Targets {
     match node {
         Node::FunctionLiteral { .. } => literals
@@ -58,10 +91,69 @@ fn value(node: &Node, env: &Env, returns: &Env, known: &Targets, literals: &Lite
             }
             result
         }
-        Node::CallExpression { function, .. } => value(function, env, returns, known, literals)
-            .iter()
-            .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
-            .collect(),
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let mut result: Targets = value(function, env, returns, known, literals)
+                .iter()
+                .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
+                .collect();
+            if let Some(call) = collection_call(node) {
+                let callback_returns: Targets = value(call.callback, env, returns, known, literals)
+                    .iter()
+                    .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
+                    .collect();
+                match call.method {
+                    "map" | "flat_map" => result.extend(callback_returns),
+                    "filter" | "find" => {
+                        result.extend(value(call.receiver, env, returns, known, literals))
+                    }
+                    "reduce" => {
+                        result.extend(value(
+                            call.initial.unwrap_or(call.receiver),
+                            env,
+                            returns,
+                            known,
+                            literals,
+                        ));
+                        result.extend(callback_returns);
+                    }
+                    _ => {}
+                }
+            } else {
+                match function.as_ref() {
+                    Node::Identifier { name, .. }
+                        if name == "unwrap" && !env.contains_key(name) && !known.contains(name) =>
+                    {
+                        if let [argument] = arguments.as_slice() {
+                            result.extend(value(argument, env, returns, known, literals));
+                        }
+                    }
+                    Node::FieldAccess { target, field, .. }
+                        if (arguments.is_empty()
+                            && matches!(
+                                field.as_str(),
+                                "unwrap"
+                                    | "collect"
+                                    | "reverse"
+                                    | "sort"
+                                    | "sort_desc"
+                                    | "dedup"
+                                    | "flatten"
+                                    | "pop"
+                            ))
+                            || (arguments.len() == 1
+                                && matches!(field.as_str(), "take" | "skip")) =>
+                    {
+                        result.extend(value(target, env, returns, known, literals));
+                    }
+                    _ => {}
+                }
+            }
+            result
+        }
         Node::StructLiteral { fields, base, .. } => {
             let mut result: Targets = fields
                 .iter()
@@ -306,6 +398,39 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     ..
                 } = node
                 {
+                    if let Some(call) = collection_call(node) {
+                        let elements = value(call.receiver, &env, &returns, &known, &literals);
+                        let callbacks = value(call.callback, &env, &returns, &known, &literals);
+                        let mut accumulator = value(
+                            call.initial.unwrap_or(call.receiver),
+                            &env,
+                            &returns,
+                            &known,
+                            &literals,
+                        );
+                        for callback in &callbacks {
+                            accumulator
+                                .extend(returns.get(callback).into_iter().flatten().cloned());
+                        }
+                        for callback in callbacks {
+                            sites.insert((callback.clone(), span.start.line, span.start.column));
+                            changed |= reachable.insert(callback.clone());
+                            if let Some((params, _)) = functions.get(&callback) {
+                                for (index, (_, parameter)) in params.iter().enumerate() {
+                                    let targets = match (call.method, index) {
+                                        ("reduce", 0) => accumulator.clone(),
+                                        ("reduce", 1) | (_, 0) => elements.clone(),
+                                        _ => Targets::new(),
+                                    };
+                                    changed |= extend(
+                                        locals.entry(callback.clone()).or_default(),
+                                        parameter,
+                                        targets,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     let callees = value(function, &env, &returns, &known, &literals);
                     // Unknown consumers (including builtin collection methods)
                     // may execute callbacks. Preserve conservative inspection
