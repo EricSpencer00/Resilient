@@ -195,14 +195,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/tla_refines.rs": {
-      "branch": "res-5156-higher-order-refinement",
-      "claimed_at": "2026-10-31T10:45:22Z"
-    },
-    "docs/REFINEMENT_MAPPINGS.md": {
-      "branch": "res-5156-higher-order-refinement",
-      "claimed_at": "2026-10-31T10:45:22Z"
     }
   }
 }
