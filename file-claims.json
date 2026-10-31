@@ -196,17 +196,21 @@
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
     },
-    "resilient/src/cfg_attr.rs": {
-      "branch": "res-5145-loop-bound-schema",
-      "claimed_at": "2026-10-31T09:24:04Z"
-    },
     "resilient/src/loop_bound_metadata.rs": {
-      "branch": "res-5145-loop-bound-schema",
-      "claimed_at": "2026-10-31T09:24:04Z"
+      "branch": "res-5147-overflow-declaration-ownership",
+      "claimed_at": "2026-10-31T09:40:57Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-5145-loop-bound-schema",
-      "claimed_at": "2026-10-31T09:24:04Z"
+    "resilient/src/loop_bound_runtime.rs": {
+      "branch": "res-5147-overflow-declaration-ownership",
+      "claimed_at": "2026-10-31T09:40:57Z"
+    },
+    "resilient/src/cfg_attr.rs": {
+      "branch": "res-5147-overflow-declaration-ownership",
+      "claimed_at": "2026-10-31T09:40:57Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-5147-overflow-declaration-ownership",
+      "claimed_at": "2026-10-31T09:40:57Z"
     }
   }
 }
