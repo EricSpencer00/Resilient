@@ -219,6 +219,10 @@
     "resilient/src/feature_attrs.rs": {
       "branch": "res-5143-bound-declaration-identity",
       "claimed_at": "2026-10-31T08:52:00Z"
+    },
+    "resilient/src/uniqueness_walk.rs": {
+      "branch": "res-5143-bound-declaration-identity",
+      "claimed_at": "2026-10-31T08:52:41Z"
     }
   }
 }
