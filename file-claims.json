@@ -176,10 +176,6 @@
       "branch": "res-4619-async-call-paths",
       "claimed_at": "2026-09-21T00:24:06Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4617-pure-defer-guard",
-      "claimed_at": "2026-09-21T00:50:56Z"
-    },
     "resilient/src/self_host_parity_report.rs": {
       "branch": "res-4819-token-parity-fail-closed",
       "claimed_at": "2026-09-21T01:35:34Z"
@@ -203,18 +199,6 @@
     "resilient/src/cert_sign.rs": {
       "branch": "res-4849-cert-payload-bound",
       "claimed_at": "2026-09-21T02:22:28Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4902-vm-loop-invariants",
-      "claimed_at": "2026-10-31T05:18:00Z"
-    },
-    "resilient/src/loop_invariants.rs": {
-      "branch": "res-4902-vm-loop-invariants",
-      "claimed_at": "2026-10-31T05:18:00Z"
-    },
-    "resilient/src/compiler/loop_invariants.rs": {
-      "branch": "res-4902-vm-loop-invariants",
-      "claimed_at": "2026-10-31T05:18:00Z"
     }
   }
 }
