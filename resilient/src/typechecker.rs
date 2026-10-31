@@ -1902,6 +1902,7 @@ pub struct TypeChecker {
     /// successfully discharged invariant. Defaults to `false` so the
     /// regular build is silent; the driver flips it on for `--verbose`.
     verbose_loop_invariants: bool,
+    pub(crate) deny_unproven_invariants: bool,
     /// RES-1322: gate the post-typecheck `infer_fn_effects` fixpoint
     /// on opt-in. The result populates `self.stats.fn_effects`, which
     /// is only read by the `--audit` and `--explain-effects` CLI
@@ -5881,6 +5882,7 @@ impl TypeChecker {
             // RES-318: per-loop-invariant verbose stderr line is OFF
             // by default. The driver flips it on via `--verbose`.
             verbose_loop_invariants: false,
+            deny_unproven_invariants: false,
             // RES-1322: opt-in. Audit + explain-effects drivers set
             // this; default-mode runs (every non-audit CLI invocation,
             // the LSP/REPL, every `cargo test` typecheck) skip the
@@ -5929,6 +5931,12 @@ impl TypeChecker {
     /// for CI runs that want a quieter stderr.
     pub fn with_warn_unverified(mut self, on: bool) -> Self {
         self.warn_unverified = on;
+        self
+    }
+
+    /// Require proof credit for every active loop invariant before execution.
+    pub fn with_deny_unproven_invariants(mut self, on: bool) -> Self {
+        self.deny_unproven_invariants = on;
         self
     }
 
@@ -7381,7 +7389,8 @@ impl TypeChecker {
                     || markers.has_while_with_invariants
                     || markers.has_for_with_invariants
                 {
-                    crate::verifier_loop_invariants::verify_and_capture(self, program);
+                    crate::verifier_loop_invariants::verify_and_capture(self, program)
+                        .enforce(source_path)?;
                 }
                 // RES-1616 gate: pass scans for `Node::TypeAlias`.
                 if markers.has_type_alias {
