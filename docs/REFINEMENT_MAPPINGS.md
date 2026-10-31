@@ -9,9 +9,16 @@ fn step(int state) { return state; }
 
 The compiler checks that the specification exists, that it defines the named
 action, and that extern functions found by its call analysis declare both
-`requires` and `ensures`. The current analysis follows direct calls and identifier
-aliases; array, tuple and conditional callees are not fully covered. It does
-**not** prove that the function implements the TLA+ action.
+`requires` and `ensures`. The analysis follows direct calls, identifier aliases,
+aggregate elements and conditional callable values, including bindings,
+destructuring and aggregate writes. It retains every possible target across
+branches and aggregate elements, so even a constant index into a mixed aggregate
+can require contracts on all its callable elements. Taking an unused reference
+alone does not impose an extern-contract obligation.
+
+This is conservative value provenance, not a complete higher-order analysis:
+callable parameters and values returned by arbitrary function calls are not fully
+resolved. It does **not** prove that the function implements the TLA+ action.
 
 The mapping belongs to the annotated declaration. Import aliases and reexports
 preserve that ownership. Private, unselected and cfg-excluded functions do not

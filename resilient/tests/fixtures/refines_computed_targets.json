@@ -1,0 +1,192 @@
+[
+  {
+    "name": "array",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "array_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "tuple",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=(foreign,safe);return calls.0(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "tuple_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=(foreign,safe);return calls.0(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "conditional",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){return (if value > 0 {foreign} else {safe})(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "conditional_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){return (if value > 0 {foreign} else {safe})(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "conditional_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let call=if value > 0 {safe} else {foreign};return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "conditional_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let call=if value > 0 {safe} else {foreign};return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "nested_array",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[[foreign]];return calls[0][0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "nested_array_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[[foreign]];return calls[0][0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "array_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];let alias=calls;return alias[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "array_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];let alias=calls;return alias[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "element_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];let call=calls[0];return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "element_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];let call=calls[0];return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "array_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];calls[0]=foreign;return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "array_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];calls[0]=foreign;return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "array_alias_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];let alias=calls;alias[0]=foreign;return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "array_alias_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];let alias=calls;alias[0]=foreign;return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "destructure",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let (call,other)=(foreign,safe);return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "destructure_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let (call,other)=(foreign,safe);return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "helper",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[helper];return calls[0](value);}\nfn helper(int value) -> int {return foreign(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "helper_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[helper];return calls[0](value);}\nfn helper(int value) -> int {return foreign(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "global",
+    "source": "fn safe(int value) -> int {return value;}\nfn helper(int value) -> int {return foreign(value);}\nlet calls=[helper];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){return calls[0](value);}\n\n\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "global_contracted",
+    "source": "fn safe(int value) -> int {return value;}\nfn helper(int value) -> int {return foreign(value);}\nlet calls=[helper];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){return calls[0](value);}\n\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "global_write",
+    "source": "fn safe(int value) -> int {return value;}\nfn helper(int value) -> int {return foreign(value);}\nlet calls=[safe];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){replace();return calls[0](value);}\nfn replace(){calls[0]=helper;}\n\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "global_write_contracted",
+    "source": "fn safe(int value) -> int {return value;}\nfn helper(int value) -> int {return foreign(value);}\nlet calls=[safe];\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){replace();return calls[0](value);}\nfn replace(){calls[0]=helper;}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "unused",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];return value;}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "nonrefined",
+    "source": "fn f(int value){let calls=[foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "safe",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "slice",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];return calls[0..1][0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "slice_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[foreign];return calls[0..1][0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "iteration",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){for call in [foreign] {call(value);} return value;}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "iteration_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){for call in [foreign] {call(value);} return value;}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "branch_local",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let call=if value > 0 {let selected=foreign;selected} else {safe};return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "branch_local_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let call=if value > 0 {let selected=foreign;selected} else {safe};return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "unused_mutation",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe];calls[0]=foreign;return safe(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "mixed_aggregate",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe,foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "mixed_aggregate_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn f(int value){let calls=[safe,foreign];return calls[0](value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  }
+]
