@@ -17,15 +17,22 @@ can require contracts on all its callable elements. Taking an unused reference
 alone does not impose an extern-contract obligation.
 
 For each mapped root, a fixed-point analysis also propagates known named callable
-values into reachable helpers' parameters and out of their returns. It follows
+values into reachable helpers' parameters and out of their returns. Anonymous
+functions have distinct identities even when imported declarations share source
+positions. Their captured values are tracked separately from parameters and
+locals; creating an unused closure does not execute its body. Passing a closure
+to an unmodeled consumer conservatively enrolls its body, including callbacks to
+builtin collection methods. The analysis follows
 recursive forwarding, conditional returns, and returned values stored in local
 aggregates. Unrelated non-refined callers do not supply parameter targets to
 that root's analysis. A helper's possible targets are joined across its reachable
 calls; the analysis does not distinguish individual invocations.
 
 This is conservative value provenance, not complete higher-order verification.
-Unknown caller-supplied targets, anonymous closures, and interprocedural mutation
-of aliased aggregates are not fully resolved. It does **not** prove that the
+Unknown caller-supplied targets and interprocedural mutation of aliased
+aggregates are not fully resolved. Closure targets are joined across possible
+captures and invocations, so this analysis does not distinguish individual
+closure instances or prove which branch executes. It does **not** prove that the
 function implements the TLA+ action.
 
 The mapping belongs to the annotated declaration. Import aliases and reexports

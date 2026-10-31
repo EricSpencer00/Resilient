@@ -1,0 +1,240 @@
+[
+  {
+    "name": "direct",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return (fn(int x) -> int {return foreign(x);})(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "direct_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return (fn(int x) -> int {return foreign(x);})(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return wrap(foreign)(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return wrap(foreign)(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=wrap(foreign);return call(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=wrap(foreign);return call(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_aggregate",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[wrap(foreign)];return calls[0](value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_aggregate_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[wrap(foreign)];return calls[0](value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_tuple",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=(wrap(foreign),safe);return calls.0(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_tuple_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=(wrap(foreign),safe);return calls.0(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "capture_forward",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(wrap(foreign),value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}fn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "capture_forward_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(wrap(foreign),value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}fn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "callback",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(fn(int x) -> int {return relay(foreign,x);},value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}fn relay(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "callback_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(fn(int x) -> int {return relay(foreign,x);},value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}fn relay(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "local_capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;let closure=fn(int x) -> int {return call(x);};return closure(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "local_capture_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;let closure=fn(int x) -> int {return call(x);};return closure(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "nested_capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return outer(foreign)(value);}\nfn outer(fn(int) -> int call) -> fn(int) -> int {let inner=fn(int x) -> int {return call(x);};return fn(int x) -> int {return inner(x);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "nested_capture_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return outer(foreign)(value);}\nfn outer(fn(int) -> int call) -> fn(int) -> int {let inner=fn(int x) -> int {return call(x);};return fn(int x) -> int {return inner(x);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned_nested",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return outer(foreign)()(value);}\nfn outer(fn(int) -> int call) -> fn() -> fn(int) -> int {return fn() -> fn(int) -> int {return fn(int x) -> int {return call(x);};};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_nested_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return outer(foreign)()(value);}\nfn outer(fn(int) -> int call) -> fn() -> fn(int) -> int {return fn() -> fn(int) -> int {return fn(int x) -> int {return call(x);};};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "anonymous_parameter",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let closure=fn(fn(int) -> int call,int x) -> int {return call(x);};return closure(foreign,value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "anonymous_parameter_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let closure=fn(fn(int) -> int call,int x) -> int {return call(x);};return closure(foreign,value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "conditional_capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=if value>0 {wrap(safe)} else {wrap(foreign)};return call(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "conditional_capture_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=if value>0 {wrap(safe)} else {wrap(foreign)};return call(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "closure_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];calls[0]=wrap(foreign);return calls[0](value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "closure_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];calls[0]=wrap(foreign);return calls[0](value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "safe_capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return wrap(safe)(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "unused_direct",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=fn(int x) -> int {return foreign(x);};return value;}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "unused_returned",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=wrap(foreign);return value;}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "ignored_callback",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return ignore(fn(int x) -> int {return foreign(x);},value);}\nfn ignore(fn(int) -> int call,int value) -> int {return value;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "local_shadow",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return wrap(foreign)(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {let call=safe;return call(x);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "parameter_shadow",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;let closure=fn(fn(int) -> int call,int x) -> int {return call(x);};return closure(safe,value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "distinct_literals",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=fn(int x) -> int {return foreign(x);};let call=fn(int x) -> int {return safe(x);};return call(value);}\n\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "nonrefined",
+    "source": "fn refined(int value){return wrap(foreign)(value);}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int value) -> int {return call(value);};}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "imported_identity_isolation",
+    "source": "use \"first.rz\" as first;\nuse \"second.rz\" as second;\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=first::wrap(foreign);return second::wrap(safe)(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": false,
+    "files": {
+      "first.rz": "pub fn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}",
+      "second.rz": "pub fn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}"
+    }
+  },
+  {
+    "name": "imported_capture",
+    "source": "use \"first.rz\" as first;\nuse \"second.rz\" as second;\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=first::wrap(safe);return second::wrap(foreign)(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int;};",
+    "reject": true,
+    "files": {
+      "first.rz": "pub fn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}",
+      "second.rz": "pub fn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}"
+    }
+  },
+  {
+    "name": "nested_local_factory",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){fn make() -> fn(int) -> int {return fn(int x) -> int {return foreign(x);};}return make()(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "nested_local_factory_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){fn make() -> fn(int) -> int {return fn(int x) -> int {return foreign(x);};}return make()(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "nested_local_capture",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;fn make() -> fn(int) -> int {return fn(int x) -> int {return call(x);};}return make()(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "nested_local_capture_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;fn make() -> fn(int) -> int {return fn(int x) -> int {return call(x);};}return make()(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "global_closure",
+    "source": "let global=fn(int x) -> int {return foreign(x);};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return global(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "global_closure_contracted",
+    "source": "let global=fn(int x) -> int {return foreign(x);};\n@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return global(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "builtin_callback",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let result=[value].map(fn(int x) -> int {return foreign(x);});return result[0];}\n\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "builtin_callback_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let result=[value].map(fn(int x) -> int {return foreign(x);});return result[0];}\n\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  },
+  {
+    "name": "builtin_captured_callback",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let result=[value].map(wrap(foreign));return result[0];}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "builtin_captured_callback_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let result=[value].map(wrap(foreign));return result[0];}\nfn wrap(fn(int) -> int call) -> fn(int) -> int {return fn(int x) -> int {return call(x);};}\nextern \"counter\" {fn foreign(value:Int)->Int requires value>=0 ensures result>=0;};",
+    "reject": false
+  }
+]
