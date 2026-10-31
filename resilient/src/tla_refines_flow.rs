@@ -15,7 +15,165 @@ fn visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     crate::uniqueness_walk::children(node, &mut |child| visit(child, f));
 }
 
-fn value(node: &Node, env: &Env, returns: &Env, known: &Targets, literals: &Literals) -> Targets {
+struct CollectionCall<'a> {
+    method: &'a str,
+    receiver: &'a Node,
+    callback: &'a Node,
+    initial: Option<&'a Node>,
+}
+
+fn collection_call(node: &Node) -> Option<CollectionCall<'_>> {
+    let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    let Node::FieldAccess { target, field, .. } = function.as_ref() else {
+        return None;
+    };
+    let (callback, initial) = match (field.as_str(), arguments.as_slice()) {
+        ("map" | "filter" | "flat_map" | "for_each" | "find" | "any" | "all", [callback])
+        | ("reduce", [callback]) => (callback, None),
+        ("reduce", [initial, callback]) => (callback, Some(initial)),
+        _ => return None,
+    };
+    Some(CollectionCall {
+        method: field,
+        receiver: target,
+        callback,
+        initial,
+    })
+}
+
+fn is_array(node: &Node, arrays: &Targets) -> bool {
+    match node {
+        Node::ArrayLiteral { .. } => true,
+        Node::Identifier { name, .. } => arrays.contains(name),
+        Node::Slice { target, .. } => is_array(target, arrays),
+        Node::ExpressionStatement { expr, .. } => is_array(expr, arrays),
+        Node::Block { stmts, .. } => stmts.last().is_some_and(|node| is_array(node, arrays)),
+        Node::IfStatement {
+            consequence,
+            alternative: Some(other),
+            ..
+        } => is_array(consequence, arrays) && is_array(other, arrays),
+        Node::CallExpression { function, .. } => {
+            matches!(function.as_ref(), Node::FieldAccess { target, field, .. }
+            if is_array(target, arrays) && matches!(field.as_str(), "map" | "flat_map" | "filter" | "collect" | "reverse" | "sort" | "sort_desc" | "dedup" | "flatten" | "take" | "skip"))
+        }
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+pub(super) struct ArrayFacts {
+    calls: BTreeSet<*const Node>,
+    captures: BTreeMap<*const Node, Targets>,
+}
+
+pub(super) fn array_facts(body: &Node, inherited: &Targets) -> ArrayFacts {
+    fn kill_writes(node: &Node, env: &mut Targets) {
+        visit(node, &mut |node| {
+            if let Node::Assignment { name, .. } = node {
+                env.remove(name);
+            }
+        });
+    }
+    fn scan(node: &Node, env: &mut Targets, facts: &mut ArrayFacts) {
+        match node {
+            Node::FunctionLiteral { .. } => {
+                facts.captures.insert(node as *const Node, env.clone());
+                return;
+            }
+            Node::Function { name, .. } => {
+                // Named declarations may be hoisted before local initializers.
+                facts.captures.insert(node as *const Node, Targets::new());
+                env.remove(name);
+                return;
+            }
+            Node::Block { stmts, .. } => {
+                let mut block = env.clone();
+                for statement in stmts {
+                    scan(statement, &mut block, facts);
+                }
+                kill_writes(node, env);
+                return;
+            }
+            Node::IfStatement { .. } | Node::WhileStatement { .. } => {
+                kill_writes(node, env);
+                crate::uniqueness_walk::children(node, &mut |child| {
+                    scan(child, &mut env.clone(), facts)
+                });
+                return;
+            }
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                scan(iterable, env, facts);
+                kill_writes(body, env);
+                let mut inner = env.clone();
+                inner.remove(name);
+                scan(body, &mut inner, facts);
+                return;
+            }
+            Node::Match { .. } | Node::TryCatch { .. } => {
+                kill_writes(node, env);
+                crate::uniqueness_walk::children(node, &mut |child| {
+                    scan(child, &mut Targets::new(), facts)
+                });
+                return;
+            }
+            Node::LetStatement { name, value, .. }
+            | Node::StaticLet { name, value, .. }
+            | Node::Const { name, value, .. }
+            | Node::Assignment { name, value, .. } => {
+                scan(value, env, facts);
+                if is_array(value, env) {
+                    env.insert(name.clone());
+                } else {
+                    env.remove(name);
+                }
+                return;
+            }
+            Node::LetTupleDestructure { names, value, .. } => {
+                scan(value, env, facts);
+                for name in names {
+                    env.remove(name);
+                }
+                return;
+            }
+            _ => {}
+        }
+        crate::uniqueness_walk::children(node, &mut |child| scan(child, env, facts));
+        if collection_call(node).is_some_and(|call| is_array(call.receiver, env)) {
+            facts.calls.insert(node as *const Node);
+        }
+    }
+    // Shape facts follow lexical order and scope. In particular, a later
+    // declaration must not change the shape captured by an earlier closure.
+    let mut facts = ArrayFacts::default();
+    scan(body, &mut inherited.clone(), &mut facts);
+    facts
+}
+
+pub(super) fn array_callback(node: &Node, arrays: &ArrayFacts) -> bool {
+    arrays.calls.contains(&(node as *const Node))
+}
+
+fn value(
+    node: &Node,
+    env: &Env,
+    returns: &Env,
+    known: &Targets,
+    literals: &Literals,
+    arrays: &ArrayFacts,
+) -> Targets {
     match node {
         Node::FunctionLiteral { .. } => literals
             .get(&(node as *const Node))
@@ -31,44 +189,110 @@ fn value(node: &Node, env: &Env, returns: &Env, known: &Targets, literals: &Lite
         }),
         Node::ArrayLiteral { items, .. } | Node::TupleLiteral { items, .. } => items
             .iter()
-            .flat_map(|n| value(n, env, returns, known, literals))
+            .flat_map(|n| value(n, env, returns, known, literals, arrays))
             .collect(),
         Node::IndexExpression { target, .. }
         | Node::FieldAccess { target, .. }
-        | Node::Slice { target, .. } => value(target, env, returns, known, literals),
-        Node::TupleIndex { tuple, .. } => value(tuple, env, returns, known, literals),
+        | Node::Slice { target, .. } => value(target, env, returns, known, literals, arrays),
+        Node::TupleIndex { tuple, .. } => value(tuple, env, returns, known, literals, arrays),
         Node::ExpressionStatement { expr, .. } | Node::NamedArg { value: expr, .. } => {
-            value(expr, env, returns, known, literals)
+            value(expr, env, returns, known, literals, arrays)
         }
         Node::ReturnStatement {
             value: Some(expr), ..
-        } => value(expr, env, returns, known, literals),
+        } => value(expr, env, returns, known, literals, arrays),
         Node::Block { stmts, .. } => stmts
             .last()
-            .map(|n| value(n, env, returns, known, literals))
+            .map(|n| value(n, env, returns, known, literals, arrays))
             .unwrap_or_default(),
         Node::IfStatement {
             consequence,
             alternative,
             ..
         } => {
-            let mut result = value(consequence, env, returns, known, literals);
+            let mut result = value(consequence, env, returns, known, literals, arrays);
             if let Some(other) = alternative {
-                result.extend(value(other, env, returns, known, literals));
+                result.extend(value(other, env, returns, known, literals, arrays));
             }
             result
         }
-        Node::CallExpression { function, .. } => value(function, env, returns, known, literals)
-            .iter()
-            .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
-            .collect(),
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let ordinary = if array_callback(node, arrays) {
+                Targets::new()
+            } else {
+                value(function, env, returns, known, literals, arrays)
+            };
+            let mut result: Targets = ordinary
+                .iter()
+                .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
+                .collect();
+            if let Some(call) = collection_call(node) {
+                let callback_returns: Targets =
+                    value(call.callback, env, returns, known, literals, arrays)
+                        .iter()
+                        .flat_map(|name| returns.get(name).into_iter().flatten().cloned())
+                        .collect();
+                match call.method {
+                    "map" | "flat_map" => result.extend(callback_returns),
+                    "filter" | "find" => {
+                        result.extend(value(call.receiver, env, returns, known, literals, arrays))
+                    }
+                    "reduce" => {
+                        result.extend(value(
+                            call.initial.unwrap_or(call.receiver),
+                            env,
+                            returns,
+                            known,
+                            literals,
+                            arrays,
+                        ));
+                        result.extend(callback_returns);
+                    }
+                    _ => {}
+                }
+            } else {
+                match function.as_ref() {
+                    Node::Identifier { name, .. }
+                        if name == "unwrap" && !env.contains_key(name) && !known.contains(name) =>
+                    {
+                        if let [argument] = arguments.as_slice() {
+                            result.extend(value(argument, env, returns, known, literals, arrays));
+                        }
+                    }
+                    Node::FieldAccess { target, field, .. }
+                        if (arguments.is_empty()
+                            && matches!(
+                                field.as_str(),
+                                "unwrap"
+                                    | "collect"
+                                    | "reverse"
+                                    | "sort"
+                                    | "sort_desc"
+                                    | "dedup"
+                                    | "flatten"
+                                    | "pop"
+                            ))
+                            || (arguments.len() == 1
+                                && matches!(field.as_str(), "take" | "skip")) =>
+                    {
+                        result.extend(value(target, env, returns, known, literals, arrays));
+                    }
+                    _ => {}
+                }
+            }
+            result
+        }
         Node::StructLiteral { fields, base, .. } => {
             let mut result: Targets = fields
                 .iter()
-                .flat_map(|(_, n)| value(n, env, returns, known, literals))
+                .flat_map(|(_, n)| value(n, env, returns, known, literals, arrays))
                 .collect();
             if let Some(base) = base {
-                result.extend(value(base, env, returns, known, literals));
+                result.extend(value(base, env, returns, known, literals, arrays));
             }
             result
         }
@@ -177,6 +401,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
     });
     let mut globals = Env::new();
     let mut captures = BTreeMap::<String, Env>::new();
+    let mut captured_arrays = BTreeMap::<String, Targets>::new();
     let mut locals = BTreeMap::<String, Env>::new();
     for (name, (parameters, body)) in &functions {
         let mut env = Env::new();
@@ -220,12 +445,19 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                 }
             });
             for (name, expr) in bindings(&statement.node) {
-                let targets = value(expr, &globals, &returns, &known, &literals);
+                let targets = value(
+                    expr,
+                    &globals,
+                    &returns,
+                    &known,
+                    &literals,
+                    &ArrayFacts::default(),
+                );
                 changed |= extend(&mut globals, name, targets);
             }
         }
         for name in reachable.clone() {
-            let Some((_, body)) = functions.get(&name) else {
+            let Some((parameters, body)) = functions.get(&name) else {
                 continue;
             };
             let mut env = globals.clone();
@@ -233,9 +465,25 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                 env.extend(captured.clone());
             }
             env.extend(locals[&name].clone());
+            let mut inherited_arrays = captured_arrays.get(&name).cloned().unwrap_or_default();
+            for (_, parameter) in *parameters {
+                inherited_arrays.remove(parameter);
+            }
+            let arrays = array_facts(body, &inherited_arrays);
             let storage_aliases = storage_aliases(body);
             visit(body, &mut |node| {
                 if let Some(closure) = literals.get(&(node as *const Node)) {
+                    let facts = captured_arrays.entry(closure.clone()).or_default();
+                    let before = facts.len();
+                    facts.extend(
+                        arrays
+                            .captures
+                            .get(&(node as *const Node))
+                            .into_iter()
+                            .flatten()
+                            .cloned(),
+                    );
+                    changed |= before != facts.len();
                     for (binding, targets) in &env {
                         changed |= extend(
                             captures.entry(closure.clone()).or_default(),
@@ -255,7 +503,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     ..
                 } = node
                 {
-                    let targets = value(expr, &env, &returns, &known, &literals);
+                    let targets = value(expr, &env, &returns, &known, &literals, &arrays);
                     for binding in storage_targets(target, &storage_aliases) {
                         if locals[&name].contains_key(&binding) {
                             changed |= extend(
@@ -278,7 +526,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     }
                 }
                 for (binding, expr) in bindings(node) {
-                    let targets = value(expr, &env, &returns, &known, &literals);
+                    let targets = value(expr, &env, &returns, &known, &literals, &arrays);
                     if locals[&name].contains_key(binding) {
                         changed |=
                             extend(locals.entry(name.clone()).or_default(), binding, targets);
@@ -296,7 +544,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     value: Some(expr), ..
                 } = node
                 {
-                    let result = value(expr, &env, &returns, &known, &literals);
+                    let result = value(expr, &env, &returns, &known, &literals, &arrays);
                     changed |= extend(&mut returns, &name, result);
                 }
                 if let Node::CallExpression {
@@ -306,15 +554,59 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     ..
                 } = node
                 {
-                    let callees = value(function, &env, &returns, &known, &literals);
+                    if let Some(call) = collection_call(node) {
+                        let elements =
+                            value(call.receiver, &env, &returns, &known, &literals, &arrays);
+                        let callbacks =
+                            value(call.callback, &env, &returns, &known, &literals, &arrays);
+                        let mut accumulator = value(
+                            call.initial.unwrap_or(call.receiver),
+                            &env,
+                            &returns,
+                            &known,
+                            &literals,
+                            &arrays,
+                        );
+                        for callback in &callbacks {
+                            accumulator
+                                .extend(returns.get(callback).into_iter().flatten().cloned());
+                        }
+                        for callback in callbacks {
+                            sites.insert((callback.clone(), span.start.line, span.start.column));
+                            changed |= reachable.insert(callback.clone());
+                            if let Some((params, _)) = functions.get(&callback) {
+                                for (index, (_, parameter)) in params.iter().enumerate() {
+                                    let targets = match (call.method, index) {
+                                        ("reduce", 0) => accumulator.clone(),
+                                        ("reduce", 1) | (_, 0) => elements.clone(),
+                                        _ => Targets::new(),
+                                    };
+                                    changed |= extend(
+                                        locals.entry(callback.clone()).or_default(),
+                                        parameter,
+                                        targets,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let modeled_array = array_callback(node, &arrays);
+                    let callees = if modeled_array {
+                        Targets::new()
+                    } else {
+                        value(function, &env, &returns, &known, &literals, &arrays)
+                    };
                     // Unknown consumers (including builtin collection methods)
                     // may execute callbacks. Preserve conservative inspection
                     // of escaped closures instead of silently dropping bodies.
-                    if callees.is_empty()
-                        || callees.iter().any(|callee| !functions.contains_key(callee))
+                    if !modeled_array
+                        && (callees.is_empty()
+                            || callees.iter().any(|callee| !functions.contains_key(callee)))
                     {
                         for argument in arguments {
-                            for target in value(argument, &env, &returns, &known, &literals) {
+                            for target in
+                                value(argument, &env, &returns, &known, &literals, &arrays)
+                            {
                                 if target.starts_with("$closure:") {
                                     changed |= reachable.insert(target.clone());
                                     changed |= escaped.insert(target);
@@ -337,7 +629,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                                     changed |= extend(
                                         locals.entry(callee.clone()).or_default(),
                                         parameter,
-                                        value(argument, &env, &returns, &known, &literals),
+                                        value(argument, &env, &returns, &known, &literals, &arrays),
                                     );
                                 }
                             }
@@ -345,7 +637,7 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
                     }
                 }
             });
-            let result = value(body, &env, &returns, &known, &literals);
+            let result = value(body, &env, &returns, &known, &literals, &arrays);
             changed |= extend(&mut returns, &name, result);
             if escaped.contains(&name) {
                 for target in returns.get(&name).into_iter().flatten() {

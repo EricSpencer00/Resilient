@@ -169,6 +169,7 @@ fn targets(name: &str, aliases: &Aliases) -> BTreeSet<String> {
 }
 
 pub(super) fn calls(body: &Node, globals: &Aliases) -> Vec<CallSite> {
+    let arrays = super::flow::array_facts(body, &BTreeSet::new());
     let mut aliases = globals.clone();
     visit(body, &mut |node| record(&mut aliases, node));
     mutations(&mut aliases, body);
@@ -176,6 +177,9 @@ pub(super) fn calls(body: &Node, globals: &Aliases) -> Vec<CallSite> {
     let mut calls = Vec::new();
     visit(body, &mut |node| {
         if let Node::CallExpression { function, span, .. } = node {
+            if super::flow::array_callback(node, &arrays) {
+                return;
+            }
             let mut callees = BTreeSet::new();
             for name in references(function) {
                 callees.extend(

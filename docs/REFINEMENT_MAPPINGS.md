@@ -28,6 +28,16 @@ aggregates. Unrelated non-refined callers do not supply parameter targets to
 that root's analysis. A helper's possible targets are joined across its reachable
 calls; the analysis does not distinguish individual invocations.
 
+Collection callback flow covers `map`, `filter`, `reduce`, `flat_map`,
+`for_each`, `find`, `any`, and `all`. Known named or anonymous callbacks are
+checked, element/accumulator targets flow into their parameters, and possible
+callable results flow out of transformations and reductions. Element-preserving
+chains and builtin `unwrap` retain this provenance. Both reduction forms are
+supported. Lexical array-shape facts distinguish callable elements from the
+callback itself, preserving ignored-element cases. Unknown receiver shapes retain
+conservative field-call analysis. This analysis joins possible elements, accumulators and return values;
+it does not prove collection sizes or predicate outcomes.
+
 This is conservative value provenance, not complete higher-order verification.
 Unknown caller-supplied targets and interprocedural mutation of aliased
 aggregates are not fully resolved. Closure targets are joined across possible
