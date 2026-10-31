@@ -108,3 +108,20 @@ IEC 62304, DO-178C/DO-330 compliance or a safety classification. Use the reposit
 [qualification readiness process](../../docs/qualification-readiness.md) to track
 requirements review, tool qualification, configuration control, independent review,
 remaining defects and acceptance by the applicable authority.
+
+## Separate translation checker
+
+Before accepting generated artifacts, `independent_checker.py` independently
+reads the original sentences using a token grammar, compares the complete IR,
+checks the restricted pure generated function across the declared domain, and
+checks the emitted TLA+ transitions, property formulas, fairness and configuration
+against independently derived expectations. It does not import the generator.
+The manifest binds both generator and checker hashes; execution reports identify
+this check as covering the generated artifacts, not arbitrary candidate code.
+
+`tests/test_independent.py` injects consistent wrong generator translations
+(transition, initial state, encoding, safety property and fairness), mutates the
+emitted artifacts, and exercises domains up to 16 states by 16 events. This reduces
+shared-implementation failure exposure. Both implementations still embody the
+same documented semantics and can share conceptual mistakes: this is neither a
+machine-checked universal refinement theorem nor an independent safety assessment.

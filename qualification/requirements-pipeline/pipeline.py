@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 
+import independent_checker
+
 
 class Failure(Exception):
     pass
@@ -131,7 +133,12 @@ def artifacts(source):
     tla.extend(["====", ""])
     files = {"requirements.txt": source, "model.json": encoded(model), "implementation.rz": "\n".join(code).encode(),
              "Controller.tla": "\n".join(tla).encode(), "Controller.cfg": ("\n".join(cfg) + "\n").encode()}
+    try:
+        independent_checker.check(source, model, files)
+    except independent_checker.CorrespondenceError as error:
+        raise Failure(str(error)) from error
     files["manifest.json"] = encoded({"profile": model["profile"], "generator_sha256": digest(Path(__file__).read_bytes()),
+                                      "checker_sha256": digest(Path(independent_checker.__file__).read_bytes()),
                                       "artifacts": {name: digest(data) for name, data in files.items()}})
     return model, files
 
@@ -249,6 +256,11 @@ def main():
                       "scope": "finite-controller-v1 instance conformance; human intent and target deployment not verified",
                       "host": {"system": platform.system(), "release": platform.release(), "machine": platform.machine()},
                       "python": sys.version, "generator_sha256": digest(Path(__file__).read_bytes())}
+            report["generated_artifact_correspondence"] = {
+                "status": "passed", "transition_pairs": len(model["transitions"]),
+                "checker_sha256": digest(Path(independent_checker.__file__).read_bytes()),
+                "scope": "original requirements to generated artifacts; arbitrary candidate implementation excluded",
+            }
             if args.command == "verify":
                 check_model(args, model, output, report)
             check_runtime(args, model, output, report)
