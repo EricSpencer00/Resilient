@@ -1,0 +1,182 @@
+[
+  {
+    "name": "parameter",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "parameter_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return select()(value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return select()(value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=select();return call(value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=select();return call(value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "argument_alias",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;return apply(call,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "argument_alias_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=foreign;return apply(call,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "aggregate_argument",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[foreign];return apply(calls[0],value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "aggregate_argument_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[foreign];return apply(calls[0],value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned_aggregate",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[select()];return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_aggregate_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[select()];return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "identity_return",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return identity(foreign)(value);}\nfn identity(fn(int) -> int call) -> fn(int) -> int {return call;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "identity_return_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return identity(foreign)(value);}\nfn identity(fn(int) -> int call) -> fn(int) -> int {return call;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "forward",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return forward(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn forward(fn(int) -> int call,int value) -> int {return apply(call,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "forward_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return forward(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn forward(fn(int) -> int call,int value) -> int {return apply(call,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "recursive_forward",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return recurse(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn recurse(fn(int) -> int call,int value) -> int {if value > 0 {return recurse(call,value-1);}return apply(call,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "recursive_forward_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return recurse(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn recurse(fn(int) -> int call,int value) -> int {if value > 0 {return recurse(call,value-1);}return apply(call,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "conditional_return",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return select(value)(value);}\nfn select(int value) -> fn(int) -> int {if value>0 {return safe;}return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "conditional_return_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return select(value)(value);}\nfn select(int value) -> fn(int) -> int {if value>0 {return safe;}return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned_apply",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(select(),value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}fn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_apply_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(select(),value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}fn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "unused_then_called",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=identity(foreign);return apply(call,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn identity(fn(int) -> int call) -> fn(int) -> int {return call;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "unused_then_called_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let call=identity(foreign);return apply(call,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn identity(fn(int) -> int call) -> fn(int) -> int {return call;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "safe_argument",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(safe,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "unused_argument",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return ignore(foreign,value);}\nfn ignore(fn(int) -> int call,int value) -> int {return value;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "unused_return",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let unused=select();return value;}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "unrelated_caller",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(safe,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn other(int value){return apply(foreign,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "parameter_name_isolated",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(safe,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);} fn other(fn(int) -> int call,int value){return call(value);} fn unused(int value){return other(foreign,value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "nonrefined",
+    "source": "fn refined(int value){return apply(foreign,value);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": false
+  },
+  {
+    "name": "returned_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];calls[0]=select();return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];calls[0]=select();return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "returned_alias_write",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let alias=calls;alias[0]=select();return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "returned_alias_write_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){let calls=[safe];let alias=calls;alias[0]=select();return calls[0](value);}\nfn select() -> fn(int) -> int {return foreign;}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  },
+  {
+    "name": "named_parameter",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(value:value,call:foreign);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int ;};",
+    "reject": true
+  },
+  {
+    "name": "named_parameter_contracted",
+    "source": "@refines(spec=\"counter.tla\",action=\"Inc\")\nfn refined(int value){return apply(value:value,call:foreign);}\nfn apply(fn(int) -> int call,int value) -> int {return call(value);}\nfn safe(int value) -> int {return value;}\nextern \"counter\" {fn foreign(value:Int)->Int requires value >= 0 ensures result >= 0;};",
+    "reject": false
+  }
+]
