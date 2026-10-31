@@ -357,9 +357,27 @@ fn extend(env: &mut Env, name: &str, values: Targets) -> bool {
     entry.len() != size
 }
 
+#[derive(Default)]
+struct GlobalValues {
+    globals: Env,
+    captures: BTreeMap<String, Env>,
+    captured_arrays: BTreeMap<String, Targets>,
+}
+
 pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
+    // Initialization supplies values and captures, not mapped-root call obligations
+    // or helper parameter summaries from unrelated startup invocations.
+    let (_, initialized) = analyze(program, None, GlobalValues::default());
+    analyze(program, Some(root), initialized).0
+}
+
+fn analyze(
+    program: &Node,
+    root: Option<&str>,
+    initial: GlobalValues,
+) -> (Vec<CallSite>, GlobalValues) {
     let Node::Program(statements) = program else {
-        return Vec::new();
+        return (Vec::new(), initial);
     };
     let mut functions = BTreeMap::new();
     let mut known = Targets::new();
@@ -399,14 +417,27 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
         }
         _ => {}
     });
-    let mut globals = Env::new();
-    let mut captures = BTreeMap::<String, Env>::new();
-    let mut captured_arrays = BTreeMap::<String, Targets>::new();
+    let initializer_parameters = Vec::new();
+    if root.is_none() {
+        functions.insert(
+            "$initializers".to_string(),
+            (&initializer_parameters, program),
+        );
+    }
+    let GlobalValues {
+        mut globals,
+        mut captures,
+        mut captured_arrays,
+    } = initial;
     let mut locals = BTreeMap::<String, Env>::new();
     for (name, (parameters, body)) in &functions {
         let mut env = Env::new();
         for (_, name) in *parameters {
             env.insert(name.clone(), Targets::new());
+        }
+        if name == "$initializers" {
+            locals.insert(name.clone(), env);
+            continue;
         }
         visit(body, &mut |node| {
             if let Node::Function { name, .. } = node
@@ -424,36 +455,43 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
         });
         locals.insert(name.clone(), env);
     }
+    let mut capture_shadows = BTreeMap::<String, Targets>::new();
+    loop {
+        let mut changed = false;
+        for (name, (_, body)) in &functions {
+            let mut shadowed = capture_shadows.get(name).cloned().unwrap_or_default();
+            shadowed.extend(locals[name].keys().cloned());
+            visit(body, &mut |node| {
+                if let Some(closure) = literals.get(&(node as *const Node)) {
+                    let entry = capture_shadows.entry(closure.clone()).or_default();
+                    let before = entry.len();
+                    entry.extend(shadowed.iter().cloned());
+                    changed |= before != entry.len();
+                }
+            });
+        }
+        if !changed {
+            break;
+        }
+    }
     let mut returns = Env::new();
-    let mut reachable = BTreeSet::from([root.to_string()]);
+    let mut reachable = BTreeSet::from([root.unwrap_or("$initializers").to_string()]);
     let mut sites = BTreeSet::new();
     let mut escaped = Targets::new();
     // All sets grow over a finite universe of named and anonymous functions. Recursive
     // forwarding converges without a depth cutoff that could hide a target.
     loop {
         let mut changed = false;
-        for statement in statements {
-            visit(&statement.node, &mut |node| {
-                if let Some(closure) = literals.get(&(node as *const Node)) {
-                    for (binding, targets) in &globals {
-                        changed |= extend(
-                            captures.entry(closure.clone()).or_default(),
-                            binding,
-                            targets.clone(),
-                        );
-                    }
+        // Global captures remain live across initialization and mapped calls.
+        // Lexical ancestors' bindings must retain their own captured values.
+        for (closure, captured) in &mut captures {
+            for (binding, targets) in &globals {
+                if !capture_shadows
+                    .get(closure)
+                    .is_some_and(|shadowed| shadowed.contains(binding))
+                {
+                    changed |= extend(captured, binding, targets.clone());
                 }
-            });
-            for (name, expr) in bindings(&statement.node) {
-                let targets = value(
-                    expr,
-                    &globals,
-                    &returns,
-                    &known,
-                    &literals,
-                    &ArrayFacts::default(),
-                );
-                changed |= extend(&mut globals, name, targets);
             }
         }
         for name in reachable.clone() {
@@ -652,12 +690,20 @@ pub(super) fn calls(program: &Node, root: &str) -> Vec<CallSite> {
             break;
         }
     }
-    sites
+    let sites = sites
         .into_iter()
         .map(|(callee, line, column)| CallSite {
             callee,
             line,
             column,
         })
-        .collect()
+        .collect();
+    (
+        sites,
+        GlobalValues {
+            globals,
+            captures,
+            captured_arrays,
+        },
+    )
 }
