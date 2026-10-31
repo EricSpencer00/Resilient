@@ -1004,7 +1004,7 @@ mod tests {
             .map(|(t, _)| t)
             .collect();
         assert!(
-            tokens.iter().any(|t| *t == Token::Fn),
+            tokens.iter().any(|t| *t == Token::Function),
             "fn keyword: {tokens:?}"
         );
         assert!(
@@ -1028,7 +1028,10 @@ mod tests {
             tokens.iter().any(|t| *t == Token::Minus),
             "minus: {tokens:?}"
         );
-        assert!(tokens.iter().any(|t| *t == Token::Star), "star: {tokens:?}");
+        assert!(
+            tokens.iter().any(|t| *t == Token::Multiply),
+            "star: {tokens:?}"
+        );
     }
 
     #[test]
