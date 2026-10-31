@@ -27,6 +27,7 @@ requires a new evidence run and impact review. Old records remain historical.
 | RP-06 | Require actual TLC completion, satisfied safety/liveness properties and an observed transition relation equal to the declared table. | `test_real_model_and_runtime_agree_and_contradictory_property_fails` |
 | RP-07 | Missing tools and timed-out executions never pass; preserve partial output and failure status. | `test_missing_compiler_cannot_pass`, `test_timeout_is_failure_with_retained_output` |
 | RP-08 | Refuse to overwrite an existing evidence directory, including a prior report. | `test_rehashed_tampering_and_stale_evidence_are_rejected` |
+| RP-09 | Check original requirements against IR, pure generated code and TLA/configuration with a separate implementation; reject consistent generator faults. | `tests/test_independent.py`: all four tests, including five translation faults and seven artifact mutations. |
 
 The Cargo integration test invokes these public CLI tests with the actual built
 compiler. Its run alone does not satisfy RP-06 when TLC is unavailable. The
@@ -39,7 +40,7 @@ be relabeled as the full campaign.
 | Failure | Detection or restriction | Residual obligation |
 | --- | --- | --- |
 | Requirements encode the wrong intent or omit a hazard | Strict grammar removes syntactic ambiguity; properties are separate sentences. | Human requirements/hazard review and completeness argument. |
-| Generator and checker share an incorrect translation | Independent frozen fixture oracle, actual TLC relation, separate runtime executions and single-cell mutations. | Review grammar semantics and translation; additional application-specific adversarial cases. This is not a universal translation proof. |
+| Generator and checker share an incorrect translation | Separate source/artifact checker, independent frozen fixture oracle, actual TLC relation, separate runtime executions and single-cell mutations. | Review grammar semantics and translation; additional application-specific adversarial cases. This is not a universal translation proof. |
 | Model passes while code implements a different table | Exhaustive state/event observations for the generated pure function; exact TLC relation comparison. | Any candidate with hidden state/effects needs additional semantics and sequence coverage. |
 | Liveness depends on an unjustified scheduler | Explicit weak fairness; reject different simultaneous fairness premises. | Establish the real scheduler assumption before deployment. |
 | Evidence is stale, altered or incomplete | Fresh directories, regenerated bundle comparison, tool/content hashes, timeout/nonzero/status checks, raw logs. | Controlled storage and authentic review; hashes do not authenticate authors. |
