@@ -18,6 +18,8 @@ use std::path::Path;
 mod aliases;
 #[path = "tla_refines_flow.rs"]
 mod flow;
+#[path = "tla_refines_matches.rs"]
+mod matches;
 
 const ATTRIBUTE: &str = "refines";
 
@@ -313,6 +315,8 @@ fn check_reachable_extern_contracts(
     source_path: &str,
     mappings: &[RefinesMapping],
 ) -> Result<(), String> {
+    let scoped = matches::scoped(program);
+    let program = &scoped;
     let (functions, externs) = collect_summaries(program);
     for mapping in mappings {
         let extra_calls = flow::calls(program, &mapping.function);

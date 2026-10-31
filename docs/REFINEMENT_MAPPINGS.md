@@ -28,6 +28,14 @@ aggregates. Unrelated non-refined callers do not supply parameter targets to
 that root's analysis. A helper's possible targets are joined across its reachable
 calls; the analysis does not distinguish individual invocations.
 
+Match expressions retain callable results from every arm. Pattern-bound values
+flow into arm bodies and guards in separate lexical scopes, including nested
+patterns and closures that capture a binding. Aggregate bindings conservatively
+join their possible elements; builtin `Some`, `Ok` and `Err` preserve payload
+provenance. Guards and pattern feasibility do not prune the possible call paths.
+The analysis uses scoped synthetic calls on a private tree; compilation and
+runtime matching continue to use the original program.
+
 Global initialization is analyzed before each mapped root. Callable values from
 initializer factories, forwarded arguments, collection operations and closures
 are retained in global bindings and captures. Initializer-only calls do not become

@@ -257,7 +257,9 @@ fn value(
             } else {
                 match function.as_ref() {
                     Node::Identifier { name, .. }
-                        if name == "unwrap" && !env.contains_key(name) && !known.contains(name) =>
+                        if matches!(name.as_str(), "unwrap" | "Some" | "Ok" | "Err")
+                            && !env.contains_key(name)
+                            && !known.contains(name) =>
                     {
                         if let [argument] = arguments.as_slice() {
                             result.extend(value(argument, env, returns, known, literals, arrays));
