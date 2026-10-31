@@ -106,6 +106,32 @@ pub(crate) fn expand_uses_traced(
         Some(entry),
         trace,
         allow_lookup,
+        None,
+    )
+    .map(|_| ())
+}
+
+/// Preserve one physical source label per expanded top-level statement.
+pub(crate) fn expand_uses_with_origins(
+    program: &mut Node,
+    entry: &Path,
+    loaded: &mut HashSet<PathBuf>,
+    std_imports: &mut Vec<StdImport>,
+    trace: Option<&mut dyn ImportTrace>,
+) -> Result<Vec<Option<String>>, String> {
+    let mut untraced = Untraced;
+    let trace = trace.unwrap_or(&mut untraced);
+    let mut in_flight = vec![canonicalize_or_self(entry)];
+    expand_recursive(
+        program,
+        entry.parent().unwrap_or_else(|| Path::new(".")),
+        loaded,
+        std_imports,
+        &mut in_flight,
+        Some(entry),
+        trace,
+        true,
+        Some(entry),
     )
 }
 
@@ -142,7 +168,9 @@ pub fn expand_uses_with_std(
         None,
         &mut Untraced,
         true,
+        None,
     )
+    .map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -155,7 +183,8 @@ fn expand_recursive(
     importer: Option<&Path>,
     trace: &mut dyn ImportTrace,
     allow_lookup: bool,
-) -> Result<(), String> {
+    origin: Option<&Path>,
+) -> Result<Vec<Option<String>>, String> {
     trace.depth(in_flight.len())?;
     // RES-4110: resolve inline-module globs before file/dependency imports.
     // This pass removes only `use mod::*` nodes, leaving the existing file
@@ -164,13 +193,16 @@ fn expand_recursive(
 
     let stmts = match program {
         Node::Program(stmts) => stmts,
-        _ => return Ok(()),
+        _ => return Ok(Vec::new()),
     };
 
     if !stmts.iter().any(|s| matches!(&s.node, Node::Use { .. })) {
-        return Ok(());
+        return Ok(origin
+            .map(|path| vec![Some(path.display().to_string()); stmts.len()])
+            .unwrap_or_default());
     }
 
+    let mut expanded_origins = Vec::new();
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
         if let Node::Use {
@@ -217,7 +249,7 @@ fn expand_recursive(
                 let mut imported = load_and_parse_traced(&resolved.path, trace)?;
                 let dir = resolved.path.parent().unwrap_or_else(|| Path::new("."));
                 in_flight.push(canon);
-                expand_recursive(
+                let imported_origins = expand_recursive(
                     &mut imported,
                     dir,
                     loaded,
@@ -226,11 +258,14 @@ fn expand_recursive(
                     Some(&resolved.path),
                     trace,
                     allow_lookup,
+                    origin.map(|_| resolved.path.as_path()),
                 )?;
                 in_flight.pop();
                 if let Node::Program(stmts) = imported {
                     append_imported_stmts(
                         stmts,
+                        &imported_origins,
+                        &mut expanded_origins,
                         &mut expanded,
                         selectors.as_deref(),
                         is_pub,
@@ -266,7 +301,7 @@ fn expand_recursive(
                     .unwrap_or_else(|| PathBuf::from("."));
                 let mut imported_program = imported_program;
                 in_flight.push(canon);
-                expand_recursive(
+                let imported_origins = expand_recursive(
                     &mut imported_program,
                     &imported_dir,
                     loaded,
@@ -275,12 +310,15 @@ fn expand_recursive(
                     importer.map(|_| dep_path.as_path()),
                     trace,
                     allow_lookup,
+                    origin.map(|_| dep_path.as_path()),
                 )?;
                 in_flight.pop();
                 if let Node::Program(imported_stmts) = imported_program {
                     let ns = alias.as_deref().unwrap_or(dep_name);
                     append_imported_stmts(
                         imported_stmts,
+                        &imported_origins,
+                        &mut expanded_origins,
                         &mut expanded,
                         selectors.as_deref(),
                         is_pub,
@@ -327,7 +365,7 @@ fn expand_recursive(
 
             let mut imported_program = imported_program;
             in_flight.push(canon);
-            expand_recursive(
+            let imported_origins = expand_recursive(
                 &mut imported_program,
                 &imported_dir,
                 loaded,
@@ -336,12 +374,15 @@ fn expand_recursive(
                 importer.map(|_| target.as_path()),
                 trace,
                 allow_lookup,
+                origin.map(|_| target.as_path()),
             )?;
             in_flight.pop();
 
             if let Node::Program(imported_stmts) = imported_program {
                 append_imported_stmts(
                     imported_stmts,
+                    &imported_origins,
+                    &mut expanded_origins,
                     &mut expanded,
                     selectors.as_deref(),
                     is_pub,
@@ -350,10 +391,13 @@ fn expand_recursive(
             }
         } else {
             expanded.push(stmt);
+            if let Some(path) = origin {
+                expanded_origins.push(Some(path.display().to_string()));
+            }
         }
     }
     *stmts = expanded;
-    Ok(())
+    Ok(expanded_origins)
 }
 
 /// Check if a file is already being expanded (cycle detection).
@@ -812,8 +856,11 @@ fn pattern_bindings(pattern: &Pattern, bound: &mut HashSet<String>) {
 
 /// Apply import/export filtering and push the surviving declarations
 /// into `expanded`.
+#[allow(clippy::too_many_arguments)]
 fn append_imported_stmts(
     imported_stmts: Vec<Spanned<Node>>,
+    origins: &[Option<String>],
+    expanded_origins: &mut Vec<Option<String>>,
     expanded: &mut Vec<Spanned<Node>>,
     selectors: Option<&[String]>,
     make_pub: bool,
@@ -829,7 +876,7 @@ fn append_imported_stmts(
         .filter_map(|s| decl_name(&s.node).map(str::to_owned))
         .collect();
 
-    for mut s in imported_stmts {
+    for (index, mut s) in imported_stmts.into_iter().enumerate() {
         if matches!(s.node, Node::Use { .. }) {
             continue;
         }
@@ -855,6 +902,9 @@ fn append_imported_stmts(
             mark_pub_decl(&mut s.node);
         }
         expanded.push(s);
+        if !origins.is_empty() {
+            expanded_origins.push(origins.get(index).cloned().flatten());
+        }
     }
 }
 
