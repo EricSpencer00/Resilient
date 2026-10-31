@@ -207,3 +207,16 @@ case!(
     [false; 3],
     [false; 3]
 );
+
+case!(
+    if_assignment_shadow_float_domain,
+    "let x=sqrt(-1.0); if true { let x=0; x=1; } while false invariant x==x { }",
+    [false; 3],
+    [false; 3]
+);
+case!(
+    while_assignment_shadow_float_domain,
+    "let x=sqrt(-1.0); let i=0; while i<1 { let x=0; x=1; i=i+1; } while false invariant x==x { }",
+    [false; 3],
+    [false; 3]
+);

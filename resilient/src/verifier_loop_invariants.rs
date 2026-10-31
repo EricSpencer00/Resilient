@@ -424,7 +424,10 @@ fn invalidate_mutations(
     crate::uniqueness_walk::visit(node, &mut |child| match child {
         Node::Assignment { name, value, .. } => {
             bindings.remove(name);
-            sorts.insert(name.clone(), expression_sort(value, sorts));
+            // This walk crosses lexical scopes, so it may only discard knowledge.
+            if sorts.get(name).copied() != Some(expression_sort(value, sorts)) {
+                sorts.remove(name);
+            }
         }
         // Calls may mutate captured or global state beyond this local model.
         Node::CallExpression { .. } => {
