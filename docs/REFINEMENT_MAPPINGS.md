@@ -28,6 +28,13 @@ aggregates. Unrelated non-refined callers do not supply parameter targets to
 that root's analysis. A helper's possible targets are joined across its reachable
 calls; the analysis does not distinguish individual invocations.
 
+Global initialization is analyzed before each mapped root. Callable values from
+initializer factories, forwarded arguments, collection operations and closures
+are retained in global bindings and captures. Initializer-only calls do not become
+calls of the mapped function; helper parameter and return summaries are recomputed
+for that root so unrelated startup arguments do not contaminate its obligations.
+Global values and captures still conservatively join their possible targets.
+
 Collection callback flow covers `map`, `filter`, `reduce`, `flat_map`,
 `for_each`, `find`, `any`, and `all`. Known named or anonymous callbacks are
 checked, element/accumulator targets flow into their parameters, and possible
