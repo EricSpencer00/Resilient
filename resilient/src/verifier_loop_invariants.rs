@@ -32,6 +32,9 @@
 //!     body are dropped from the inductive-step bindings — they must
 //!     be free for the proof to be universal over iterations.
 //!
+//!   - Hoisted scalar `const` values take precedence over local bindings,
+//!     matching runtime lookup. Unsupported constant values retain unknown sorts.
+//!
 //! Anything outside that scope causes the verifier to silently bail
 //! on that invariant; the runtime check fires unchanged.
 
@@ -193,6 +196,106 @@ fn integer_names(sorts: &HashMap<String, Sort>) -> HashSet<String> {
         .collect()
 }
 
+#[cfg(feature = "z3")]
+struct LoopConstants {
+    values: HashMap<String, Option<i64>>,
+}
+#[cfg(feature = "z3")]
+impl LoopConstants {
+    fn resolve(program: &Node) -> Option<Self> {
+        let mut resolved = HashMap::new();
+        let mut values = HashMap::new();
+        let mut remaining = 32_768;
+        if let Node::Program(statements) = program {
+            for statement in statements {
+                if let Node::Const { name, value, .. } = &statement.node {
+                    if values.contains_key(name) {
+                        return None;
+                    }
+                    // Scalar-only evaluation avoids allocating expanded strings or tuples during proof preflight.
+                    let result = if Self::bounded_scalar(value, &mut remaining) {
+                        crate::Interpreter::eval_const_expr(
+                            value,
+                            &resolved,
+                            &mut vec![name.clone()],
+                            crate::vm::OverflowMode::from_env(),
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+                    values.insert(
+                        name.clone(),
+                        match result.as_ref() {
+                            Some(crate::Value::Int(value)) => Some(*value),
+                            _ => None,
+                        },
+                    );
+                    if let Some(result) = result {
+                        resolved.insert(name.clone(), result);
+                    }
+                }
+            }
+        }
+        Some(Self { values })
+    }
+
+    fn bounded_scalar(node: &Node, remaining: &mut usize) -> bool {
+        let mut stack = vec![(node, 0)];
+        while let Some((node, depth)) = stack.pop() {
+            if depth > 128 || *remaining == 0 {
+                return false;
+            }
+            *remaining -= 1;
+            match node {
+                Node::IntegerLiteral { .. }
+                | Node::FloatLiteral { .. }
+                | Node::BooleanLiteral { .. }
+                | Node::Identifier { .. } => {}
+                Node::PrefixExpression { right, .. } => stack.push((right, depth + 1)),
+                Node::InfixExpression { left, right, .. } => {
+                    stack.push((left, depth + 1));
+                    stack.push((right, depth + 1));
+                }
+                Node::ExpressionStatement { expr, .. } => stack.push((expr, depth + 1)),
+                Node::Block { stmts, .. } if stmts.len() == 1 => stack.push((&stmts[0], depth + 1)),
+                Node::IfStatement {
+                    condition,
+                    consequence,
+                    alternative,
+                    ..
+                } => {
+                    stack.push((condition, depth + 1));
+                    stack.push((consequence, depth + 1));
+                    if let Some(alternative) = alternative {
+                        stack.push((alternative, depth + 1));
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    fn restore(&self, bindings: &mut HashMap<String, i64>, sorts: &mut HashMap<String, Sort>) {
+        // Runtime consults hoisted constants before locals, parameters, and loop bindings.
+        for (name, value) in &self.values {
+            bindings.remove(name);
+            sorts.insert(
+                name.clone(),
+                if value.is_some() {
+                    Sort::Integer
+                } else {
+                    Sort::Unknown
+                },
+            );
+            if let Some(value) = value {
+                bindings.insert(name.clone(), *value);
+            }
+        }
+    }
+}
+
 /// Public entry point — feature-gated so callers don't need to do
 /// their own `#[cfg(feature = "z3")]` guards. Without `z3`, this is
 /// a no-op and the runtime check from `loop_invariants.rs` is the
@@ -207,6 +310,9 @@ pub(crate) fn verify_and_capture(
         tc.deny_unproven_invariants,
         tc.loop_source_origins.as_deref(),
     );
+    let Some(constants) = LoopConstants::resolve(program) else {
+        return coverage;
+    };
     // RES-1297 / RES-1917: the typechecker gates this call behind
     // statement-form, while, or finite-loop invariant markers,
     // so the program is guaranteed to contain at least one invariant.
@@ -242,6 +348,7 @@ pub(crate) fn verify_and_capture(
         timeout_ms,
         verbose,
         &mut coverage,
+        &constants,
     );
     coverage
 }
@@ -274,7 +381,9 @@ fn walk(
     timeout_ms: u32,
     verbose: bool,
     coverage: &mut ProofCoverage,
+    constants: &LoopConstants,
 ) {
+    constants.restore(bindings, sorts);
     match node {
         Node::Program(stmts) => {
             // Top-level: the whole program shares a single bindings
@@ -285,6 +394,7 @@ fn walk(
             for s in stmts {
                 walk(
                     &s.node, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    constants,
                 );
             }
             *bindings = snap;
@@ -295,7 +405,7 @@ fn walk(
             let sort_snap = sorts.clone();
             for s in stmts {
                 walk(
-                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
                 );
             }
             *bindings = snap;
@@ -310,8 +420,8 @@ fn walk(
         } => {
             // Each fn body opens a fresh scope. Pre-loop constants
             // declared inside the fn become bindings just for that
-            // fn; the outer caller's bindings are NOT visible (we
-            // don't track which globals get shadowed by params).
+            // fn; mutable outer bindings are not visible. Hoisted
+            // constants are restored before walking each body statement.
             // RES-1798: pre-size to 8 — same shape as the outer
             // bindings map. Each fn body opens a fresh scope.
             let mut fn_bindings: HashMap<String, i64> = HashMap::with_capacity(8);
@@ -335,10 +445,12 @@ fn walk(
                 timeout_ms,
                 verbose,
                 coverage,
+                constants,
             );
         }
 
-        Node::LetStatement { name, value, .. } | Node::Const { name, value, .. } => {
+        Node::Const { .. } => {}
+        Node::LetStatement { name, value, .. } => {
             let call_sort = if matches!(value.as_ref(), Node::CallExpression { .. }) {
                 expression_sort(value, sorts)
             } else {
@@ -382,6 +494,7 @@ fn walk(
                 timeout_ms,
                 verbose,
                 coverage,
+                constants,
             );
             let consequence_sorts = sorts.clone();
             match alternative {
@@ -390,6 +503,7 @@ fn walk(
                     *sorts = sort_snap.clone();
                     walk(
                         alt, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                        constants,
                     );
                     *bindings = snap;
                     sorts.retain(|name, sort| sort_snap.get(name) == Some(sort));
@@ -410,12 +524,13 @@ fn walk(
             ..
         } => {
             invalidate_mutations(condition, bindings, sorts);
+            constants.restore(bindings, sorts);
             let entry_bindings = bindings.clone();
             let entry_sorts = sorts.clone();
             // A nested loop can run after any number of outer iterations.
             invalidate_mutations(body, bindings, sorts);
             walk(
-                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
             );
             invalidate_mutations(body, bindings, sorts);
 
@@ -452,6 +567,7 @@ fn walk(
                     next_idx,
                     timeout_ms,
                     verbose,
+                    constants,
                 );
                 coverage.record(inv, before, tc.stats.loop_invariants_proven);
             }
@@ -465,7 +581,8 @@ fn walk(
             ..
         } => {
             invalidate_mutations(iterable, bindings, sorts);
-            let entry_bindings = bindings.clone();
+            constants.restore(bindings, sorts);
+            let mut entry_bindings = bindings.clone();
             let entry_sorts = sorts.clone();
             invalidate_mutations(body, bindings, sorts);
             bindings.remove(name);
@@ -478,7 +595,7 @@ fn walk(
                 },
             );
             walk(
-                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
             );
             invalidate_mutations(body, bindings, sorts);
             if let Some(sort) = entry_sorts.get(name) {
@@ -500,6 +617,7 @@ fn walk(
             };
             let mut entry_sorts = entry_sorts;
             entry_sorts.insert(name.clone(), Sort::Integer);
+            constants.restore(&mut entry_bindings, &mut entry_sorts);
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 let before = tc.stats.loop_invariants_proven;
                 try_prove_for_in_invariant(
@@ -514,13 +632,14 @@ fn walk(
                     next_idx,
                     timeout_ms,
                     verbose,
+                    constants,
                 );
                 coverage.record(inv, before, tc.stats.loop_invariants_proven);
             }
         }
         Node::LiveBlock { body, .. } => {
             walk(
-                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                body, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
             );
         }
         Node::TryCatch { body, handlers, .. } => {
@@ -530,7 +649,7 @@ fn walk(
             let entry_sorts = sorts.clone();
             for s in body {
                 walk(
-                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
                 );
             }
             for (_v, h) in handlers {
@@ -538,7 +657,7 @@ fn walk(
                 *sorts = entry_sorts.clone();
                 for s in h {
                     walk(
-                        s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                        s, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
                     );
                 }
             }
@@ -549,7 +668,7 @@ fn walk(
         Node::ImplBlock { methods, .. } => {
             for m in methods {
                 walk(
-                    m, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage,
+                    m, bindings, sorts, tc, next_idx, timeout_ms, verbose, coverage, constants,
                 );
             }
         }
@@ -609,7 +728,14 @@ fn try_prove_invariant(
     next_idx: &mut usize,
     timeout_ms: u32,
     verbose: bool,
+    constants: &LoopConstants,
 ) {
+    if assigned
+        .iter()
+        .any(|name| constants.values.contains_key(*name))
+    {
+        return;
+    }
     // -------- Base case --------
     // Bindings include every pre-loop constant. If the invariant
     // is provable from these alone, the entry obligation is met.
@@ -811,6 +937,7 @@ fn try_prove_for_in_invariant(
     next_idx: &mut usize,
     timeout_ms: u32,
     verbose: bool,
+    constants: &LoopConstants,
 ) {
     // There is no executed checkpoint for an empty iterable, so no proof is
     // emitted. Bound trace expansion keeps best-effort verification finite.
@@ -825,7 +952,9 @@ fn try_prove_for_in_invariant(
         .iter()
         .map(|(name, value)| (name.clone(), integer_node(*value)))
         .collect();
-    state.insert(loop_name.to_string(), integer_node(elements[0]));
+    if !constants.values.contains_key(loop_name) {
+        state.insert(loop_name.to_string(), integer_node(elements[0]));
+    }
     let Some(first_entry) = finite_state_expression(invariant, &state, &mut expansion_budget)
     else {
         return;
@@ -850,6 +979,9 @@ fn try_prove_for_in_invariant(
         for stmt in stmts {
             match stmt {
                 Node::Assignment { name, value, .. } => {
+                    if constants.values.contains_key(name) {
+                        return;
+                    }
                     let Some(value) = finite_state_expression(value, &state, &mut expansion_budget)
                     else {
                         return;
@@ -864,7 +996,9 @@ fn try_prove_for_in_invariant(
         let next_entry = if let Some(element) = elements.get(index + 1) {
             // A write to the iteration variable belongs to this iteration;
             // the next actual element replaces it before the next check.
-            state.insert(loop_name.to_string(), integer_node(*element));
+            if !constants.values.contains_key(loop_name) {
+                state.insert(loop_name.to_string(), integer_node(*element));
+            }
             let Some(entry) = finite_state_expression(invariant, &state, &mut expansion_budget)
             else {
                 return;
