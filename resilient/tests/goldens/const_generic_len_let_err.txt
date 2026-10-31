@@ -1,5 +1,5 @@
 exit=1
-<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
 mutation: 7 total mutation site(s) across 1 function(s)
 mutation:   `main`: 7 site(s) [literal]
 <tmp>.rz:0:0: warning[mutation]: 7/7 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them

@@ -59,17 +59,19 @@ EOF
 Expect **warnings on a program this small — that is the language working, not an error**:
 
 ```
-hello.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified)
+hello.rz:0:0: warning[resilience]: `main` scores 28/100 (F — few annotation signals)
                                    — add `requires`/`ensures` contracts to improve resilience
 hello.rz:0:0: warning[mutation]: 2/2 mutation site(s) (100%) are in functions with no
                                  contracts — the Z3 verifier cannot kill them
 Hello, Resilient!
 ```
 
-Resilient grades every function on how much of it is actually *proven*. An
-uncontracted `main` scores an F by design. Add a contract and the grade
-moves. Nothing here needs Z3 installed — [SMT-backed verification](#smt-backed-verification-optional)
-is optional and layers on top.
+The advisory score counts annotations and structural signals. An uncontracted
+`main` scores an F; adding a contract can raise the score without proving that
+the contract is correct or complete. It does not infer who wrote the code.
+Nothing here needs Z3 installed — [SMT-backed verification](#smt-backed-verification-optional)
+is optional and supplies separate, scoped evidence. See the
+[assurance provisions](docs/ASSURANCE_PROVISIONS.md).
 
 **Want to help?** [Good first issues][gfi] are scoped to a single file with a
 reproduction and acceptance criteria, and [CONTRIBUTING.md](CONTRIBUTING.md)
@@ -202,17 +204,21 @@ fn calculate_velocity(float distance, float time) {
 
 Resilient provides detailed error messages and has sophisticated error recovery mechanisms, especially within live blocks.
 
-### "I Vibe-Coded This — Will It Break?" — The Resilience Pipeline
+### What Evidence Supports This Code? — The Resilience Pipeline
 
-A unique cluster of analysis passes answers this question automatically:
+Agent-written code can be excellent; human authorship does not guarantee quality.
+These passes help identify missing signals and review work. Assurance also needs
+evidence that the specification captures the intended requirements, the
+implementation conforms, and checks cover the properties that matter. A faithful
+implementation of a wrong or incomplete spec can still fail its users.
 
 | Pass | What it tells you |
 |------|------------------|
-| `vibe_debt` | Measures the gap between what you asserted and what the compiler could assert — as a percentage |
-| `resilience_score` | Grades every function A–F across contracts, effects, liveness, coverage, and simplicity |
+| `vibe_debt` | Percentage of missing contract, effect-annotation and call-reference signals; an annotation heuristic |
+| `resilience_score` | Grades weighted contract declarations, purity, `live` blocks, call references and body size; a review aid |
 | `contract_inference` | Automatically infers `requires`/`ensures` from the function body (division by zero, index bounds, single-return expressions) |
-| `behavioral_fingerprint` | SipHash over contract signatures — detects silent behavioral drift between commits without reading the body |
-| `anti_regression` | `#[stable(since="1.0", behavior="<digest>")]` — hard compile error if a function's behavior fingerprint drifts from the locked value |
+| `behavioral_fingerprint` | Hashes selected contract, signature and recovery metadata; detects changes to that surface, not arbitrary body behavior |
+| `anti_regression` | `#[stable(since="1.0", behavior="<digest>")]` — hard compile error if the fingerprint differs from the locked value; body-behavior preservation needs separate checks |
 | `semantic_regression` | Diffs contract counts and `fails` variants between versions; any weakening is a hard error |
 | `semver_behavior` | Classifies a diff as MAJOR, MINOR, or PATCH based on behavioral evidence — not just API surface |
 | `blame_attribution` | Builds a callee→caller blame map so you know exactly which caller introduced the fault |
@@ -221,9 +227,18 @@ A unique cluster of analysis passes answers this question automatically:
 
 Run `rz --infer-contracts my_file.rz` to get contract suggestions for any function that lacks them.
 
+Review inferred contracts against requirements: code and inferred specs can share
+a mistake. Neither an advisory grade nor a passing TLC model establishes all
+requirements or implementation correctness. See
+[From Requirements to Assurance](docs/ASSURANCE_PROVISIONS.md) for a concrete
+progress-property example and review checklist, including TLA+ refinement and
+implementation-conformance evidence.
+
 ### AI-Aware Type System
 
-Resilient is the first production language with an explicit threat model for *its own contributors*. The premise: most code is now LLM-generated, and we don't trust the LLM. The compiler ships with a `--ai-threats` pass that catches the patterns that mark code as AI-generated-without-careful-review:
+The `--ai-threats` pass flags syntactic patterns worth reviewing in code from any
+author. These patterns do not identify AI authorship or establish that a function
+is incorrect; absence of a warning does not establish correctness:
 
 | Pattern | What it catches |
 |---------|----------------|
