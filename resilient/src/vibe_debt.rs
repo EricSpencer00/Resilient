@@ -1,9 +1,8 @@
 //! Feature 2/50 — Vibe Debt.
 //!
-//! "Vibe debt" is the sibling concept to tech debt: the percentage of
-//! code that has been written without contracts, tests, or formal
-//! guarantees. It's the direct answer to "I vibe-coded this entire
-//! app, how do I know if it's safe?"
+//! "Vibe debt" is the historical CLI/API name for missing annotation
+//! and call-reference signals. It measures neither authorship nor the
+//! percentage of code that is correct, tested, or formally verified.
 //!
 //! For each top-level fn the analyzer counts a single boolean per
 //! signal:
@@ -11,11 +10,11 @@
 //! 1. Has at least one `requires` clause? (precondition declared)
 //! 2. Has at least one `ensures` clause? (postcondition declared)
 //! 3. Is referenced from elsewhere in the program? (test/use proxy)
-//! 4. Has a non-empty `pure`/`io` annotation, or is `@pure`? (effect)
+//! 4. Has a `pure` annotation, or is `@pure`? (purity)
 //!
-//! A fn that scores 0/4 is "fully vibe" debt. A fn at 4/4 is fully
-//! verified. The module-level vibe-debt percentage is
-//! `1 - (sum_score / (4 * fn_count))`.
+//! A fn at 0/4 has none of these signals; at 4/4 all are present,
+//! without establishing correctness. The module-level percentage is
+//! `100 * (1 - (sum_score / (4 * fn_count)))`.
 //!
 //! The CLI surface lands as `--vibe-debt`: walks the parsed program,
 //! prints the per-fn breakdown plus the program-wide percentage, and
@@ -51,7 +50,7 @@ impl VibeDebtEntry {
 #[derive(Debug, Clone, Default)]
 pub struct VibeDebtReport {
     pub entries: Vec<VibeDebtEntry>,
-    /// Program-wide percentage [0.0, 100.0]. 0% = nothing is verified.
+    /// Missing-signal percentage [0.0, 100.0]; 0% means all signals are present.
     pub debt_percent: f64,
     pub fully_vibe_count: usize,
 }
@@ -197,7 +196,7 @@ fn collect_refs<'a>(node: &'a Node, out: &mut HashMap<&'a str, u32>) {
 ///
 /// These are advisory warnings — high vibe debt is not a compile
 /// error, but it should surface in the build log so developers
-/// know they are shipping unverified code.
+/// can review missing signals separately from actual verification results.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let report = analyze(program);
     if report.entries.is_empty() {
@@ -207,7 +206,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         let plain = format!(
             "{source_path}:0:0: warning[vibe_debt]: \
              `{}` has no contracts, no effect annotation, and is \
-             unreferenced — fully vibe-coded",
+             unreferenced — no tracked assurance signals",
             entry.function_name
         );
         crate::typechecker::emit_check_warning_plain(plain, source_path, "vibe_debt");

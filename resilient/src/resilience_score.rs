@@ -1,18 +1,18 @@
 //! Feature 1/50 — Resilience Score.
 //!
-//! A per-function quantified score (0–100) that summarises how
-//! verified-and-safe a function is. The score is the weighted sum of
-//! observable safety signals already produced by the typechecker:
+//! A per-function heuristic score (0–100) over observable AST signals.
+//! It does not establish proof success, requirements adequacy, execution
+//! coverage, implementation conformance, or the author's identity:
 //!
 //! * **Contracts (40 pts)** — does the fn declare `requires` and/or
-//!   `ensures`? An unverified fn body is a vibe-coded body.
+//!   `ensures`? This counts declarations, not verified obligations.
 //! * **Effect annotation (10 pts)** — `pure` declared, or `@pure`
 //!   attribute applied.
 //! * **Live recovery coverage (15 pts)** — does the fn body contain
-//!   any `live { ... }` block? Self-healing code earns a bump.
+//!   any `live { ... }` block? Presence does not prove recovery or liveness.
 //! * **Test coverage stand-in (15 pts)** — does any other top-level fn
 //!   in the program reference this fn's name? Calls are the cheapest
-//!   available proxy for "someone exercised this code".
+//!   available usage signal; they do not show that code was exercised.
 //! * **Body simplicity (20 pts)** — fns with fewer than 30 statements
 //!   earn a complexity bonus; over 100 statements zeroes the bucket.
 //!
@@ -38,11 +38,11 @@ pub struct ResilienceScore {
 impl ResilienceScore {
     pub fn grade(&self) -> &'static str {
         match self.total {
-            90..=100 => "A — formally guaranteed",
-            75..=89 => "B — well-specified",
-            60..=74 => "C — partially-specified",
-            40..=59 => "D — vibe-coded with structure",
-            _ => "F — vibe-coded, unverified",
+            90..=100 => "A — high annotation signal score",
+            75..=89 => "B — many annotation signals",
+            60..=74 => "C — some annotation signals",
+            40..=59 => "D — limited annotation signals",
+            _ => "F — few annotation signals",
         }
     }
 }
