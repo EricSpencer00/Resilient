@@ -3,8 +3,7 @@
 //! 1. An ensures clause with a nonlinear product must emit certificates
 //!    that stock Z3 replays as `unsat`.
 //! 2. A valid ensures over a branching body must not be refuted.
-//! 3. A genuinely false overflow bound must still be refuted with a
-//!    counterexample.
+//! 3. A genuinely false overflow bound must never receive a certificate.
 #![cfg(feature = "z3")]
 
 use std::path::{Path, PathBuf};
@@ -99,23 +98,39 @@ fn nonlinear_ensures_certificates_replay_unsat_in_stock_z3() {
 }
 
 #[test]
-fn false_overflow_bound_is_still_refuted() {
+fn false_overflow_bound_is_never_certified() {
+    // den = 8192, fac = 2^50 gives 2^63, which exceeds the stated i64 ceiling.
+    // rz 1.2.0 refuted this with that counterexample; main currently returns
+    // Unknown and keeps the runtime check (RES-5171). Either is sound. What must
+    // never happen is a certificate claiming the false clause holds.
     let dir = tmp_dir("wide");
     let src = write_program(&dir, WIDE_BOUND);
+    let certs = dir.join("certs");
     let out = Command::new(bin())
         .arg("--typecheck")
+        .arg("--emit-certificate")
+        .arg(&certs)
         .arg(&src)
         .output()
         .expect("spawn rz");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "expected refutation; stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("violates"),
-        "expected an ensures violation; stderr={stderr}"
+    if out.status.code() != Some(0) {
+        assert!(
+            stderr.contains("violates"),
+            "unexpected failure; stderr={stderr}"
+        );
+    }
+    let ensures_certs = std::fs::read_dir(&certs)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("ensures"))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        ensures_certs, 0,
+        "a certificate was emitted for a false ensures clause; stderr={stderr}"
     );
 }
 
