@@ -1,15 +1,11 @@
-//! AI Threat Model — formal classification of LLM failure modes.
+//! AI Threat Model — heuristic review patterns for code from any author.
 //!
-//! Resilient is the first language whose type system carries an explicit
-//! threat model for its own contributors. The premise: Resilient code is
-//! often written by an LLM, and we don't trust the LLM. We don't trust
-//! humans either, but humans get other tooling. This module catches the
-//! *patterns that mark code as AI-generated-without-careful-review*.
+//! The historical name does not imply that a pattern identifies AI authorship
+//! or proves a defect. Agent- and human-written code need the same evidence
+//! connecting requirements, specification, implementation and checks.
 //!
-//! Each detection corresponds to a known failure mode of code-generating
-//! LLMs as observed across `vibe_debt` runs and post-mortems. The list is
-//! deliberately conservative — we only flag patterns where the
-//! false-positive rate is < 5% across a representative corpus.
+//! Detections prompt review; their confidence values are heuristics rather
+//! than calibrated probabilities. Absence of a warning is not proof of safety.
 //!
 //! ## Threat catalogue
 //!

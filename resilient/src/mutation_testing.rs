@@ -407,9 +407,9 @@ pub fn summarize(mutations: &[Mutation<'_>]) -> HashMap<String, (usize, Vec<&'st
 /// the Z3 verifier has nothing to kill their mutants with, so any behavioral
 /// regression in those functions would pass undetected.
 ///
-/// The "unconstrained mutation ratio" is a useful CI metric: 0% means every
-/// function with mutations is contractually verified; 100% means vibe-coded
-/// all the way down.
+/// The "unconstrained mutation ratio" counts declaration presence: 0% means
+/// every function with mutation sites declares a contract; 100% means none do.
+/// It does not execute mutants, prove contracts, or infer code authorship.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1918: removed the `any_node` fast-reject pre-scan. The
     // `uniqueness_walk::any_node` walker did not descend into the same
