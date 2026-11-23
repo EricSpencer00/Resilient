@@ -2,9 +2,9 @@
 # stderr:
 ./examples/assume_false_dead_code.rz:0:0: warning[assume-false]: dead-code region following assume(false)
 ./examples/assume_false_dead_code.rz:0:0: warning[assume-false]: dead-code region following assume(false)
-./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_dead_code` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
-./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_multiple_dead` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
-./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_dead_code` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_multiple_dead` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `main` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
 mutation: 9 total mutation site(s) across 2 function(s)
 mutation:   `test_dead_code`: 1 site(s) [literal]
 mutation:   `test_multiple_dead`: 8 site(s) [arithmetic, literal]

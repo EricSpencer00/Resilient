@@ -1,7 +1,7 @@
 # exit: 1
 # stderr:
 warning: opaque FFI call to 'malloc' in recovery body cannot be modeled as TLA+ action
-./examples/live_closed_form_fail_ffi.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/live_closed_form_fail_ffi.rz:0:0: warning[resilience]: `main` scores 28/100 (F — few annotation signals) — add `requires`/`ensures` contracts to improve resilience
 mutation: 6 total mutation site(s) across 2 function(s)
 mutation:   `dangerous_recover`: 3 site(s) [literal, relational, return]
 mutation:   `main`: 3 site(s) [literal]
